@@ -131,7 +131,7 @@ func (r *UsenetReaderAt) getSegmentData(file ParsedFile, segment *metapb.Segment
 	defer reader.Close()
 
 	// Add yEnc decoding
-	yencReader, err := yenc.Decode(reader)
+	yencReader, err := yenc.Decode(reader, yenc.DecodeWithPrefixData())
 	if err != nil {
 		return nil, err
 	}
