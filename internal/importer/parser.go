@@ -63,7 +63,7 @@ var (
 	// Pattern to detect RAR files
 	rarPattern = regexp.MustCompile(`(?i)\.r(ar|\d+)$|\.part\d+\.rar$`)
 	// Pattern to detect 7z files
-	sevenZipPattern = regexp.MustCompile(`(?i)\.7z$`)
+	sevenZipPattern = regexp.MustCompile(`(?i)\.7z$|\.7z\.\d+$`)
 	// Pattern to detect PAR2 files
 	par2Pattern = regexp.MustCompile(`(?i)\.par2$|\.p\d+$|\.vol\d+\+\d+\.par2$`)
 )
