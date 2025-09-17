@@ -82,14 +82,17 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 	readerAt := NewUsenetReaderAt(sevenZipFiles, p.poolManager, 64, p.log)
 
 	// Create a new 7z reader
-	szr, err := sevenzip.NewReader(readerAt, readerAt.totalSize)
+	var (
+		szr *sevenzip.Reader
+		err error
+	)
+	if len(sevenZipFiles) > 0 && sevenZipFiles[0].Password != "" {
+		szr, err = sevenzip.NewReaderWithPassword(readerAt, readerAt.totalSize, sevenZipFiles[0].Password)
+	} else {
+		szr, err = sevenzip.NewReader(readerAt, readerAt.totalSize)
+	}
 	if err != nil {
 		return nil, NewNonRetryableError(fmt.Sprintf("failed to create 7z reader: %v", err), err)
-	}
-
-	// Set password if available from the first 7z file
-	if len(sevenZipFiles) > 0 && sevenZipFiles[0].Password != "" {
-		szr.SetPassword(sevenZipFiles[0].Password)
 	}
 
 	// Extract file information from the archive
