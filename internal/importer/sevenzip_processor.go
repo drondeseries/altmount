@@ -87,6 +87,11 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 		return nil, NewNonRetryableError(fmt.Sprintf("failed to create 7z reader: %v", err), err)
 	}
 
+	// Set password if available from the first 7z file
+	if len(sevenZipFiles) > 0 && sevenZipFiles[0].Password != "" {
+		szr.SetPassword(sevenZipFiles[0].Password)
+	}
+
 	// Extract file information from the archive
 	var contents []sevenZipContent
 	for _, file := range szr.File {
