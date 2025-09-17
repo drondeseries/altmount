@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 
 	"github.com/javi11/altmount/internal/metadata"
@@ -102,7 +101,7 @@ func (proc *Processor) ProcessNzbFile(filePath, relativePath string) (string, er
 	case NzbTypeRarArchive:
 		return proc.processRarArchiveWithDir(parsed, virtualDir)
 	case NzbTypeSevenZipArchive:
-		return proc.processSevenZipArchiveWithDir(parsed, virtualDir)
+		return proc.process7zArchiveWithDir(parsed, virtualDir)
 	case NzbTypeStrm:
 		return proc.processStrmFileWithDir(parsed, virtualDir)
 	default:
@@ -525,99 +524,6 @@ func (proc *Processor) separateRarFiles(files []ParsedFile) ([]ParsedFile, []Par
 	return regularFiles, rarFiles
 }
 
-// processSevenZipArchiveWithDir handles NZBs containing 7z archives
-func (proc *Processor) processSevenZipArchiveWithDir(parsed *ParsedNzb, virtualDir string) (string, error) {
-	// Create a folder named after the NZB file for multi-file imports
-	nzbBaseName := strings.TrimSuffix(parsed.Filename, filepath.Ext(parsed.Filename))
-
-	// Separate 7z files from regular files
-	_, sevenZipFiles := proc.separate7zFiles(parsed.Files)
-
-	if len(sevenZipFiles) == 0 {
-		// This should not happen if the type is NzbTypeSevenZipArchive
-		return "", NewNonRetryableError("no 7z files found in a 7z archive nzb", nil)
-	}
-
-	// Analyze 7z content
-	ctx := context.Background()
-	sevenZipContents, err := proc.sevenZipProcessor.Analyze7zContentFromNzb(ctx, sevenZipFiles)
-	if err != nil {
-		proc.log.Error("Failed to analyze 7z archive content",
-			"archive", nzbBaseName,
-			"error", err)
-		return "", err
-	}
-
-	videoExtensions := []string{".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts"}
-
-	// Find the largest video file
-	var largestVideoFile *sevenZipContent
-	for i, content := range sevenZipContents {
-		if content.IsDirectory {
-			continue
-		}
-		ext := strings.ToLower(filepath.Ext(content.Filename))
-		// A bit of a hacky way to check for video extensions
-		if slices.Contains(videoExtensions, ext) {
-			if largestVideoFile == nil || content.Size > largestVideoFile.Size {
-				largestVideoFile = &sevenZipContents[i]
-			}
-		}
-	}
-
-	if largestVideoFile == nil {
-		// If no video file, maybe just take the largest file?
-		for i, content := range sevenZipContents {
-			if content.IsDirectory {
-				continue
-			}
-			if largestVideoFile == nil || content.Size > largestVideoFile.Size {
-				largestVideoFile = &sevenZipContents[i]
-			}
-		}
-	}
-
-	if largestVideoFile == nil {
-		return "", NewNonRetryableError("no processable file found in 7z archive", nil)
-	}
-
-	// Create a single metadata file for the largest video file
-	// The virtual file will be named after the NZB, but with the video file's extension.
-	videoExt := filepath.Ext(largestVideoFile.Filename)
-	nzbBaseNameWithExt := nzbBaseName + videoExt
-	virtualFilePath := filepath.Join(virtualDir, nzbBaseNameWithExt)
-	virtualFilePath = strings.ReplaceAll(virtualFilePath, string(filepath.Separator), "/")
-
-	// Combine all segments from all 7z files
-	var allSegments []*metapb.SegmentData
-	var totalSize int64
-	for _, f := range sevenZipFiles {
-		allSegments = append(allSegments, f.Segments...)
-		totalSize += f.Size
-	}
-
-	fileMeta := proc.metadataService.CreateFileMetadata(
-		largestVideoFile.Size,
-		parsed.Path,
-		metapb.FileStatus_FILE_STATUS_HEALTHY,
-		allSegments,
-		parsed.Files[0].Encryption, // Assume all files have same encryption
-		parsed.Files[0].Password,
-		parsed.Files[0].Salt,
-	)
-
-	if err := proc.metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
-		return "", fmt.Errorf("failed to write metadata for 7z archive %s: %w", nzbBaseName, err)
-	}
-
-	proc.log.Info("Successfully processed 7z archive",
-		"archive", nzbBaseName,
-		"virtual_path", virtualFilePath,
-		"size", largestVideoFile.Size)
-
-	return virtualFilePath, nil
-}
-
 // separate7zFiles separates 7z files from regular files
 func (proc *Processor) separate7zFiles(files []ParsedFile) ([]ParsedFile, []ParsedFile) {
 	var regularFiles []ParsedFile
@@ -632,6 +538,151 @@ func (proc *Processor) separate7zFiles(files []ParsedFile) ([]ParsedFile, []Pars
 	}
 
 	return regularFiles, sevenZipFiles
+}
+
+// process7zArchiveWithDir handles NZBs containing 7z archives and regular files in a specific virtual directory
+func (proc *Processor) process7zArchiveWithDir(parsed *ParsedNzb, virtualDir string) (string, error) {
+	// Create a folder named after the NZB file for multi-file imports
+	nzbBaseName := strings.TrimSuffix(parsed.Filename, filepath.Ext(parsed.Filename))
+	nzbVirtualDir := filepath.Join(virtualDir, nzbBaseName)
+	nzbVirtualDir = strings.ReplaceAll(nzbVirtualDir, string(filepath.Separator), "/")
+
+	// Separate 7z files from regular files
+	regularFiles, sevenZipFiles := proc.separate7zFiles(parsed.Files)
+
+	// Filter out PAR2 files from regular files
+	regularFiles, _ = proc.separatePar2Files(regularFiles)
+
+	// Process regular files first (non-7z files like MKV, MP4, etc.)
+	if len(regularFiles) > 0 {
+		proc.log.Info("Processing regular files in 7z archive NZB",
+			"virtual_dir", nzbVirtualDir,
+			"regular_files", len(regularFiles))
+
+		// Create directory structure for regular files
+		dirStructure := proc.analyzeDirectoryStructureWithBase(regularFiles, nzbVirtualDir)
+
+		// Create directories first
+		for _, dir := range dirStructure.directories {
+			if err := proc.ensureDirectoryExists(dir.path); err != nil {
+				return "", fmt.Errorf("failed to create directory %s: %w", dir.path, err)
+			}
+		}
+
+		// Process each regular file
+		for _, file := range regularFiles {
+			parentPath, filename := proc.determineFileLocationWithBase(file, dirStructure, nzbVirtualDir)
+
+			// Ensure parent directory exists
+			if err := proc.ensureDirectoryExists(parentPath); err != nil {
+				return "", fmt.Errorf("failed to create parent directory %s: %w", parentPath, err)
+			}
+
+			// Create virtual file path
+			virtualPath := filepath.Join(parentPath, filename)
+			virtualPath = strings.ReplaceAll(virtualPath, string(filepath.Separator), "/")
+
+			// Create file metadata
+			fileMeta := proc.metadataService.CreateFileMetadata(
+				file.Size,
+				parsed.Path,
+				metapb.FileStatus_FILE_STATUS_HEALTHY,
+				file.Segments,
+				file.Encryption,
+				file.Password,
+				file.Salt,
+			)
+
+			// Write file metadata to disk
+			if err := proc.metadataService.WriteFileMetadata(virtualPath, fileMeta); err != nil {
+				return "", fmt.Errorf("failed to write metadata for regular file %s: %w", filename, err)
+			}
+
+			proc.log.Debug("Created metadata for regular file",
+				"file", filename,
+				"virtual_path", virtualPath,
+				"size", file.Size)
+		}
+
+		proc.log.Info("Successfully processed regular files",
+			"virtual_dir", nzbVirtualDir,
+			"files_processed", len(regularFiles))
+	}
+
+	// Process 7z archives if any exist
+	if len(sevenZipFiles) > 0 {
+		// Create directory for the single 7z archive content
+		nzbBaseName := strings.TrimSuffix(parsed.Filename, filepath.Ext(parsed.Filename))
+		sevenZipDirPath := filepath.Join(nzbVirtualDir, nzbBaseName)
+		sevenZipDirPath = strings.ReplaceAll(sevenZipDirPath, string(filepath.Separator), "/")
+
+		// Ensure 7z archive directory exists
+		if err := proc.ensureDirectoryExists(sevenZipDirPath); err != nil {
+			return "", fmt.Errorf("failed to create 7z directory %s: %w", sevenZipDirPath, err)
+		}
+
+		proc.log.Info("Processing 7z archive with content analysis",
+			"archive", nzbBaseName,
+			"parts", len(sevenZipFiles),
+			"7z_dir", sevenZipDirPath)
+
+		// Analyze 7z content using the new 7z handler
+		ctx := context.Background()
+		sevenZipContents, err := proc.sevenZipProcessor.Analyze7zContentFromNzb(ctx, sevenZipFiles)
+		if err != nil {
+			proc.log.Error("Failed to analyze 7z archive content",
+				"archive", nzbBaseName,
+				"error", err)
+			return "", err
+		}
+
+		proc.log.Info("Successfully analyzed 7z archive content",
+			"archive", nzbBaseName,
+			"files_in_archive", len(sevenZipContents))
+
+		// Process each file found in the 7z archive
+		for _, sevenZipContent := range sevenZipContents {
+			// Skip directories
+			if sevenZipContent.IsDirectory {
+				proc.log.Debug("Skipping directory in 7z archive", "path", sevenZipContent.InternalPath)
+				continue
+			}
+
+			// Determine the virtual file path for this extracted file
+			// The file path should be relative to the 7z directory
+			virtualFilePath := filepath.Join(sevenZipDirPath, sevenZipContent.InternalPath)
+			virtualFilePath = strings.ReplaceAll(virtualFilePath, string(filepath.Separator), "/")
+
+			// Ensure parent directory exists for nested files
+			parentDir := filepath.Dir(virtualFilePath)
+			if err := proc.ensureDirectoryExists(parentDir); err != nil {
+				return "", fmt.Errorf("failed to create parent directory %s for 7z file: %w", parentDir, err)
+			}
+
+			// Create file metadata using the 7z handler's helper function
+			fileMeta := proc.sevenZipProcessor.CreateFileMetadataFrom7zContent(
+				sevenZipContent,
+				parsed.Path,
+			)
+
+			// Write file metadata to disk
+			if err := proc.metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
+				return "", fmt.Errorf("failed to write metadata for 7z file %s: %w", sevenZipContent.Filename, err)
+			}
+
+			proc.log.Debug("Created metadata for 7z extracted file",
+				"file", sevenZipContent.Filename,
+				"internal_path", sevenZipContent.InternalPath,
+				"virtual_path", virtualFilePath,
+				"size", sevenZipContent.Size)
+		}
+
+		proc.log.Info("Successfully processed 7z archive with content analysis",
+			"archive", nzbBaseName,
+			"files_processed", len(sevenZipContents))
+	}
+
+	return nzbVirtualDir, nil
 }
 
 // processStrmFileWithDir handles STRM files (single file from NXG link) in a specific virtual directory

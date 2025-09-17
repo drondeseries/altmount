@@ -21,10 +21,12 @@ type SevenZipProcessor interface {
 
 // sevenZipContent represents a file within a 7z archive for processing
 type sevenZipContent struct {
-	InternalPath string `json:"internal_path"`
-	Filename     string `json:"filename"`
-	Size         int64  `json:"size"`
-	IsDirectory  bool   `json:"is_directory,omitempty"`
+	InternalPath string    `json:"internal_path"`
+	Filename     string    `json:"filename"`
+	Size         int64     `json:"size"`
+	ModTime      time.Time `json:"mod_time"`
+	CreateTime   time.Time `json:"create_time"`
+	IsDirectory  bool      `json:"is_directory,omitempty"`
 }
 
 // sevenZipProcessor handles 7z archive analysis and content extraction
@@ -46,14 +48,18 @@ func (p *sevenZipProcessor) CreateFileMetadataFrom7zContent(
 	content sevenZipContent,
 	sourceNzbPath string,
 ) *metapb.FileMetadata {
-	now := time.Now().Unix()
+	modTime := content.ModTime.Unix()
+	createTime := content.CreateTime.Unix()
+	if createTime == 0 {
+		createTime = modTime
+	}
 
 	return &metapb.FileMetadata{
 		FileSize:      content.Size,
 		SourceNzbPath: sourceNzbPath,
 		Status:        metapb.FileStatus_FILE_STATUS_HEALTHY,
-		CreatedAt:     now,
-		ModifiedAt:    now,
+		CreatedAt:     createTime,
+		ModifiedAt:    modTime,
 		SegmentData:   nil, // Segments are handled by the UsenetReaderAt
 	}
 }
@@ -88,6 +94,8 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 			InternalPath: file.Name,
 			Filename:     filepath.Base(file.Name),
 			Size:         int64(file.UncompressedSize),
+			ModTime:      file.Modified,
+			CreateTime:   file.Created,
 			IsDirectory:  file.FileInfo().IsDir(),
 		})
 	}

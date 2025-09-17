@@ -39,7 +39,6 @@ require (
 	google.golang.org/protobuf v1.36.6
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gopkg.in/yaml.v3 v3.0.1
-	gopkg.in/yenc.v0 v0.0.0-20221007000000-89ca7bd2041c
 )
 
 require (
@@ -268,8 +267,6 @@ require (
 	golang.org/x/telemetry v0.0.0-20250807160809-1a19826ec488 // indirect
 	golang.org/x/tools v0.36.0 // indirect
 	golang.org/x/vuln v1.1.4 // indirect
-	gopkg.in/option.v0 v0.0.0-20220910000000-360f43518c40 // indirect
-	gopkg.in/ringbuffer.v0 v0.0.0-20220918000000-5de8faa4e64f // indirect
 	honnef.co/go/tools v0.6.1 // indirect
 	mvdan.cc/gofumpt v0.8.0 // indirect
 	mvdan.cc/unparam v0.0.0-20250301125049-0df0534333a4 // indirect
