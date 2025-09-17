@@ -10,6 +10,7 @@ import (
 
 	"github.com/javi11/altmount/internal/pool"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
+	"gopkg.in/yenc.v0"
 )
 
 const (
@@ -129,8 +130,14 @@ func (r *UsenetReaderAt) getSegmentData(file ParsedFile, segment *metapb.Segment
 	}
 	defer reader.Close()
 
+	// Add yEnc decoding
+	yencReader, err := yenc.Decode(reader)
+	if err != nil {
+		return nil, err
+	}
+
 	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, reader); err != nil {
+	if _, err := io.Copy(&buf, yencReader); err != nil {
 		return nil, err
 	}
 
