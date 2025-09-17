@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/javi11/altmount/internal/metadata"
@@ -16,12 +17,13 @@ import (
 
 // Processor handles the processing and storage of parsed NZB files using metadata storage
 type Processor struct {
-	parser          *Parser
-	strmParser      *StrmParser
-	metadataService *metadata.MetadataService
-	rarProcessor    RarProcessor
-	poolManager     pool.Manager // Pool manager for dynamic pool access
-	log             *slog.Logger
+	parser            *Parser
+	strmParser        *StrmParser
+	metadataService   *metadata.MetadataService
+	rarProcessor      RarProcessor
+	sevenZipProcessor SevenZipProcessor
+	poolManager       pool.Manager // Pool manager for dynamic pool access
+	log               *slog.Logger
 
 	// Pre-compiled regex patterns for RAR file sorting
 	rarPartPattern    *regexp.Regexp // pattern.part###.rar
@@ -32,12 +34,13 @@ type Processor struct {
 // NewProcessor creates a new NZB processor using metadata storage
 func NewProcessor(metadataService *metadata.MetadataService, poolManager pool.Manager) *Processor {
 	return &Processor{
-		parser:          NewParser(poolManager),
-		strmParser:      NewStrmParser(),
-		metadataService: metadataService,
-		rarProcessor:    NewRarProcessor(poolManager, 10, 64), // 10 max workers, 64MB cache for RAR analysis
-		poolManager:     poolManager,
-		log:             slog.Default().With("component", "nzb-processor"),
+		parser:            NewParser(poolManager),
+		strmParser:        NewStrmParser(),
+		metadataService:   metadataService,
+		rarProcessor:      NewRarProcessor(poolManager, 10, 64), // 10 max workers, 64MB cache for RAR analysis
+		sevenZipProcessor: NewSevenZipProcessor(poolManager),
+		poolManager:       poolManager,
+		log:               slog.Default().With("component", "nzb-processor"),
 
 		// Initialize pre-compiled regex patterns for RAR file sorting
 		rarPartPattern:    regexp.MustCompile(`^(.+)\.part(\d+)\.rar$`), // filename.part001.rar
@@ -98,6 +101,8 @@ func (proc *Processor) ProcessNzbFile(filePath, relativePath string) (string, er
 		return proc.processMultiFileWithDir(parsed, virtualDir)
 	case NzbTypeRarArchive:
 		return proc.processRarArchiveWithDir(parsed, virtualDir)
+	case NzbTypeSevenZipArchive:
+		return proc.processSevenZipArchiveWithDir(parsed, virtualDir)
 	case NzbTypeStrm:
 		return proc.processStrmFileWithDir(parsed, virtualDir)
 	default:
@@ -518,6 +523,115 @@ func (proc *Processor) separateRarFiles(files []ParsedFile) ([]ParsedFile, []Par
 	}
 
 	return regularFiles, rarFiles
+}
+
+// processSevenZipArchiveWithDir handles NZBs containing 7z archives
+func (proc *Processor) processSevenZipArchiveWithDir(parsed *ParsedNzb, virtualDir string) (string, error) {
+	// Create a folder named after the NZB file for multi-file imports
+	nzbBaseName := strings.TrimSuffix(parsed.Filename, filepath.Ext(parsed.Filename))
+
+	// Separate 7z files from regular files
+	_, sevenZipFiles := proc.separate7zFiles(parsed.Files)
+
+	if len(sevenZipFiles) == 0 {
+		// This should not happen if the type is NzbTypeSevenZipArchive
+		return "", NewNonRetryableError("no 7z files found in a 7z archive nzb", nil)
+	}
+
+	// Analyze 7z content
+	ctx := context.Background()
+	sevenZipContents, err := proc.sevenZipProcessor.Analyze7zContentFromNzb(ctx, sevenZipFiles)
+	if err != nil {
+		proc.log.Error("Failed to analyze 7z archive content",
+			"archive", nzbBaseName,
+			"error", err)
+		return "", err
+	}
+
+	videoExtensions := []string{".mkv", ".mp4", ".avi", ".mov", ".wmv", ".flv", ".webm", ".ts"}
+
+	// Find the largest video file
+	var largestVideoFile *sevenZipContent
+	for i, content := range sevenZipContents {
+		if content.IsDirectory {
+			continue
+		}
+		ext := strings.ToLower(filepath.Ext(content.Filename))
+		// A bit of a hacky way to check for video extensions
+		if slices.Contains(videoExtensions, ext) {
+			if largestVideoFile == nil || content.Size > largestVideoFile.Size {
+				largestVideoFile = &sevenZipContents[i]
+			}
+		}
+	}
+
+	if largestVideoFile == nil {
+		// If no video file, maybe just take the largest file?
+		for i, content := range sevenZipContents {
+			if content.IsDirectory {
+				continue
+			}
+			if largestVideoFile == nil || content.Size > largestVideoFile.Size {
+				largestVideoFile = &sevenZipContents[i]
+			}
+		}
+	}
+
+	if largestVideoFile == nil {
+		return "", NewNonRetryableError("no processable file found in 7z archive", nil)
+	}
+
+	// Create a single metadata file for the largest video file
+	// The virtual file will be named after the NZB, but with the video file's extension.
+	videoExt := filepath.Ext(largestVideoFile.Filename)
+	nzbBaseNameWithExt := nzbBaseName + videoExt
+	virtualFilePath := filepath.Join(virtualDir, nzbBaseNameWithExt)
+	virtualFilePath = strings.ReplaceAll(virtualFilePath, string(filepath.Separator), "/")
+
+	// Combine all segments from all 7z files
+	var allSegments []*metapb.SegmentData
+	var totalSize int64
+	for _, f := range sevenZipFiles {
+		allSegments = append(allSegments, f.Segments...)
+		totalSize += f.Size
+	}
+
+	fileMeta := proc.metadataService.CreateFileMetadata(
+		largestVideoFile.Size,
+		parsed.Path,
+		metapb.FileStatus_FILE_STATUS_HEALTHY,
+		allSegments,
+		parsed.Files[0].Encryption, // Assume all files have same encryption
+		parsed.Files[0].Password,
+		parsed.Files[0].Salt,
+	)
+
+	if err := proc.metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
+		return "", fmt.Errorf("failed to write metadata for 7z archive %s: %w", nzbBaseName, err)
+	}
+
+	proc.log.Info("Successfully processed 7z archive",
+		"archive", nzbBaseName,
+		"virtual_path", virtualFilePath,
+		"size", largestVideoFile.Size)
+
+	return virtualFilePath, nil
+}
+
+// separate7zFiles separates 7z files from regular files
+func (proc *Processor) separate7zFiles(files []ParsedFile) ([]ParsedFile, []ParsedFile) {
+	var regularFiles []ParsedFile
+	var sevenZipFiles []ParsedFile
+
+	for _, file := range files {
+		if file.IsSevenZipArchive {
+			sevenZipFiles = append(sevenZipFiles, file)
+		} else {
+			regularFiles = append(regularFiles, file)
+		}
+	}
+
+	return regularFiles, sevenZipFiles
 }
 
 // processStrmFileWithDir handles STRM files (single file from NXG link) in a specific virtual directory

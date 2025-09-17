@@ -27,10 +27,11 @@ import (
 type NzbType string
 
 const (
-	NzbTypeSingleFile NzbType = "single_file"
-	NzbTypeMultiFile  NzbType = "multi_file"
-	NzbTypeRarArchive NzbType = "rar_archive"
-	NzbTypeStrm       NzbType = "strm_file"
+	NzbTypeSingleFile      NzbType = "single_file"
+	NzbTypeMultiFile       NzbType = "multi_file"
+	NzbTypeRarArchive      NzbType = "rar_archive"
+	NzbTypeStrm            NzbType = "strm_file"
+	NzbTypeSevenZipArchive NzbType = "sevenzip_archive"
 )
 
 // ParsedNzb contains the parsed NZB data and extracted metadata
@@ -46,20 +47,23 @@ type ParsedNzb struct {
 
 // ParsedFile represents a file extracted from the NZB
 type ParsedFile struct {
-	Subject      string
-	Filename     string
-	Size         int64
-	Segments     []*metapb.SegmentData
-	Groups       []string
-	IsRarArchive bool
-	Encryption   metapb.Encryption // Encryption type (e.g., "rclone"), nil if not encrypted
-	Password     string            // Password from NZB meta, nil if not encrypted
-	Salt         string            // Salt from NZB meta, nil if not encrypted
+	Subject           string
+	Filename          string
+	Size              int64
+	Segments          []*metapb.SegmentData
+	Groups            []string
+	IsRarArchive      bool
+	IsSevenZipArchive bool
+	Encryption        metapb.Encryption // Encryption type (e.g., "rclone"), nil if not encrypted
+	Password          string            // Password from NZB meta, nil if not encrypted
+	Salt              string            // Salt from NZB meta, nil if not encrypted
 }
 
 var (
 	// Pattern to detect RAR files
 	rarPattern = regexp.MustCompile(`(?i)\.r(ar|\d+)$|\.part\d+\.rar$`)
+	// Pattern to detect 7z files
+	sevenZipPattern = regexp.MustCompile(`(?i)\.7z(\.\d+)?$`)
 	// Pattern to detect PAR2 files
 	par2Pattern = regexp.MustCompile(`(?i)\.par2$|\.p\d+$|\.vol\d+\+\d+\.par2$`)
 )
@@ -280,17 +284,19 @@ func (p *Parser) parseFile(file nzbparser.NzbFile, meta map[string]string, allFi
 
 	// Check if this is a RAR file
 	isRarArchive := rarPattern.MatchString(filename)
+	isSevenZipArchive := sevenZipPattern.MatchString(filename)
 
 	parsedFile := &ParsedFile{
-		Subject:      file.Subject,
-		Filename:     filename,
-		Size:         totalSize,
-		Segments:     segments,
-		Groups:       file.Groups,
-		IsRarArchive: isRarArchive,
-		Encryption:   enc,
-		Password:     password,
-		Salt:         salt,
+		Subject:           file.Subject,
+		Filename:          filename,
+		Size:              totalSize,
+		Segments:          segments,
+		Groups:            file.Groups,
+		IsRarArchive:      isRarArchive,
+		IsSevenZipArchive: isSevenZipArchive,
+		Encryption:        enc,
+		Password:          password,
+		Salt:              salt,
 	}
 
 	return parsedFile, nil
@@ -438,20 +444,32 @@ func (p *Parser) determineNzbType(files []ParsedFile) NzbType {
 		if files[0].IsRarArchive {
 			return NzbTypeRarArchive
 		}
+		if files[0].IsSevenZipArchive {
+			return NzbTypeSevenZipArchive
+		}
 		return NzbTypeSingleFile
 	}
 
 	// Multiple files - check if any are RAR archives
 	hasRarFiles := false
+	hasSevenZipFiles := false
 	for _, file := range files {
 		if file.IsRarArchive {
 			hasRarFiles = true
+			break
+		}
+		if file.IsSevenZipArchive {
+			hasSevenZipFiles = true
 			break
 		}
 	}
 
 	if hasRarFiles {
 		return NzbTypeRarArchive
+	}
+
+	if hasSevenZipFiles {
+		return NzbTypeSevenZipArchive
 	}
 
 	return NzbTypeMultiFile
