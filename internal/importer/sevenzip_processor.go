@@ -88,9 +88,9 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 		err error
 	)
 	if len(sevenZipFiles) > 0 && sevenZipFiles[0].Password != "" {
-		szr, err = sevenzip.NewReaderWithPassword(readerAt, readerAt.totalSize, sevenZipFiles[0].Password)
+		szr, err = sevenzip.NewReaderWithPassword(readerAt, readerAt.TotalSize, sevenZipFiles[0].Password)
 	} else {
-		szr, err = sevenzip.NewReader(readerAt, readerAt.totalSize)
+		szr, err = sevenzip.NewReader(readerAt, readerAt.TotalSize)
 	}
 	if err != nil {
 		return nil, NewNonRetryableError(fmt.Sprintf("failed to create 7z reader: %v", err), err)
