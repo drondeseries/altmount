@@ -221,7 +221,7 @@ func (svf *SevenZipVirtualFile) ensureReader() error {
 	readerAt := importer.NewUsenetReaderAt(sevenZipFiles, svf.poolManager, 64, slog.Default())
 
 	// 4. Create a sevenzip.Reader
-	szr, err := sevenzip.NewReaderWithPassword(readerAt, readerAt.TotalSize(), svf.fileMeta.Password)
+	szr, err := sevenzip.NewReaderWithPassword(readerAt, readerAt.TotalSize, svf.fileMeta.Password)
 	if err != nil {
 		return err
 	}

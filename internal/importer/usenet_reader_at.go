@@ -21,7 +21,7 @@ const (
 // It is designed to provide a seekable interface over a non-seekable stream of NZB segments.
 type UsenetReaderAt struct {
 	files        []ParsedFile
-	totalSize    int64
+	TotalSize    int64
 	poolManager  pool.Manager
 	segmentCache sync.Map // Cache segment ID -> []byte
 	cacheSize    int64
@@ -46,7 +46,7 @@ func NewUsenetReaderAt(files []ParsedFile, poolManager pool.Manager, maxCacheSiz
 
 	return &UsenetReaderAt{
 		files:        files,
-		totalSize:    totalSize,
+		TotalSize:    totalSize,
 		poolManager:  poolManager,
 		log:          log,
 		maxCacheSize: maxCacheBytes,
@@ -58,13 +58,13 @@ func (r *UsenetReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 	if off < 0 {
 		return 0, fmt.Errorf("negative offset")
 	}
-	if off >= r.totalSize {
+	if off >= r.TotalSize {
 		return 0, io.EOF
 	}
 
 	bytesToRead := len(p)
-	if off+int64(bytesToRead) > r.totalSize {
-		bytesToRead = int(r.totalSize - off)
+	if off+int64(bytesToRead) > r.TotalSize {
+		bytesToRead = int(r.TotalSize - off)
 		// We will read until the end of the file, so the error should be EOF.
 		err = io.EOF
 	}
