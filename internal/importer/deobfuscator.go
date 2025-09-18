@@ -533,8 +533,17 @@ func IsProbablyObfuscated(input string) bool {
 
 	// Extract filename then its basename without extension
 	filename := filepath.Base(input)
-	ext := filepath.Ext(filename)
-	filebasename := strings.TrimSuffix(filename, ext)
+	filebasename := filename
+	var ext string
+	for {
+		newExt := filepath.Ext(filebasename)
+		if newExt == "" {
+			break
+		}
+		filebasename = strings.TrimSuffix(filebasename, newExt)
+		ext = newExt + ext
+	}
+
 	if filebasename == "" { // empty name -> treat as obfuscated default
 		logger.Debug("obfuscation check: empty basename -> default obfuscated", "input", input)
 		return true
