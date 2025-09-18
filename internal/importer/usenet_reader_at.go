@@ -129,6 +129,10 @@ func (r *UsenetReaderAt) getSegmentData(file ParsedFile, segment *metapb.Segment
 	}
 	defer reader.Close()
 
+	// Explicitly consume yEnc headers to ensure the reader is positioned at the start of the decoded body.
+	// This is crucial for formats like PAR2 that are sensitive to stream position.
+	_, _ = reader.GetYencHeaders()
+
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, reader); err != nil {
 		return nil, err
