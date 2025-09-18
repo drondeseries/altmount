@@ -539,7 +539,7 @@ func IsProbablyObfuscated(input string) bool {
 		logger.Debug("obfuscation check: empty basename -> default obfuscated", "input", input)
 		return true
 	}
-	logger.Debug("obfuscation check: analyzing", "basename", filebasename)
+	logger.Debug("obfuscation check: analyzing", "input", input, "basename", filebasename, "ext", ext)
 
 	// Compile (or reuse) regexes (precompiled at first call via package-level vars could optimize; kept inline for clarity)
 	if matched, _ := regexp.MatchString(`^[a-f0-9]{32}$`, filebasename); matched {
@@ -582,8 +582,8 @@ func IsProbablyObfuscated(input string) bool {
 	}
 
 	// Not obfuscated heuristics
-	if uppers >= 2 && lowers >= 2 && spacesDots >= 1 {
-		logger.Debug("obfuscation check: pattern (>=2 upper, >=2 lower, >=1 space/dot/underscore) -> NOT obfuscated", "basename", filebasename)
+	if uppers >= 2 && lowers >= 2 && spacesDots >= 2 {
+		logger.Debug("obfuscation check: pattern (>=2 upper, >=2 lower, >=2 space/dot/underscore) -> NOT obfuscated", "basename", filebasename)
 		return false
 	}
 	if spacesDots >= 3 {
