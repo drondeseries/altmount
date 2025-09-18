@@ -17,6 +17,8 @@ import (
 	"github.com/javi11/nzbparser"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
+
+	metapb "github.com/javi11/altmount/internal/metadata/proto"
 )
 
 // Deobfuscator handles filename deobfuscation for NZB files
@@ -134,24 +136,26 @@ func (d *Deobfuscator) extractFilenameFromPar2(par2File nzbparser.NzbFile, targe
 		return ""
 	}
 
-	cp, err := d.poolManager.GetPool()
-	if err != nil {
-		d.log.Debug("No connection pool available for PAR2 extraction", "error", err)
-		return ""
+	// Create a ParsedFile to hold the segments for the UsenetReaderAt
+	parsedSegments := make([]*metapb.SegmentData, len(par2File.Segments))
+	for i, s := range par2File.Segments {
+		parsedSegments[i] = &metapb.SegmentData{
+			Id:          s.ID,
+			SegmentSize: int64(s.Bytes),
+		}
 	}
 
-	// Create context with timeout
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
+	// Create a UsenetReaderAt that spans all segments of the PAR2 file
+	// We wrap the segments in a single ParsedFile for the reader
+	readerAt := NewUsenetReaderAt([]ParsedFile{
+		{
+			Segments: parsedSegments,
+			Groups:   par2File.Groups,
+		},
+	}, d.poolManager, 64, d.log)
 
-	// Try first segment for PAR2 content
-	firstSegment := par2File.Segments[0]
-	r, err := cp.BodyReader(ctx, firstSegment.ID, par2File.Groups)
-	if err != nil {
-		d.log.Debug("Failed to get body reader for PAR2 extraction", "error", err)
-		return ""
-	}
-	defer r.Close()
+	// Create a reader from the ReaderAt
+	r := io.NewSectionReader(readerAt, 0, readerAt.TotalSize)
 
 	d.log.Debug("Attempting to parse PAR2 file content",
 		"par2_file", par2File.Filename,
