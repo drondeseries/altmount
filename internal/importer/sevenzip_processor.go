@@ -61,6 +61,7 @@ func (p *sevenZipProcessor) CreateFileMetadataFrom7zContent(
 		CreatedAt:     createTime,
 		ModifiedAt:    modTime,
 		SegmentData:   nil, // Segments are handled by the UsenetReaderAt
+		InternalPath:  content.InternalPath,
 	}
 }
 

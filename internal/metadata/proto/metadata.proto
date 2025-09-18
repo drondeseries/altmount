@@ -38,4 +38,5 @@ message FileMetadata {
   string salt = 7;              // Salt for encrypted files (if any)
   Encryption encryption = 8;    // Encryption type used for the file
   repeated SegmentData segment_data = 9;  // Segment information (lazy-loaded)
+  string internal_path = 10;    // Path to the file inside an archive
 }

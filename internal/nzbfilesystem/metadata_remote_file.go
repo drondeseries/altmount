@@ -129,6 +129,17 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 		return false, nil, ErrFileIsCorrupted
 	}
 
+	// Check if this is a file inside a 7z archive
+	if len(fileMeta.SegmentData) == 0 && fileMeta.InternalPath != "" {
+		// This is a file inside a 7z archive.
+		// Create a new type of file handle for it.
+		sevenZipFile, err := NewSevenZipVirtualFile(ctx, name, fileMeta, mrf.poolManager, mrf.configGetter)
+		if err != nil {
+			return false, nil, err
+		}
+		return true, sevenZipFile, nil
+	}
+
 	// Create a metadata-based virtual file handle
 	virtualFile := &MetadataVirtualFile{
 		name:             name,

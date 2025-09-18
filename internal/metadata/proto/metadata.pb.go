@@ -205,6 +205,7 @@ type FileMetadata struct {
 	Salt          string                 `protobuf:"bytes,7,opt,name=salt,proto3" json:"salt,omitempty"`                                          // Salt for encrypted files (if any)
 	Encryption    Encryption             `protobuf:"varint,8,opt,name=encryption,proto3,enum=metadata.Encryption" json:"encryption,omitempty"`    // Encryption type used for the file
 	SegmentData   []*SegmentData         `protobuf:"bytes,9,rep,name=segment_data,json=segmentData,proto3" json:"segment_data,omitempty"`         // Segment information (lazy-loaded)
+	InternalPath  string                 `protobuf:"bytes,10,opt,name=internal_path,json=internalPath,proto3" json:"internal_path,omitempty"`    // Path to the file inside an archive
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -302,6 +303,13 @@ func (x *FileMetadata) GetSegmentData() []*SegmentData {
 	return nil
 }
 
+func (x *FileMetadata) GetInternalPath() string {
+	if x != nil {
+		return x.InternalPath
+	}
+	return ""
+}
+
 var File_internal_metadata_proto_metadata_proto protoreflect.FileDescriptor
 
 const file_internal_metadata_proto_metadata_proto_rawDesc = "" +
@@ -312,7 +320,7 @@ const file_internal_metadata_proto_metadata_proto_rawDesc = "" +
 	"\fstart_offset\x18\x03 \x01(\x03R\vstartOffset\x12\x1d\n" +
 	"\n" +
 	"end_offset\x18\x04 \x01(\x03R\tendOffset\x12\x0e\n" +
-	"\x02id\x18\x05 \x01(\tR\x02id\"\xe1\x02\n" +
+	"\x02id\x18\x05 \x01(\tR\x02id\"\x8c\x03\n" +
 	"\fFileMetadata\x12\x1b\n" +
 	"\tfile_size\x18\x01 \x01(\x03R\bfileSize\x12&\n" +
 	"\x0fsource_nzb_path\x18\x02 \x01(\tR\rsourceNzbPath\x12,\n" +
@@ -326,7 +334,9 @@ const file_internal_metadata_proto_metadata_proto_rawDesc = "" +
 	"\n" +
 	"encryption\x18\b \x01(\x0e2\x14.metadata.EncryptionR\n" +
 	"encryption\x128\n" +
-	"\fsegment_data\x18\t \x03(\v2\x15.metadata.SegmentDataR\vsegmentData*/\n" +
+	"\fsegment_data\x18\t \x03(\v2\x15.metadata.SegmentDataR\vsegmentData\x12#\n" +
+	"\rinternal_path\x18\n" +
+	" \x01(\tR\finternalPath*/\n" +
 	"\n" +
 	"Encryption\x12\b\n" +
 	"\x04NONE\x10\x00\x12\n" +
