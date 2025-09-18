@@ -68,11 +68,23 @@ func (svf *SevenZipVirtualFile) Read(p []byte) (n int, err error) {
 
 // ReadAt implements afero.File.ReadAt
 func (svf *SevenZipVirtualFile) ReadAt(p []byte, off int64) (n int, err error) {
-	// This is not efficient, but it's the only way to support ReadAt with this library
-	if _, err := svf.Seek(off, io.SeekStart); err != nil {
+	svf.mu.Lock()
+	defer svf.mu.Unlock()
+
+	// This is inefficient, but it's the only way to do it without changing the architecture significantly
+	// We need to create a new reader for each ReadAt call to ensure thread safety
+	rc, err := svf.openReaderAt(off)
+	if err != nil {
 		return 0, err
 	}
-	return svf.Read(p)
+	defer rc.Close()
+
+	n, err = io.ReadFull(rc, p)
+	if err == io.ErrUnexpectedEOF {
+		return n, io.EOF
+	}
+
+	return n, err
 }
 
 // Seek implements afero.File.Seek
@@ -174,6 +186,82 @@ func (svf *SevenZipVirtualFile) Sync() error {
 // Truncate implements afero.File.Truncate (not supported)
 func (svf *SevenZipVirtualFile) Truncate(size int64) error {
 	return os.ErrPermission
+}
+
+func (svf *SevenZipVirtualFile) openReaderAt(off int64) (io.ReadCloser, error) {
+	if svf.poolManager == nil {
+		return nil, ErrNoUsenetPool
+	}
+
+	// This is inefficient, but it's the only way to do it without changing the architecture significantly
+	// 1. Open the NZB file
+	nzbFile, err := os.Open(svf.fileMeta.SourceNzbPath)
+	if err != nil {
+		return nil, err
+	}
+	defer nzbFile.Close()
+
+	// 2. Parse it
+	// We need a parser here. We can't use the one from the importer, so we create a new one.
+	// This is not ideal, but it's the only way without a major refactoring.
+	parser := importer.NewParser(svf.poolManager)
+	parsedNzb, err := parser.ParseFile(nzbFile, svf.fileMeta.SourceNzbPath)
+	if err != nil {
+		return nil, err
+	}
+
+	// 3. Create a UsenetReaderAt for the archive
+	var sevenZipFiles []importer.ParsedFile
+	for _, f := range parsedNzb.Files {
+		if f.IsSevenZipArchive {
+			sevenZipFiles = append(sevenZipFiles, f)
+		}
+	}
+
+	if len(sevenZipFiles) == 0 {
+		return nil, fmt.Errorf("no 7z files found in nzb")
+	}
+
+	sort.Slice(sevenZipFiles, func(i, j int) bool {
+		return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
+	})
+
+	readerAt := importer.NewUsenetReaderAt(sevenZipFiles, svf.poolManager, 64, slog.Default())
+
+	// 4. Create a sevenzip.Reader
+	szr, err := sevenzip.NewReaderWithPassword(readerAt, readerAt.TotalSize, svf.fileMeta.Password)
+	if err != nil {
+		return nil, err
+	}
+
+	// 5. Find the file
+	var targetFile *sevenzip.File
+	for _, f := range szr.File {
+		if f.Name == svf.fileMeta.InternalPath {
+			targetFile = f
+			break
+		}
+	}
+
+	if targetFile == nil {
+		return nil, fmt.Errorf("file not found in archive: %s", svf.fileMeta.InternalPath)
+	}
+
+	// 6. Open the file
+	rc, err := targetFile.Open()
+	if err != nil {
+		return nil, err
+	}
+
+	// 7. Seek to the correct position
+	if off > 0 {
+		if _, err := io.CopyN(io.Discard, rc, off); err != nil {
+			rc.Close()
+			return nil, err
+		}
+	}
+
+	return rc, nil
 }
 
 func (svf *SevenZipVirtualFile) ensureReader() error {
