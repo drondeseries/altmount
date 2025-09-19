@@ -26,18 +26,18 @@ func IsStreamable(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
 	return parse(r, size)
 }
 
-// Extract returns an io.ReadCloser for the data of the given FileEntry.
-func Extract(r io.ReaderAt, fe FileEntry) (io.ReadCloser, error) {
+// Extract returns an io.ReadSeekCloser for the data of the given FileEntry.
+func Extract(r io.ReaderAt, fe FileEntry) (io.ReadSeekCloser, error) {
 	sr, err := extract(r, fe)
 	if err != nil {
 		return nil, err
 	}
-	return &sectionReaderCloser{SectionReader: *sr}, nil
+	return &sectionReaderCloser{sr}, nil
 }
 
 // sectionReaderCloser wraps io.SectionReader to provide a Close method.
 type sectionReaderCloser struct {
-	io.SectionReader
+	*io.SectionReader
 }
 
 func (s *sectionReaderCloser) Close() error {
@@ -45,7 +45,7 @@ func (s *sectionReaderCloser) Close() error {
 }
 
 // StreamFileByExtension finds a file with the given extension and returns a reader for it.
-func StreamFileByExtension(r io.ReaderAt, size int64, ext string) (io.ReadCloser, string, error) {
+func StreamFileByExtension(r io.ReaderAt, size int64, ext string) (io.ReadSeekCloser, string, error) {
 	info, err := IsStreamable(r, size)
 	if err != nil {
 		return nil, "", fmt.Errorf("archive is not streamable: %w", err)
@@ -72,6 +72,6 @@ func StreamFileByExtension(r io.ReaderAt, size int64, ext string) (io.ReadCloser
 }
 
 // StreamMKV is a convenience function to stream the first MKV file found.
-func StreamMKV(r io.ReaderAt, size int64) (io.ReadCloser, string, error) {
+func StreamMKV(r io.ReaderAt, size int64) (io.ReadSeekCloser, string, error) {
 	return StreamFileByExtension(r, size, ".mkv")
 }

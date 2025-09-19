@@ -114,9 +114,7 @@ func (f *StreamableArchiveFile) ensureReader() error {
 		}
 	}
 
-	// The section reader from Extract does not need closing, as the underlying
-	// archiveReader is managed separately and does not need to be closed.
-	f.reader = io.NopCloser(sectionReader)
+	f.reader = sectionReader
 
 	return nil
 }

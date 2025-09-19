@@ -167,11 +167,10 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 		// Use the new StreamMKV function
 		stream, _, err := sevenzip.StreamMKV(readerAt, readerAt.TotalSize)
 		if err != nil {
-			return false, nil, err
+			return false, nil, fmt.Errorf("failed to stream MKV from 7z archive: %w", err)
 		}
 
-		// Since StreamMKV returns an io.ReadCloser, we need to wrap it in an afero.File.
-		// We'll use a simple struct that implements the afero.File interface.
+		// Since StreamMKV returns an io.ReadSeekCloser, we can use it directly
 		return true, &StreamFile{
 			reader: stream,
 			name:   name,
