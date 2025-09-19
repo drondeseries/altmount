@@ -136,13 +136,8 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 		// This is a file inside a 7z archive.
 		info, err := sevenzip.IsStreamable(fileMeta.SourceNzbPath)
 		if err != nil {
-			// Not streamable, fallback to old implementation for now
-			// In the future we might want to return an error here
-			sevenZipFile, err := NewSevenZipVirtualFile(ctx, name, fileMeta, mrf.poolManager, mrf.configGetter)
-			if err != nil {
-				return false, nil, err
-			}
-			return true, sevenZipFile, nil
+			// Not streamable, return error.
+			return false, nil, fs.ErrNotExist
 		}
 
 		// Locate MKV file

@@ -74,6 +74,10 @@ func (svf *StreamedVirtualFile) Write(p []byte) (n int, err error) {
 	return 0, os.ErrPermission
 }
 
+func (svf *StreamedVirtualFile) WriteAt(p []byte, off int64) (n int, err error) {
+	return 0, os.ErrPermission
+}
+
 func (svf *StreamedVirtualFile) Name() string {
 	return svf.name
 }
