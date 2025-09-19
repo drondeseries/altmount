@@ -1,7 +1,6 @@
 package nzbfilesystem
 
 import (
-	"errors"
 	"io"
 	"io/fs"
 	"os"
@@ -12,27 +11,9 @@ import (
 	"github.com/spf13/afero"
 )
 
-// readerAtCloser combines io.ReaderAt and a Close method.
-// This is necessary because importer.UsenetReaderAt has a Close method that returns an error,
-// so it doesn't satisfy io.Closer directly.
-type readerAtCloser interface {
-	io.ReaderAt
-	Close() error
-}
-
-// fileReaderCloser combines an io.Reader (like *io.SectionReader) with a Close function.
-type fileReaderCloser struct {
-	io.Reader
-	closeFunc func() error
-}
-
-func (frc *fileReaderCloser) Close() error {
-	return frc.closeFunc()
-}
-
 // StreamableArchiveFile implements afero.File for a streamable file inside a 7z archive.
 type StreamableArchiveFile struct {
-	archiveReader readerAtCloser
+	archiveReader io.ReaderAt
 	fileEntry     sevenzip.FileEntry
 	position      int64
 	reader        io.ReadCloser
@@ -40,7 +21,7 @@ type StreamableArchiveFile struct {
 }
 
 // NewStreamableArchiveFile creates a new virtual file for a streamable file inside a 7z archive.
-func NewStreamableArchiveFile(archiveReader readerAtCloser, fe sevenzip.FileEntry) (afero.File, error) {
+func NewStreamableArchiveFile(archiveReader io.ReaderAt, fe sevenzip.FileEntry) (afero.File, error) {
 	return &StreamableArchiveFile{
 		archiveReader: archiveReader,
 		fileEntry:     fe,
@@ -100,17 +81,11 @@ func (f *StreamableArchiveFile) Close() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Close the internal reader if it exists
 	if f.reader != nil {
-		f.reader.Close()
+		err := f.reader.Close()
 		f.reader = nil
+		return err
 	}
-
-	// Always close the underlying archive reader, which manages the usenet connections.
-	if f.archiveReader != nil {
-		return f.archiveReader.Close()
-	}
-
 	return nil
 }
 
@@ -128,23 +103,19 @@ func (f *StreamableArchiveFile) Stat() (fs.FileInfo, error) {
 }
 
 func (f *StreamableArchiveFile) ensureReader() error {
-	// sevenzip.Extract now returns a simple SectionReader, without a close method.
 	sectionReader, err := sevenzip.Extract(f.archiveReader, f.fileEntry)
 	if err != nil {
 		return err
 	}
 
 	if f.position > 0 {
-		// SectionReader implements io.Seeker
 		if _, err := sectionReader.Seek(f.position, io.SeekStart); err != nil {
 			return err
 		}
 	}
 
-	// The reader for this file handle should not close the underlying archiveReader,
-	// as other file handles might still be using it. The main Close method of
-	// StreamableArchiveFile is responsible for that.
-	// So we wrap the section reader with a NopCloser.
+	// The section reader from Extract does not need closing, as the underlying
+	// archiveReader is managed separately and does not need to be closed.
 	f.reader = io.NopCloser(sectionReader)
 
 	return nil
