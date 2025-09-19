@@ -8,9 +8,9 @@ import (
 	"sort"
 	"time"
 
-	"github.com/bodgit/sevenzip"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
+	"github.com/javi11/altmount/internal/sevenzip"
 )
 
 // SevenZipProcessor interface for analyzing 7z content from NZB data
@@ -65,7 +65,7 @@ func (p *sevenZipProcessor) CreateFileMetadataFrom7zContent(
 	}
 }
 
-// Analyze7zContentFromNzb analyzes a 7z archive using the UsenetReaderAt adapter
+// Analyze7zContentFromNzb analyzes a 7z archive using the new streamable sevenzip package.
 func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZipFiles []ParsedFile) ([]sevenZipContent, error) {
 	if p.poolManager == nil {
 		return nil, NewNonRetryableError("no pool manager available", nil)
@@ -82,34 +82,28 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 	// Use the UsenetReaderAt adapter
 	readerAt := NewUsenetReaderAt(sevenZipFiles, p.poolManager, 64, p.log)
 
-	// Create a new 7z reader
-	var (
-		szr *sevenzip.Reader
-		err error
-	)
-	if len(sevenZipFiles) > 0 && sevenZipFiles[0].Password != "" {
-		szr, err = sevenzip.NewReaderWithPassword(readerAt, readerAt.TotalSize, sevenZipFiles[0].Password)
-	} else {
-		szr, err = sevenzip.NewReader(readerAt, readerAt.TotalSize)
-	}
+	// Use the new streamable checker to get archive info
+	info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
 	if err != nil {
-		return nil, NewNonRetryableError(fmt.Sprintf("failed to create 7z reader: %v", err), err)
+		// The archive is not streamable (e.g., compressed), which we treat as an error
+		// for the purpose of this feature.
+		return nil, NewNonRetryableError(fmt.Sprintf("archive is not streamable or is corrupt: %v", err), err)
 	}
 
-	// Extract file information from the archive
+	// Convert the file entries to the importer's content struct
 	var contents []sevenZipContent
-	for _, file := range szr.File {
+	for _, file := range info.Files {
 		contents = append(contents, sevenZipContent{
 			InternalPath: file.Name,
 			Filename:     filepath.Base(file.Name),
-			Size:         int64(file.UncompressedSize),
+			Size:         int64(file.Size),
 			ModTime:      file.Modified,
-			CreateTime:   file.Created,
-			IsDirectory:  file.FileInfo().IsDir(),
+			CreateTime:   file.Modified, // 7z format doesn't always have create time, so we use modified.
+			IsDirectory:  file.Size == 0 && (len(file.Name) > 0 && file.Name[len(file.Name)-1] == filepath.Separator),
 		})
 	}
 
-	p.log.Info("Successfully analyzed 7z archive", "files_found", len(contents))
+	p.log.Info("Successfully analyzed streamable 7z archive", "files_found", len(contents))
 
 	return contents, nil
 }

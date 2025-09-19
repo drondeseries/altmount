@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,9 +17,11 @@ import (
 	"github.com/javi11/altmount/internal/database"
 	"github.com/javi11/altmount/internal/encryption"
 	"github.com/javi11/altmount/internal/encryption/rclone"
+	"github.com/javi11/altmount/internal/importer"
 	"github.com/javi11/altmount/internal/metadata"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
+	"github.com/javi11/altmount/internal/sevenzip"
 	"github.com/javi11/altmount/internal/usenet"
 	"github.com/javi11/altmount/internal/utils"
 	"github.com/spf13/afero"
@@ -131,13 +135,66 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 
 	// Check if this is a file inside a 7z archive
 	if len(fileMeta.SegmentData) == 0 && fileMeta.InternalPath != "" {
-		// This is a file inside a 7z archive.
-		// Create a new type of file handle for it.
-		sevenZipFile, err := NewSevenZipVirtualFile(ctx, name, fileMeta, mrf.poolManager, mrf.configGetter)
+		// This is a file inside a 7z archive. We need to check if it's streamable.
+		// 1. Reconstruct the UsenetReaderAt for the archive, similar to how the old SevenZipVirtualFile did.
+		// This is inefficient but necessary with the current architecture.
+		nzbFile, err := os.Open(fileMeta.SourceNzbPath)
+		if err != nil {
+			return false, nil, fmt.Errorf("failed to open nzb for 7z streaming: %w", err)
+		}
+		defer nzbFile.Close()
+
+		parser := importer.NewParser(mrf.poolManager)
+		parsedNzb, err := parser.ParseFile(nzbFile, fileMeta.SourceNzbPath)
+		if err != nil {
+			return false, nil, fmt.Errorf("failed to parse nzb for 7z streaming: %w", err)
+		}
+
+		var sevenZipFiles []importer.ParsedFile
+		for _, f := range parsedNzb.Files {
+			if f.IsSevenZipArchive {
+				sevenZipFiles = append(sevenZipFiles, f)
+			}
+		}
+
+		if len(sevenZipFiles) == 0 {
+			return false, nil, errors.New("no 7z files found in nzb for streaming")
+		}
+
+		// Sort files to handle multi-volume archives correctly
+		sort.Slice(sevenZipFiles, func(i, j int) bool {
+			return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
+		})
+
+		readerAt := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
+
+		// 2. Check if the archive is streamable using the new sevenzip package.
+		info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
+		if err != nil {
+			// If it's not streamable (e.g., compressed), we can fall back to the old method
+			// or simply return an error. For this fix, we will return an error.
+			return false, nil, fmt.Errorf("archive is not streamable: %w", err)
+		}
+
+		// 3. Find the specific file entry we want to stream.
+		var targetFileEntry *sevenzip.FileEntry
+		for _, fe := range info.Files {
+			if fe.Name == fileMeta.InternalPath {
+				targetFileEntry = &fe
+				break
+			}
+		}
+
+		if targetFileEntry == nil {
+			return false, nil, fmt.Errorf("file '%s' not found in streamable archive", fileMeta.InternalPath)
+		}
+
+		// 4. Create the new streamable file handle.
+		streamableFile, err := NewStreamableArchiveFile(readerAt, *targetFileEntry)
 		if err != nil {
 			return false, nil, err
 		}
-		return true, sevenZipFile, nil
+		return true, streamableFile, nil
 	}
 
 	// Create a metadata-based virtual file handle
