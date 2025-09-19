@@ -6,7 +6,6 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
-	"os"
 )
 
 var (
@@ -331,7 +330,6 @@ func parseFilesInfo(r io.Reader) ([]FileEntry, error) {
 	files := make([]FileEntry, numFiles)
 	var emptyStreamMask []bool
 	var emptyFileMask []bool
-	var antiMask []bool
 
 	for {
 		id, err := ReadByte(r)
@@ -397,10 +395,7 @@ func parseFilesInfo(r io.Reader) ([]FileEntry, error) {
 				return nil, err
 			}
 		case 0x10: // Anti
-			antiMask, err = readBoolVector(pr, int(numFiles))
-			if err != nil {
-				return nil, err
-			}
+			// we don't support anti-files
 		default:
 			// ignore other properties
 		}
@@ -438,7 +433,7 @@ func parseFilesInfo(r io.Reader) ([]FileEntry, error) {
 			switch id {
 			case 0x09: // Size
 				for i := uint64(0); i < numFiles; i++ {
-					if emptyStreamMask != nil && emptyStreamMask[i] {
+					if (emptyStreamMask != nil && emptyStreamMask[i]) || (emptyFileMask != nil && emptyFileMask[i]) {
 						continue
 					}
 					size, err := ReadNumber(pr)
@@ -467,11 +462,13 @@ func parseFilesInfo(r io.Reader) ([]FileEntry, error) {
 
 	sizeIndex := 0
 	for i := uint64(0); i < numFiles; i++ {
-		if emptyStreamMask != nil && emptyStreamMask[i] {
+		if (emptyStreamMask != nil && emptyStreamMask[i]) || (emptyFileMask != nil && emptyFileMask[i]) {
 			files[i].Size = 0
 		} else {
-			files[i].Size = unpackSizes[sizeIndex]
-			sizeIndex++
+			if sizeIndex < len(unpackSizes) {
+				files[i].Size = unpackSizes[sizeIndex]
+				sizeIndex++
+			}
 		}
 	}
 
