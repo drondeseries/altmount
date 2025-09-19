@@ -151,7 +151,6 @@ func parseHeader(data []byte) (*ArchiveInfo, error) {
 func parseMainStreamsInfo(br *bytes.Reader) (uint64, []uint64, error) {
 	var packPos uint64
 	var unpackSizes []uint64
-	var err error
 
 	for {
 		propID, err := br.ReadByte()
