@@ -164,28 +164,19 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 
 		readerAt := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
 
-		info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
-		if err != nil {
-			return false, nil, fmt.Errorf("archive is not streamable: %w", err)
-		}
-
-		var targetFileEntry *sevenzip.FileEntry
-		for i := range info.Files {
-			if info.Files[i].Name == fileMeta.InternalPath {
-				targetFileEntry = &info.Files[i]
-				break
-			}
-		}
-
-		if targetFileEntry == nil {
-			return false, nil, fmt.Errorf("file '%s' not found in streamable archive", fileMeta.InternalPath)
-		}
-
-		streamableFile, err := NewStreamableArchiveFile(readerAt, *targetFileEntry)
+		// Use the new StreamMKV function
+		stream, _, err := sevenzip.StreamMKV(readerAt, readerAt.TotalSize)
 		if err != nil {
 			return false, nil, err
 		}
-		return true, streamableFile, nil
+
+		// Since StreamMKV returns an io.ReadCloser, we need to wrap it in an afero.File.
+		// We'll use a simple struct that implements the afero.File interface.
+		return true, &StreamFile{
+			reader: stream,
+			name:   name,
+			size:   fileMeta.FileSize,
+		}, nil
 	}
 
 	// Create a metadata-based virtual file handle
@@ -955,4 +946,72 @@ func (mrf *MetadataRemoteFile) isValidEmptyDirectory(normalizedPath string) bool
 
 	// Recursively check if parent could be a valid empty directory
 	return mrf.isValidEmptyDirectory(parentDir)
+}
+
+// StreamFile is a simple afero.File implementation that wraps an io.ReadCloser.
+type StreamFile struct {
+	reader io.ReadCloser
+	name   string
+	size   int64
+	mu     sync.Mutex
+}
+
+func (f *StreamFile) Close() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reader.Close()
+}
+
+func (f *StreamFile) Read(p []byte) (n int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reader.Read(p)
+}
+
+func (f *StreamFile) ReadAt(p []byte, off int64) (n int, err error) {
+	return 0, os.ErrPermission
+}
+
+func (f *StreamFile) Seek(offset int64, whence int) (int64, error) {
+	return 0, os.ErrPermission
+}
+
+func (f *StreamFile) Write(p []byte) (n int, err error) {
+	return 0, os.ErrPermission
+}
+
+func (f *StreamFile) WriteAt(p []byte, off int64) (n int, err error) {
+	return 0, os.ErrPermission
+}
+
+func (f *StreamFile) Name() string {
+	return f.name
+}
+
+func (f *StreamFile) Readdir(count int) ([]fs.FileInfo, error) {
+	return nil, os.ErrPermission
+}
+
+func (f *StreamFile) Readdirnames(n int) ([]string, error) {
+	return nil, os.ErrPermission
+}
+
+func (f *StreamFile) Stat() (fs.FileInfo, error) {
+	return &MetadataFileInfo{
+		name:  f.name,
+		size:  f.size,
+		isDir: false,
+	}, nil
+}
+
+func (f *StreamFile) Sync() error {
+	return nil
+}
+
+func (f *StreamFile) Truncate(size int64) error {
+	return os.ErrPermission
+}
+
+func (f *StreamFile) WriteString(s string) (n int, err error) {
+	return 0, os.ErrPermission
 }
