@@ -1,12 +1,10 @@
 package nzbfilesystem
 
 import (
-	"strings"
-)
-
 	"io"
 	"io/fs"
 	"os"
+	"strings"
 	"sync"
 	"time"
 )
