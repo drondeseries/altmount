@@ -14,6 +14,21 @@ A WebDAV server backed by NZB/Usenet that provides seamless access to Usenet con
 
 Complete setup guides, configuration options, API reference, and troubleshooting information.
 
+## Features
+
+- **Virtual Filesystem:** Mount your Usenet provider as a local directory.
+- **On-the-Fly Streaming:** Stream media files (e.g., MKV, MP4) directly from Usenet.
+- **RAR & 7z Support:** Automatically handles RAR and uncompressed 7z archives, presenting their contents as regular files.
+- **Rclone Encryption:** Supports reading from rclone-encrypted remotes.
+- **Metadata Caching:** Caches file and directory metadata for fast browsing.
+- **Health Checks:** Monitors provider health and tracks corrupted files.
+
+### 7z Archive Support
+
+- Only uncompressed (Copy) 7z archives are supported for streaming.
+- Use `Stream7zMKV(filePath)` for streaming MKVs directly from a 7z archive.
+- Use `Stream7zFile(filePath, ".ext")` for streaming other file types.
+
 ## Quick Start
 
 ### Docker (Recommended)
