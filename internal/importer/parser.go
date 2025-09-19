@@ -193,13 +193,10 @@ func (p *Parser) parseFile(file nzbparser.NzbFile, meta map[string]string, allFi
 		if err != nil {
 			// Log the error but continue with original segment sizes
 			// This ensures processing continues even if yEnc header fetching fails
-			p.log.Warn("Failed to normalize segment sizes with yEnc headers",
+			p.log.Warn("Failed to normalize segment sizes with yEnc headers, continuing with original sizes",
 				"error", err,
 				"segments", len(file.Segments))
-
-			if errors.Is(err, nntppool.ErrArticleNotFoundInProviders) {
-				return nil, NewNonRetryableError("failed to fetch yEnc headers: missing articles in all providers", err)
-			}
+			// Do not return an error here, just log it and proceed
 		}
 	}
 
