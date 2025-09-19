@@ -93,7 +93,15 @@ func parseHeader(data []byte) (*ArchiveInfo, error) {
 	br := bytes.NewReader(data)
 
 	propID, err := br.ReadByte()
-	if err != nil || propID != kHeader {
+	if err != nil {
+		return nil, errInvalidHeaderFormat
+	}
+
+	if propID == kEncodedHeader {
+		return nil, errCompressedHeader
+	}
+
+	if propID != kHeader {
 		return nil, errInvalidHeaderFormat
 	}
 
@@ -125,8 +133,6 @@ func parseHeader(data []byte) (*ArchiveInfo, error) {
 			if err := skipProperty(br); err != nil {
 				return nil, fmt.Errorf("failed to skip property 0x%x: %w", propID, err)
 			}
-		case kEncodedHeader:
-			return nil, errCompressedHeader
 		default:
 			return nil, fmt.Errorf("unexpected property ID in header: 0x%x", propID)
 		}
