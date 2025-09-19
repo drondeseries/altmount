@@ -20,16 +20,12 @@ type ArchiveInfo struct {
 
 // IsStreamable checks if a 7z archive is streamable (uncompressed).
 // If it is, it returns information about the files within the archive.
-// It takes an io.ReaderAt to allow reading from different parts of the archive without reading it sequentially.
 func IsStreamable(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
-	// Implementation will be in parse.go
 	return parse(r, size)
 }
 
-// Extract opens the archive from the given io.ReaderAt and returns an io.ReadCloser
-// for the data of the given FileEntry. The reader will be a section reader,
-// which is efficient for direct streaming.
-func Extract(r io.ReaderAt, fe FileEntry) (io.ReadCloser, error) {
-	// Implementation will be in extract.go
+// Extract returns an *io.SectionReader for the data of the given FileEntry.
+// It is the caller's responsibility to manage the lifecycle of the underlying ReaderAt.
+func Extract(r io.ReaderAt, fe FileEntry) (*io.SectionReader, error) {
 	return extract(r, fe)
 }

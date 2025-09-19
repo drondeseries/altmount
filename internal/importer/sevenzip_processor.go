@@ -74,23 +74,17 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 		return nil, NewNonRetryableError("no 7z files provided", nil)
 	}
 
-	// Sort files to handle multi-volume archives correctly
 	sort.Slice(sevenZipFiles, func(i, j int) bool {
 		return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
 	})
 
-	// Use the UsenetReaderAt adapter
 	readerAt := NewUsenetReaderAt(sevenZipFiles, p.poolManager, 64, p.log)
 
-	// Use the new streamable checker to get archive info
 	info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
 	if err != nil {
-		// The archive is not streamable (e.g., compressed), which we treat as an error
-		// for the purpose of this feature.
 		return nil, NewNonRetryableError(fmt.Sprintf("archive is not streamable or is corrupt: %v", err), err)
 	}
 
-	// Convert the file entries to the importer's content struct
 	var contents []sevenZipContent
 	for _, file := range info.Files {
 		contents = append(contents, sevenZipContent{
@@ -98,7 +92,7 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 			Filename:     filepath.Base(file.Name),
 			Size:         int64(file.Size),
 			ModTime:      file.Modified,
-			CreateTime:   file.Modified, // 7z format doesn't always have create time, so we use modified.
+			CreateTime:   file.Modified,
 			IsDirectory:  file.Size == 0 && (len(file.Name) > 0 && file.Name[len(file.Name)-1] == filepath.Separator),
 		})
 	}

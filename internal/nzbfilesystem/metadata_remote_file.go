@@ -135,9 +135,6 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 
 	// Check if this is a file inside a 7z archive
 	if len(fileMeta.SegmentData) == 0 && fileMeta.InternalPath != "" {
-		// This is a file inside a 7z archive. We need to check if it's streamable.
-		// 1. Reconstruct the UsenetReaderAt for the archive, similar to how the old SevenZipVirtualFile did.
-		// This is inefficient but necessary with the current architecture.
 		nzbFile, err := os.Open(fileMeta.SourceNzbPath)
 		if err != nil {
 			return false, nil, fmt.Errorf("failed to open nzb for 7z streaming: %w", err)
@@ -161,26 +158,21 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 			return false, nil, errors.New("no 7z files found in nzb for streaming")
 		}
 
-		// Sort files to handle multi-volume archives correctly
 		sort.Slice(sevenZipFiles, func(i, j int) bool {
 			return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
 		})
 
 		readerAt := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
 
-		// 2. Check if the archive is streamable using the new sevenzip package.
 		info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
 		if err != nil {
-			// If it's not streamable (e.g., compressed), we can fall back to the old method
-			// or simply return an error. For this fix, we will return an error.
 			return false, nil, fmt.Errorf("archive is not streamable: %w", err)
 		}
 
-		// 3. Find the specific file entry we want to stream.
 		var targetFileEntry *sevenzip.FileEntry
-		for _, fe := range info.Files {
-			if fe.Name == fileMeta.InternalPath {
-				targetFileEntry = &fe
+		for i := range info.Files {
+			if info.Files[i].Name == fileMeta.InternalPath {
+				targetFileEntry = &info.Files[i]
 				break
 			}
 		}
@@ -189,7 +181,6 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 			return false, nil, fmt.Errorf("file '%s' not found in streamable archive", fileMeta.InternalPath)
 		}
 
-		// 4. Create the new streamable file handle.
 		streamableFile, err := NewStreamableArchiveFile(readerAt, *targetFileEntry)
 		if err != nil {
 			return false, nil, err
