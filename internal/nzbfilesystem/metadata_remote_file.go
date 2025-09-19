@@ -18,9 +18,11 @@ import (
 	"github.com/javi11/altmount/internal/metadata"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
+	"github.com/javi11/altmount/internal/sevenzip"
 	"github.com/javi11/altmount/internal/usenet"
 	"github.com/javi11/altmount/internal/utils"
 	"github.com/spf13/afero"
+	"strings"
 )
 
 // MetadataRemoteFile implements the RemoteFile interface for metadata-backed virtual files
@@ -132,12 +134,44 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 	// Check if this is a file inside a 7z archive
 	if len(fileMeta.SegmentData) == 0 && fileMeta.InternalPath != "" {
 		// This is a file inside a 7z archive.
-		// Create a new type of file handle for it.
-		sevenZipFile, err := NewSevenZipVirtualFile(ctx, name, fileMeta, mrf.poolManager, mrf.configGetter)
+		info, err := sevenzip.IsStreamable(fileMeta.SourceNzbPath)
+		if err != nil {
+			// Not streamable, fallback to old implementation for now
+			// In the future we might want to return an error here
+			sevenZipFile, err := NewSevenZipVirtualFile(ctx, name, fileMeta, mrf.poolManager, mrf.configGetter)
+			if err != nil {
+				return false, nil, err
+			}
+			return true, sevenZipFile, nil
+		}
+
+		// Locate MKV file
+		var mkvFile sevenzip.FileEntry
+		for _, fe := range info.Files {
+			if strings.HasSuffix(fe.Name, ".mkv") {
+				mkvFile = fe
+				break
+			}
+		}
+
+		// Stream using correct offset
+		readCloser, err := sevenzip.ExtractFileAtOffset(fileMeta.SourceNzbPath, mkvFile)
 		if err != nil {
 			return false, nil, err
 		}
-		return true, sevenZipFile, nil
+		readSeeker, ok := readCloser.(io.ReadSeeker)
+		if !ok {
+			return false, nil, errors.New("reader is not a ReadSeeker")
+		}
+
+		return true, &StreamedVirtualFile{
+			name:       name,
+			size:       int64(mkvFile.Size),
+			modTime:    time.Unix(fileMeta.ModifiedAt, 0),
+			isDir:      false,
+			reader:     readCloser,
+			readSeeker: readSeeker,
+		}, nil
 	}
 
 	// Create a metadata-based virtual file handle
