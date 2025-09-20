@@ -8,8 +8,9 @@ import (
 	"log/slog"
 	"sync"
 
-	"github.com/javi11/altmount/internal/pool"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
+	"github.com/javi11/altmount/internal/pool"
+	"github.com/javi11/nntppool"
 )
 
 const (
@@ -17,12 +18,26 @@ const (
 	defaultMaxCacheSize = 64 * 1024 * 1024 // 64 MB
 )
 
+// nntpDownloader is an interface that abstracts the NNTP connection pool.
+// This is used to make UsenetReaderAt more testable.
+type nntpDownloader interface {
+	BodyReader(ctx context.Context, msgId string, groups []string) (nntppool.UsenetReader, error)
+}
+
+// nntpPoolWrapper is an adapter that makes nntppool.UsenetConnectionPool implement nntpDownloader.
+type nntpPoolWrapper struct {
+	pool nntppool.UsenetConnectionPool
+}
+
+func (w *nntpPoolWrapper) BodyReader(ctx context.Context, msgId string, groups []string) (nntppool.UsenetReader, error) {
+	return w.pool.BodyReader(ctx, msgId, groups)
+}
+
 // UsenetReaderAt is an io.ReaderAt that reads from a Usenet connection pool.
-// It is designed to provide a seekable interface over a non-seekable stream of NZB segments.
 type UsenetReaderAt struct {
 	files        []ParsedFile
 	TotalSize    int64
-	poolManager  pool.Manager
+	downloader   nntpDownloader
 	segmentCache sync.Map // Cache segment ID -> []byte
 	cacheSize    int64
 	maxCacheSize int64
@@ -31,7 +46,7 @@ type UsenetReaderAt struct {
 }
 
 // NewUsenetReaderAt creates a new UsenetReaderAt.
-func NewUsenetReaderAt(files []ParsedFile, poolManager pool.Manager, maxCacheSizeMB int, log *slog.Logger) *UsenetReaderAt {
+func NewUsenetReaderAt(files []ParsedFile, poolManager pool.Manager, maxCacheSizeMB int, log *slog.Logger) (*UsenetReaderAt, error) {
 	var totalSize int64
 	for _, file := range files {
 		for _, segment := range file.Segments {
@@ -44,13 +59,18 @@ func NewUsenetReaderAt(files []ParsedFile, poolManager pool.Manager, maxCacheSiz
 		maxCacheBytes = defaultMaxCacheSize
 	}
 
+	pool, err := poolManager.GetPool()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get NNTP pool: %w", err)
+	}
+
 	return &UsenetReaderAt{
 		files:        files,
 		TotalSize:    totalSize,
-		poolManager:  poolManager,
+		downloader:   &nntpPoolWrapper{pool: pool},
 		log:          log,
 		maxCacheSize: maxCacheBytes,
-	}
+	}, nil
 }
 
 // ReadAt reads len(p) bytes into p starting at offset off in the virtual file.
@@ -106,9 +126,9 @@ func (r *UsenetReaderAt) ReadAt(p []byte, off int64) (n int, err error) {
 	}
 
 	// Should not be reached if logic is correct, but as a safeguard:
-    if totalBytesRead > 0 {
-        return totalBytesRead, io.EOF
-    }
+	if totalBytesRead > 0 {
+		return totalBytesRead, io.EOF
+	}
 
 	return totalBytesRead, io.EOF
 }
@@ -118,12 +138,7 @@ func (r *UsenetReaderAt) getSegmentData(file ParsedFile, segment *metapb.Segment
 		return data.([]byte), nil
 	}
 
-	cp, err := r.poolManager.GetPool()
-	if err != nil {
-		return nil, err
-	}
-
-	reader, err := cp.BodyReader(context.Background(), segment.Id, file.Groups)
+	reader, err := r.downloader.BodyReader(context.Background(), segment.Id, file.Groups)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get body reader for segment %s: %w", segment.Id, err)
 	}

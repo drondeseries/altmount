@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"time"
 
@@ -65,7 +67,10 @@ func (p *sevenZipProcessor) CreateFileMetadataFrom7zContent(
 	}
 }
 
+var multiPart7zPattern = regexp.MustCompile(`(?i)\.7z\.\d+$`)
+
 // Analyze7zContentFromNzb analyzes a 7z archive using the new streamable sevenzip package.
+// It now handles both single-file and multi-part 7z archives.
 func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZipFiles []ParsedFile) ([]sevenZipContent, error) {
 	if p.poolManager == nil {
 		return nil, NewNonRetryableError("no pool manager available", nil)
@@ -78,9 +83,56 @@ func (p *sevenZipProcessor) Analyze7zContentFromNzb(ctx context.Context, sevenZi
 		return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
 	})
 
-	readerAt := NewUsenetReaderAt(sevenZipFiles, p.poolManager, 64, p.log)
+	// Check if we are dealing with a multi-part archive
+	isMultiPart := len(sevenZipFiles) > 1 || (len(sevenZipFiles) == 1 && multiPart7zPattern.MatchString(sevenZipFiles[0].Filename))
 
-	info, err := sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
+	var info *sevenzip.ArchiveInfo
+	var err error
+
+	if isMultiPart {
+		p.log.Info("Multi-part 7z archive detected, joining parts first.", "parts", len(sevenZipFiles))
+		// 1. Create a temporary file for the joined archive
+		tmpFile, err := os.CreateTemp("", "altmount-joined-7z-*.7z")
+		if err != nil {
+			return nil, NewNonRetryableError("failed to create temporary file for joined archive", err)
+		}
+		defer func() {
+			if err := os.Remove(tmpFile.Name()); err != nil {
+				p.log.Warn("Failed to remove temporary file", "path", tmpFile.Name(), "error", err)
+			}
+		}()
+		tmpFile.Close() // Close immediately, JoinStreamedArchiveParts will reopen it
+
+		// 2. Call the new JoinStreamedArchiveParts
+		err = JoinStreamedArchiveParts(ctx, sevenZipFiles, tmpFile.Name(), p.poolManager, p.log)
+		if err != nil {
+			return nil, NewNonRetryableError("failed to join multi-part 7z archive", err)
+		}
+
+		// 3. Open the joined file and pass it to sevenzip.IsStreamable
+		f, err := os.Open(tmpFile.Name())
+		if err != nil {
+			return nil, NewNonRetryableError("failed to open joined 7z archive", err)
+		}
+		defer f.Close()
+
+		fi, err := f.Stat()
+		if err != nil {
+			return nil, NewNonRetryableError("failed to stat joined 7z archive", err)
+		}
+
+		info, err = sevenzip.IsStreamable(f, fi.Size())
+
+	} else {
+		p.log.Info("Single-file 7z archive detected, streaming directly.")
+		// Original logic for single-file archives
+		readerAt, err := NewUsenetReaderAt(sevenZipFiles, p.poolManager, 64, p.log)
+		if err != nil {
+			return nil, NewNonRetryableError("failed to create usenet reader", err)
+		}
+		info, err = sevenzip.IsStreamable(readerAt, readerAt.TotalSize)
+	}
+
 	if err != nil {
 		return nil, NewNonRetryableError(fmt.Sprintf("archive is not streamable or is corrupt: %v", err), err)
 	}
