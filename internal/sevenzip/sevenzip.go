@@ -52,16 +52,13 @@ type SubStreamsInfo struct {
 // IsStreamable checks if a 7z archive is streamable (uncompressed).
 // If it is, it returns information about the files within the archive.
 func IsStreamable(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
-	return parse(r, size)
+	p := NewParser(r, size)
+	return p.Parse()
 }
 
 // Extract returns an io.ReadSeekCloser for the data of the given FileEntry.
 func Extract(r io.ReaderAt, fe FileEntry) (io.ReadSeekCloser, error) {
-	sr, err := extract(r, fe)
-	if err != nil {
-		return nil, err
-	}
-	return &sectionReaderCloser{sr}, nil
+	return &sectionReaderCloser{io.NewSectionReader(r, int64(fe.Offset), int64(fe.Size))}, nil
 }
 
 // sectionReaderCloser wraps io.SectionReader to provide a Close method.

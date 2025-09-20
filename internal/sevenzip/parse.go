@@ -58,61 +58,81 @@ const (
 	kEncodedHeader         = 0x17
 )
 
+// Parser holds the state for parsing a 7z archive.
+type Parser struct {
+	r           io.ReaderAt
+	size        int64
+	startHeader *startHeader
+	streamsInfo *StreamsInfo
+	filesInfo   *FilesInfo
+}
+
+// NewParser creates a new 7z parser.
+func NewParser(r io.ReaderAt, size int64) *Parser {
+	return &Parser{r: r, size: size}
+}
+
 type startHeader struct {
 	NextHeaderOffset uint64
 	NextHeaderSize   uint64
 	NextHeaderCRC    uint32
 }
 
-func parse(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
+// Parse is the main entry point for parsing the archive.
+func (p *Parser) Parse() (*ArchiveInfo, error) {
+	if err := p.parseStartHeader(); err != nil {
+		return nil, err
+	}
+	return p.parseHeaders()
+}
+
+func (p *Parser) parseStartHeader() error {
 	buf := make([]byte, signatureHeaderSize)
-	if _, err := r.ReadAt(buf, 0); err != nil {
-		return nil, fmt.Errorf("failed to read signature header: %w", err)
+	if _, err := p.r.ReadAt(buf, 0); err != nil {
+		return fmt.Errorf("failed to read signature header: %w", err)
 	}
 
 	if !bytes.Equal(buf[0:6], signature) {
-		return nil, errInvalidSignature
+		return errInvalidSignature
 	}
 
 	if buf[6] != 0 || buf[7] != 4 {
-		return nil, errUnsupportedVersion
+		return errUnsupportedVersion
 	}
 
-	var sh startHeader
-	sh.NextHeaderOffset = binary.LittleEndian.Uint64(buf[12:20])
-	sh.NextHeaderSize = binary.LittleEndian.Uint64(buf[20:28])
-	sh.NextHeaderCRC = binary.LittleEndian.Uint32(buf[8:12])
-
-	headerOffset := int64(signatureHeaderSize) + int64(sh.NextHeaderOffset)
-	headerData := make([]byte, sh.NextHeaderSize)
-	if _, err := r.ReadAt(headerData, headerOffset); err != nil {
-		return nil, fmt.Errorf("failed to read header data: %w", err)
+	p.startHeader = &startHeader{
+		NextHeaderOffset: binary.LittleEndian.Uint64(buf[12:20]),
+		NextHeaderSize:   binary.LittleEndian.Uint64(buf[20:28]),
+		NextHeaderCRC:    binary.LittleEndian.Uint32(buf[8:12]),
 	}
+	// TODO: verify startHeader.NextHeaderCRC
 
-	// TODO: verify headerData CRC
-
-	return parseHeader(r, headerData, headerOffset)
+	return nil
 }
 
-func parseHeader(r io.ReaderAt, data []byte, baseOffset int64) (*ArchiveInfo, error) {
-	br := bytes.NewReader(data)
-	propID, err := br.ReadByte()
+func (p *Parser) parseHeaders() (*ArchiveInfo, error) {
+	headerOffset := int64(signatureHeaderSize) + int64(p.startHeader.NextHeaderOffset)
+	headerReader := io.NewSectionReader(p.r, headerOffset, int64(p.startHeader.NextHeaderSize))
+
+	// The first byte of the header data tells us if it's a decoded header or an encoded one.
+	propID, err := readByte(headerReader)
 	if err != nil {
-		return nil, errInvalidHeaderFormat
+		return nil, fmt.Errorf("failed to read header property ID: %w", err)
 	}
 
 	switch propID {
 	case kHeader:
-		return parseDecodedHeader(br, baseOffset)
+		return p.parseDecodedHeader(headerReader, headerOffset)
 	case kEncodedHeader:
-		return parseEncodedHeader(r, br, baseOffset)
+		return p.parseEncodedHeader(headerReader, headerOffset)
 	default:
-		return nil, errInvalidHeaderFormat
+		return nil, fmt.Errorf("invalid header type: 0x%x", propID)
 	}
 }
 
-func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error) {
-	streamsInfo, err := parseStreamsInfo(br)
+func (p *Parser) parseEncodedHeader(encodedHeaderReader io.Reader, baseOffset int64) (*ArchiveInfo, error) {
+	// The encodedHeaderReader starts *after* the kEncodedHeader property ID.
+	streamsInfo, err := parseStreamsInfo(encodedHeaderReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse streams info for encoded header: %w", err)
 	}
@@ -129,9 +149,11 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 		return nil, fmt.Errorf("unsupported codec for header decompression: %x", folder.Coders[0].CodecID)
 	}
 
-	packStreamOffset := int64(streamsInfo.PackInfo.PackPos)
+	// PackPos is relative to the start of the archive's data section.
+	// The data section starts after the 32-byte signature header.
+	packStreamOffset := int64(signatureHeaderSize) + int64(streamsInfo.PackInfo.PackPos)
 	packSize := int64(streamsInfo.PackInfo.PackSizes[0])
-	compressedStreamReader := io.NewSectionReader(r, packStreamOffset, packSize)
+	compressedStreamReader := io.NewSectionReader(p.r, packStreamOffset, packSize)
 
 	coder := folder.Coders[0]
 	if len(coder.Properties) < 1 {
@@ -166,15 +188,20 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 		return nil, fmt.Errorf("failed to decompress header: %w", err)
 	}
 
-	return parseHeader(r, decompressedHeader, baseOffset)
+	// Now we have the decompressed header, we can parse it as a standard header block.
+	// The offsets inside this block are relative to the main archive's data section.
+	decompressedHeaderReader := bytes.NewReader(decompressedHeader)
+	propID, err := decompressedHeaderReader.ReadByte()
+	if err != nil || propID != kHeader {
+		return nil, fmt.Errorf("expected kHeader in decompressed block, got 0x%x", propID)
+	}
+
+	return p.parseDecodedHeader(decompressedHeaderReader, baseOffset)
 }
 
-func parseDecodedHeader(br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error) {
-	var streamsInfo *StreamsInfo
-	var filesInfo *FilesInfo
-
+func (p *Parser) parseDecodedHeader(br io.Reader, baseOffset int64) (*ArchiveInfo, error) {
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -184,12 +211,12 @@ func parseDecodedHeader(br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error
 
 		switch propID {
 		case kMainStreamsInfo:
-			streamsInfo, err = parseStreamsInfo(br)
+			p.streamsInfo, err = parseStreamsInfo(br)
 			if err != nil {
 				return nil, err
 			}
 		case kFilesInfo:
-			filesInfo, err = parseFilesInfo(br)
+			p.filesInfo, err = parseFilesInfo(br)
 			if err != nil {
 				return nil, err
 			}
@@ -202,18 +229,18 @@ func parseDecodedHeader(br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error
 		}
 	}
 
-	if filesInfo == nil {
+	if p.filesInfo == nil {
 		return nil, errFilesInfoMissing
 	}
-	if streamsInfo == nil || streamsInfo.PackInfo == nil {
+	if p.streamsInfo == nil || p.streamsInfo.PackInfo == nil {
 		return nil, errPackInfoMissing
 	}
-	if streamsInfo.UnpackInfo == nil {
+	if p.streamsInfo.UnpackInfo == nil {
 		return nil, errFolderInfoMissing
 	}
 
 	// For streamable archives, ensure no compression is used for file data
-	for _, folder := range streamsInfo.UnpackInfo.Folders {
+	for _, folder := range p.streamsInfo.UnpackInfo.Folders {
 		for _, coder := range folder.Coders {
 			if !bytes.Equal(coder.CodecID, []byte{0x00}) {
 				return nil, errUnsupportedCodec
@@ -222,13 +249,13 @@ func parseDecodedHeader(br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error
 	}
 
 	// Combine information to build final FileEntry list
-	files := make([]FileEntry, filesInfo.NumFiles)
-	unpackSizes := streamsInfo.SubStreamsInfo.UnpackSizes
+	files := make([]FileEntry, p.filesInfo.NumFiles)
+	unpackSizes := p.streamsInfo.SubStreamsInfo.UnpackSizes
 	sizeIndex := 0
-	for i := 0; i < int(filesInfo.NumFiles); i++ {
-		files[i].Name = filesInfo.Names[i]
-		files[i].Modified = filesInfo.MTime[i]
-		if filesInfo.EmptyStreamMask == nil || !filesInfo.EmptyStreamMask[i] {
+	for i := 0; i < int(p.filesInfo.NumFiles); i++ {
+		files[i].Name = p.filesInfo.Names[i]
+		files[i].Modified = p.filesInfo.MTime[i]
+		if p.filesInfo.EmptyStreamMask == nil || !p.filesInfo.EmptyStreamMask[i] {
 			if sizeIndex < len(unpackSizes) {
 				files[i].Size = unpackSizes[sizeIndex]
 				sizeIndex++
@@ -236,8 +263,8 @@ func parseDecodedHeader(br *bytes.Reader, baseOffset int64) (*ArchiveInfo, error
 		}
 	}
 
-	packPos := streamsInfo.PackInfo.PackPos
-	archiveBaseOffset := baseOffset + int64(packPos)
+	// PackPos is relative to the start of the data section (after the 32-byte signature header)
+	archiveBaseOffset := int64(signatureHeaderSize) + int64(p.streamsInfo.PackInfo.PackPos)
 	var currentOffset uint64
 	for i := range files {
 		files[i].Offset = uint64(archiveBaseOffset) + currentOffset
@@ -255,11 +282,11 @@ type StreamsInfo struct {
 	SubStreamsInfo *SubStreamsInfo
 }
 
-func parseStreamsInfo(br *bytes.Reader) (*StreamsInfo, error) {
+func parseStreamsInfo(br io.Reader) (*StreamsInfo, error) {
 	info := &StreamsInfo{}
 
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -291,7 +318,7 @@ func parseStreamsInfo(br *bytes.Reader) (*StreamsInfo, error) {
 	return info, nil
 }
 
-func parsePackInfo(br *bytes.Reader) (*PackInfo, error) {
+func parsePackInfo(br io.Reader) (*PackInfo, error) {
 	pi := &PackInfo{}
 	var err error
 
@@ -306,7 +333,7 @@ func parsePackInfo(br *bytes.Reader) (*PackInfo, error) {
 	}
 
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -336,8 +363,8 @@ func parsePackInfo(br *bytes.Reader) (*PackInfo, error) {
 	return pi, nil
 }
 
-func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
-	propID, err := br.ReadByte()
+func parseUnpackInfo(br io.Reader) (*UnpackInfo, error) {
+	propID, err := readByte(br)
 	if err != nil || propID != kFolder {
 		return nil, errFolderInfoMissing
 	}
@@ -348,7 +375,7 @@ func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
 	}
 	ui := &UnpackInfo{Folders: make([]Folder, numFolders)}
 
-	if b, err := br.ReadByte(); err != nil || b != 0 {
+	if b, err := readByte(br); err != nil || b != 0 {
 		return nil, errUnsupportedProperties
 	}
 
@@ -361,7 +388,7 @@ func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
 		folder.Coders = make([]CoderInfo, numCoders)
 		for j := uint64(0); j < numCoders; j++ {
 			coder := &folder.Coders[j]
-			flags, err := br.ReadByte()
+			flags, err := readByte(br)
 			if err != nil {
 				return nil, err
 			}
@@ -384,7 +411,7 @@ func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
 		}
 	}
 
-	propID, err = br.ReadByte()
+	propID, err = readByte(br)
 	if err != nil || propID != kCodersUnpackSize {
 		return nil, errSizesMissing
 	}
@@ -399,7 +426,7 @@ func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
 	}
 
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -414,12 +441,12 @@ func parseUnpackInfo(br *bytes.Reader) (*UnpackInfo, error) {
 	return ui, nil
 }
 
-func parseSubStreamsInfo(br *bytes.Reader) (*SubStreamsInfo, error) {
+func parseSubStreamsInfo(br io.Reader) (*SubStreamsInfo, error) {
 	ssi := &SubStreamsInfo{}
 	numUnpackStreams := uint64(1) // Default if not specified
 
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -459,7 +486,7 @@ type FilesInfo struct {
 	MTime           []time.Time
 }
 
-func parseFilesInfo(br *bytes.Reader) (*FilesInfo, error) {
+func parseFilesInfo(br io.Reader) (*FilesInfo, error) {
 	numFiles, err := readNumber(br)
 	if err != nil {
 		return nil, err
@@ -471,7 +498,7 @@ func parseFilesInfo(br *bytes.Reader) (*FilesInfo, error) {
 	}
 
 	for {
-		propID, err := br.ReadByte()
+		propID, err := readByte(br)
 		if err == io.EOF || propID == kEnd {
 			break
 		}
@@ -528,8 +555,8 @@ func parseFilesInfo(br *bytes.Reader) (*FilesInfo, error) {
 	return fi, nil
 }
 
-func parseNames(propReader *bytes.Reader, names []string) error {
-	if b, err := propReader.ReadByte(); err != nil || b != 0 {
+func parseNames(propReader io.Reader, names []string) error {
+	if b, err := readByte(propReader); err != nil || b != 0 {
 		return errUnsupportedProperties
 	}
 	fileIndex := 0
@@ -537,18 +564,23 @@ func parseNames(propReader *bytes.Reader, names []string) error {
 		var nameBuf bytes.Buffer
 		for {
 			char := make([]byte, 2)
-			if _, err := io.ReadFull(propReader, char); err != nil {
-				if err == io.EOF {
-					break
-				}
+			n, err := propReader.Read(char)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
 				return err
+			}
+			if n < 2 {
+				return io.ErrUnexpectedEOF
 			}
 			if char[0] == 0 && char[1] == 0 {
 				break
 			}
 			nameBuf.Write(char)
 		}
-		if nameBuf.Len() == 0 && propReader.Len() == 0 {
+		if nameBuf.Len() == 0 {
+			// This can happen at the end of the names block
 			break
 		}
 		utf16Chars := make([]uint16, nameBuf.Len()/2)
@@ -561,20 +593,31 @@ func parseNames(propReader *bytes.Reader, names []string) error {
 	return nil
 }
 
-func parseMTime(propReader *bytes.Reader, mtimes []time.Time) error {
-	defined, err := readBoolList(propReader, len(mtimes))
+func parseMTime(propReader io.Reader, mtimes []time.Time) error {
+	// The reader for booleans needs to be a *bytes.Reader to use Len()
+	// This is a bit of a hack, we should probably pass io.Reader and handle it
+	buf, err := io.ReadAll(propReader)
 	if err != nil {
 		return err
 	}
-	if b, err := propReader.ReadByte(); err != nil || b != 0 {
+	r := bytes.NewReader(buf)
+
+	defined, err := readBoolList(r, len(mtimes))
+	if err != nil {
+		return err
+	}
+	if b, err := r.ReadByte(); err != nil || b != 0 {
 		return errUnsupportedProperties
 	}
 	for i := 0; i < len(mtimes); i++ {
 		if defined[i] {
-			winFileTime, err := readNumber(propReader)
+			winFileTime, err := readNumber(r)
 			if err != nil {
 				return err
 			}
+			// Windows file time is the number of 100-nanosecond intervals since January 1, 1601.
+			// To convert to Unix time, we subtract the number of 100-nanosecond intervals
+			// between 1601 and 1970, then convert to seconds.
 			unixEpoch := int64((winFileTime / 10000000) - 11644473600)
 			mtimes[i] = time.Unix(unixEpoch, 0)
 		}
@@ -582,38 +625,37 @@ func parseMTime(propReader *bytes.Reader, mtimes []time.Time) error {
 	return nil
 }
 
-func readNumber(r io.ByteReader) (uint64, error) {
-	firstByte, err := r.ReadByte()
+func readNumber(br io.Reader) (uint64, error) {
+	firstByte, err := readByte(br)
 	if err != nil {
 		return 0, err
 	}
 
 	mask := byte(0x80)
-	value := uint64(0)
 	numBytes := 0
-
-	for i := 0; i < 8; i++ {
+	for numBytes < 8 {
 		if (firstByte & mask) == 0 {
-			value = uint64(firstByte & (mask - 1))
-			numBytes = i
 			break
 		}
 		mask >>= 1
+		numBytes++
 	}
 
+	value := uint64(firstByte & (mask - 1))
+
 	for i := 0; i < numBytes; i++ {
-		b, err := r.ReadByte()
+		b, err := readByte(br)
 		if err != nil {
 			return 0, err
 		}
-		value |= uint64(b) << (8 * (i + 1))
+		value = (value << 8) | uint64(b)
 	}
 
 	return value, nil
 }
 
-func readBoolList(r *bytes.Reader, numItems int) ([]bool, error) {
-	allDefined, err := r.ReadByte()
+func readBoolList(r io.Reader, numItems int) ([]bool, error) {
+	allDefined, err := readByte(r)
 	if err != nil {
 		return nil, err
 	}
@@ -629,7 +671,7 @@ func readBoolList(r *bytes.Reader, numItems int) ([]bool, error) {
 	var mask byte = 0
 	for i := 0; i < numItems; i++ {
 		if mask == 0 {
-			currentByte, err = r.ReadByte()
+			currentByte, err = readByte(r)
 			if err != nil {
 				return nil, err
 			}
@@ -643,11 +685,27 @@ func readBoolList(r *bytes.Reader, numItems int) ([]bool, error) {
 	return list, nil
 }
 
-func skipProperty(br *bytes.Reader) error {
+func skipProperty(br io.Reader) error {
 	size, err := readNumber(br)
 	if err != nil {
 		return err
 	}
-	_, err = br.Seek(int64(size), io.SeekCurrent)
+	if seeker, ok := br.(io.Seeker); ok {
+		_, err = seeker.Seek(int64(size), io.SeekCurrent)
+	} else {
+		_, err = io.CopyN(io.Discard, br, int64(size))
+	}
 	return err
+}
+
+func readByte(r io.Reader) (byte, error) {
+	if br, ok := r.(io.ByteReader); ok {
+		return br.ReadByte()
+	}
+	var b [1]byte
+	n, err := r.Read(b[:])
+	if n > 0 {
+		return b[0], nil
+	}
+	return 0, err
 }
