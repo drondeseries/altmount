@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/ulikunitz/xz/lzma"
+	"github.com/conneroisu/lzma-go"
 )
 
 const (
@@ -83,9 +83,9 @@ func parse(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
 	sh.NextHeaderSize = binary.LittleEndian.Uint64(buf[20:28])
 	sh.NextHeaderCRC = binary.LittleEndian.Uint32(buf[8:12])
 
-	headerOffset := int64(signatureHeaderSize)
+	headerOffset := int64(signatureHeaderSize) + int64(sh.NextHeaderOffset)
 	headerData := make([]byte, sh.NextHeaderSize)
-	if _, err := r.ReadAt(headerData, headerOffset+int64(sh.NextHeaderOffset)); err != nil {
+	if _, err := r.ReadAt(headerData, headerOffset); err != nil {
 		return nil, fmt.Errorf("failed to read header data: %w", err)
 	}
 
@@ -149,16 +149,17 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 		return nil, errors.New("not enough properties for lzma dict size")
 	}
 	copy(fakeHeader[1:5], coder.Properties[1:5])
-	// Uncompressed size (8 bytes, little-endian). Use 0xFF... to indicate unknown size.
-	binary.LittleEndian.PutUint64(fakeHeader[5:13], 0xFFFFFFFFFFFFFFFF)
+	// Uncompressed size (8 bytes, little-endian).
+	if len(folder.UnpackSizes) == 0 {
+		return nil, errors.New("missing unpack size for header")
+	}
+	binary.LittleEndian.PutUint64(fakeHeader[5:13], folder.UnpackSizes[0])
 
 	// Create a multireader that reads the fake header first, then the real data.
 	multiReader := io.MultiReader(bytes.NewReader(fakeHeader), compressedStreamReader)
 
-	lzmaReader, err := lzma.NewReader(multiReader)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create lzma reader: %w", err)
-	}
+	lzmaReader := lzma.NewReader(multiReader)
+	defer lzmaReader.Close()
 
 	decompressedHeader, err := io.ReadAll(lzmaReader)
 	if err != nil {
