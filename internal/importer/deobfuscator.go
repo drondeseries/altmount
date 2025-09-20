@@ -158,12 +158,16 @@ func (d *Deobfuscator) extractFilenameFromPar2(par2File nzbparser.NzbFile, targe
 
 	// Create a UsenetReaderAt that spans all segments of the PAR2 file
 	// We wrap the segments in a single ParsedFile for the reader
-	readerAt := NewUsenetReaderAt([]ParsedFile{
+	readerAt, err := NewUsenetReaderAt([]ParsedFile{
 		{
 			Segments: parsedSegments,
 			Groups:   par2File.Groups,
 		},
 	}, d.poolManager, 64, d.log)
+	if err != nil {
+		d.log.Warn("Failed to create usenet reader for PAR2 analysis", "error", err)
+		return ""
+	}
 
 	// Create a reader from the ReaderAt
 	r := io.NewSectionReader(readerAt, 0, readerAt.TotalSize)

@@ -162,7 +162,10 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 			return sevenZipFiles[i].Filename < sevenZipFiles[j].Filename
 		})
 
-		readerAt := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
+		readerAt, err := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
+		if err != nil {
+			return false, nil, fmt.Errorf("failed to create usenet reader for 7z streaming: %w", err)
+		}
 
 		// Use the new StreamFileByExtension function
 		ext := filepath.Ext(fileMeta.InternalPath)

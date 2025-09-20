@@ -21,7 +21,7 @@ const (
 // nntpDownloader is an interface that abstracts the NNTP connection pool.
 // This is used to make UsenetReaderAt more testable.
 type nntpDownloader interface {
-	BodyReader(ctx context.Context, msgId string, groups []string) (nntppool.UsenetReader, error)
+	BodyReader(ctx context.Context, msgId string, groups []string) (io.ReadCloser, error)
 }
 
 // nntpPoolWrapper is an adapter that makes nntppool.UsenetConnectionPool implement nntpDownloader.
@@ -29,7 +29,10 @@ type nntpPoolWrapper struct {
 	pool nntppool.UsenetConnectionPool
 }
 
-func (w *nntpPoolWrapper) BodyReader(ctx context.Context, msgId string, groups []string) (nntppool.UsenetReader, error) {
+func (w *nntpPoolWrapper) BodyReader(ctx context.Context, msgId string, groups []string) (io.ReadCloser, error) {
+	// The real BodyReader returns (nntpcli.UsenetReader, error).
+	// nntpcli.UsenetReader implements io.ReadCloser.
+	// We can return it directly.
 	return w.pool.BodyReader(ctx, msgId, groups)
 }
 
@@ -143,10 +146,6 @@ func (r *UsenetReaderAt) getSegmentData(file ParsedFile, segment *metapb.Segment
 		return nil, fmt.Errorf("failed to get body reader for segment %s: %w", segment.Id, err)
 	}
 	defer reader.Close()
-
-	// Explicitly consume yEnc headers to ensure the reader is positioned at the start of the decoded body.
-	// This is crucial for formats like PAR2 that are sensitive to stream position.
-	_, _ = reader.GetYencHeaders()
 
 	var buf bytes.Buffer
 	if _, err := io.Copy(&buf, reader); err != nil {
