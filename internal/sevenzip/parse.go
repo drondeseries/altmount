@@ -149,11 +149,8 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 		return nil, errors.New("not enough properties for lzma dict size")
 	}
 	copy(fakeHeader[1:5], coder.Properties[1:5])
-	// Uncompressed size (8 bytes, little-endian)
-	if len(folder.UnpackSizes) == 0 {
-		return nil, errors.New("missing unpack size for header")
-	}
-	binary.LittleEndian.PutUint64(fakeHeader[5:13], folder.UnpackSizes[0])
+	// Uncompressed size (8 bytes, little-endian). Use 0xFF... to indicate unknown size.
+	binary.LittleEndian.PutUint64(fakeHeader[5:13], 0xFFFFFFFFFFFFFFFF)
 
 	// Create a multireader that reads the fake header first, then the real data.
 	multiReader := io.MultiReader(bytes.NewReader(fakeHeader), compressedStreamReader)
