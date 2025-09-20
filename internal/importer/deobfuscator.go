@@ -109,17 +109,22 @@ func (d *Deobfuscator) DeobfuscateFilename(filename string, allFiles []nzbparser
 
 // extractFromPar2Files attempts to extract the original filename from PAR2 files
 func (d *Deobfuscator) extractFromPar2Files(allFiles []nzbparser.NzbFile, targetFilename string) string {
-	// Look for PAR2 files in the same NZB
+	// Look for the main PAR2 file first
 	for _, file := range allFiles {
-		if strings.HasSuffix(strings.ToLower(file.Filename), ".par2") {
-			// Try to extract filename from PAR2 file using pool if available
+		lowerFilename := strings.ToLower(file.Filename)
+		if strings.HasSuffix(lowerFilename, ".par2") && !strings.Contains(lowerFilename, "vol") {
+			// This is likely the main PAR2 file, try to parse it
 			if d.poolManager != nil && d.poolManager.HasPool() {
 				if filename := d.extractFilenameFromPar2(file, targetFilename); filename != "" {
 					return filename
 				}
 			}
+		}
+	}
 
-			// Fallback: try to infer from PAR2 filename patterns
+	// If we didn't find a filename in the main PAR2 file, try to infer from any PAR2 file
+	for _, file := range allFiles {
+		if strings.HasSuffix(strings.ToLower(file.Filename), ".par2") {
 			if filename := d.inferFromPar2Filename(file.Filename, targetFilename); filename != "" {
 				return filename
 			}
