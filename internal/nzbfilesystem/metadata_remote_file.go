@@ -164,13 +164,13 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string, r util
 
 		readerAt := importer.NewUsenetReaderAt(sevenZipFiles, mrf.poolManager, 64, slog.Default())
 
-		// Use the new StreamMKV function
-		stream, _, err := sevenzip.StreamMKV(readerAt, readerAt.TotalSize)
+		// Use the new StreamFileByExtension function
+		ext := filepath.Ext(fileMeta.InternalPath)
+		stream, _, err := sevenzip.StreamFileByExtension(readerAt, readerAt.TotalSize, ext)
 		if err != nil {
-			return false, nil, fmt.Errorf("failed to stream MKV from 7z archive: %w", err)
+			return false, nil, fmt.Errorf("failed to stream file from 7z archive: %w", err)
 		}
 
-		// Since StreamMKV returns an io.ReadSeekCloser, we can use it directly
 		return true, &StreamFile{
 			reader: stream,
 			name:   name,
@@ -972,7 +972,13 @@ func (f *StreamFile) ReadAt(p []byte, off int64) (n int, err error) {
 }
 
 func (f *StreamFile) Seek(offset int64, whence int) (int64, error) {
-	return 0, os.ErrPermission
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	seeker, ok := f.reader.(io.Seeker)
+	if !ok {
+		return 0, os.ErrPermission
+	}
+	return seeker.Seek(offset, whence)
 }
 
 func (f *StreamFile) Write(p []byte) (n int, err error) {
