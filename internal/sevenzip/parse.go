@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode/utf16"
 
-	"github.com/ulikunitz/xz"
+	"github.com/ulikunitz/xz/lzma"
 )
 
 const (
@@ -133,7 +133,32 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 	packSize := int64(streamsInfo.PackInfo.PackSizes[0])
 	compressedStreamReader := io.NewSectionReader(r, packStreamOffset, packSize)
 
-	lzmaReader, err := xz.NewReader(compressedStreamReader)
+	coder := folder.Coders[0]
+	if len(coder.Properties) < 1 {
+		return nil, errors.New("not enough properties for lzma")
+	}
+
+	// Construct a fake LZMA header.
+	// See https://www.7-zip.org/7z.html for format.
+	// 1 byte properties, 4 bytes dict size, 8 bytes uncompressed size.
+	fakeHeader := make([]byte, 13)
+	// Properties byte
+	fakeHeader[0] = coder.Properties[0]
+	// Dictionary size (4 bytes, little-endian)
+	if len(coder.Properties) < 5 {
+		return nil, errors.New("not enough properties for lzma dict size")
+	}
+	copy(fakeHeader[1:5], coder.Properties[1:5])
+	// Uncompressed size (8 bytes, little-endian)
+	if len(folder.UnpackSizes) == 0 {
+		return nil, errors.New("missing unpack size for header")
+	}
+	binary.LittleEndian.PutUint64(fakeHeader[5:13], folder.UnpackSizes[0])
+
+	// Create a multireader that reads the fake header first, then the real data.
+	multiReader := io.MultiReader(bytes.NewReader(fakeHeader), compressedStreamReader)
+
+	lzmaReader, err := lzma.NewReader(multiReader)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create lzma reader: %w", err)
 	}
