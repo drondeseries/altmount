@@ -129,7 +129,7 @@ func parseEncodedHeader(r io.ReaderAt, br *bytes.Reader, baseOffset int64) (*Arc
 		return nil, fmt.Errorf("unsupported codec for header decompression: %x", folder.Coders[0].CodecID)
 	}
 
-	packStreamOffset := baseOffset + int64(streamsInfo.PackInfo.PackPos)
+	packStreamOffset := int64(streamsInfo.PackInfo.PackPos)
 	packSize := int64(streamsInfo.PackInfo.PackSizes[0])
 	compressedStreamReader := io.NewSectionReader(r, packStreamOffset, packSize)
 
