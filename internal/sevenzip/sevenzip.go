@@ -20,6 +20,35 @@ type ArchiveInfo struct {
 	Files []FileEntry
 }
 
+type PackInfo struct {
+	PackPos        uint64
+	NumPackStreams uint64
+	PackSizes      []uint64
+	PackCRCs       []uint32
+}
+
+type CoderInfo struct {
+	CodecID    []byte
+	Properties []byte
+}
+
+type Folder struct {
+	Coders      []CoderInfo
+	BindPairs   []struct{ InIndex, OutIndex uint64 }
+	PackStreams []uint64
+	UnpackSizes []uint64
+	UnpackCRC   uint32
+}
+
+type UnpackInfo struct {
+	Folders []Folder
+}
+
+type SubStreamsInfo struct {
+	UnpackSizes []uint64
+	CRCs        []uint32
+}
+
 // IsStreamable checks if a 7z archive is streamable (uncompressed).
 // If it is, it returns information about the files within the archive.
 func IsStreamable(r io.ReaderAt, size int64) (*ArchiveInfo, error) {
