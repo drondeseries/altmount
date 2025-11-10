@@ -32,12 +32,12 @@ var (
 
 // HasRar4Magic checks if the data contains RAR 4.x magic bytes
 func HasRar4Magic(data []byte) bool {
-	return len(data) >= len(Rar4Magic) && bytes.Equal(data[:len(Rar4Magic)], Rar4Magic)
+	return bytes.Contains(data, Rar4Magic)
 }
 
 // HasRar5Magic checks if the data contains RAR 5.x magic bytes
 func HasRar5Magic(data []byte) bool {
-	return len(data) >= len(Rar5Magic) && bytes.Equal(data[:len(Rar5Magic)], Rar5Magic)
+	return bytes.Contains(data, Rar5Magic)
 }
 
 // HasRarMagic checks if the data contains any RAR magic bytes (4.x or 5.x)
