@@ -709,13 +709,20 @@ func (s *Service) attemptSABnzbdFallback(ctx context.Context, item *database.Imp
 	// Convert priority to SABnzbd format
 	priority := s.convertPriorityToSABnzbd(item.Priority)
 
+	// Default to "*" category if not provided to let SABnzbd decide
+	category := item.Category
+	if category == nil || *category == "" {
+		star := "*"
+		category = &star
+	}
+
 	// Send to external SABnzbd
 	nzoID, err := s.sabnzbdClient.SendNZBFile(
 		ctx,
 		cfg.SABnzbd.FallbackHost,
 		cfg.SABnzbd.FallbackAPIKey,
 		item.NzbPath,
-		item.Category,
+		category,
 		&priority,
 	)
 	if err != nil {
