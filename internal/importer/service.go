@@ -350,6 +350,14 @@ func (s *Service) Stop(ctx context.Context) error {
 		s.log.WarnContext(ctx, "Error stopping queue manager", "error", err)
 	}
 
+	// Stop directory watcher
+	s.watcher.Stop()
+
+	// Cancel any running NZBDav import
+	if err := s.nzbdavImporter.Cancel(); err != nil {
+		s.log.WarnContext(ctx, "Error cancelling NZBDav import", "error", err)
+	}
+
 	// Cancel service context
 	s.cancel()
 
