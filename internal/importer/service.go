@@ -48,6 +48,7 @@ type (
 	ScanInfo        = scanner.ScanInfo
 	ImportJobStatus = scanner.ImportJobStatus
 	ImportInfo      = scanner.ImportInfo
+	WatcherStatus   = scanner.WatcherStatus
 )
 
 // Re-export scanner status constants for backward compatibility
@@ -422,6 +423,11 @@ func (s *Service) StartManualScan(scanPath string) error {
 // GetScanStatus returns the current scan status
 func (s *Service) GetScanStatus() ScanInfo {
 	return s.dirScanner.GetStatus()
+}
+
+// GetWatcherStatus returns the current directory watcher status
+func (s *Service) GetWatcherStatus() WatcherStatus {
+	return s.watcher.GetStatus()
 }
 
 // CancelScan cancels the current scan operation

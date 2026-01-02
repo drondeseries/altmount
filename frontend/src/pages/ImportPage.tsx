@@ -21,10 +21,11 @@ import {
 	useScanStatus,
 	useStartManualScan,
 	useUploadToQueue,
+	useWatcherStatus,
 } from "../hooks/useApi";
 import { ScanStatus } from "../types/api";
 
-type ImportTab = "nzbdav" | "directory" | "upload";
+type ImportTab = "nzbdav" | "directory" | "upload" | "watcher";
 
 export function ImportPage() {
 	const [activeTab, setActiveTab] = useState<ImportTab>("nzbdav");
@@ -61,6 +62,15 @@ export function ImportPage() {
 				<button
 					type="button"
 					role="tab"
+					className={`tab gap-2 ${activeTab === "watcher" ? "tab-active" : ""}`}
+					onClick={() => setActiveTab("watcher")}
+				>
+					<HardDrive className="h-4 w-4" />
+					Directory Watcher
+				</button>
+				<button
+					type="button"
+					role="tab"
 					className={`tab gap-2 ${activeTab === "upload" ? "tab-active" : ""}`}
 					onClick={() => setActiveTab("upload")}
 				>
@@ -72,6 +82,7 @@ export function ImportPage() {
 			{/* Tab Content */}
 			{activeTab === "nzbdav" && <NzbDavImportSection />}
 			{activeTab === "directory" && <DirectoryScanSection />}
+			{activeTab === "watcher" && <WatcherSection />}
 			{activeTab === "upload" && <UploadSection />}
 		</div>
 	);
@@ -707,6 +718,79 @@ function DirectoryScanSection() {
 				title="Select Directory to Scan"
 				allowDirectorySelection={true}
 			/>
+		</div>
+	);
+}
+
+function WatcherSection() {
+	const { data: status, isLoading } = useWatcherStatus(5000);
+
+	if (isLoading) {
+		return (
+			<div className="flex justify-center p-8">
+				<span className="loading loading-spinner loading-lg text-primary" />
+			</div>
+		);
+	}
+
+	if (!status) {
+		return <ErrorAlert error={new Error("Failed to load watcher status")} />;
+	}
+
+	return (
+		<div className="card max-w-2xl bg-base-100 shadow-lg">
+			<div className="card-body">
+				<div className="mb-4 flex items-center gap-2">
+					<HardDrive className="h-5 w-5 text-primary" />
+					<h2 className="card-title">Directory Watcher</h2>
+				</div>
+				<p className="mb-4 text-base-content/70 text-sm">
+					Automatically import NZB files dropped into a watched directory.
+				</p>
+
+				<div className="stats w-full bg-base-200 shadow">
+					<div className="stat">
+						<div className="stat-title">Status</div>
+						<div className="stat-value text-lg">
+							{status.enabled ? (
+								<div className="flex items-center gap-2 text-success">
+									<CheckCircle2 className="h-5 w-5" />
+									Active
+								</div>
+							) : (
+								<div className="flex items-center gap-2 text-base-content/50">
+									<AlertCircle className="h-5 w-5" />
+									Disabled
+								</div>
+							)}
+						</div>
+						<div className="stat-desc">
+							{status.running ? "Service is running" : "Service stopped"}
+						</div>
+					</div>
+
+					<div className="stat">
+						<div className="stat-title">Watch Path</div>
+						<div className="stat-value text-base font-mono break-all">
+							{status.path || "Not configured"}
+						</div>
+						<div className="stat-desc">Scan interval: {status.interval_seconds}s</div>
+					</div>
+				</div>
+
+				<div className="mt-4">
+					<div className="alert">
+						<AlertCircle className="h-4 w-4 text-info" />
+						<div>
+							<h3 className="font-bold text-sm">Configuration</h3>
+							<div className="text-xs text-base-content/70">
+								To configure the watcher, edit your <code>config.yaml</code> file or use the
+								Configuration page.
+							</div>
+						</div>
+					</div>
+				</div>
+			</div>
 		</div>
 	);
 }

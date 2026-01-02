@@ -23,6 +23,7 @@ import type {
 	UploadNZBLnkResponse,
 	User,
 	UserAdminUpdateRequest,
+	WatcherStatusResponse,
 } from "../types/api";
 import type {
 	ConfigResponse,
@@ -708,6 +709,10 @@ export class APIClient {
 
 	async getScanStatus() {
 		return this.request<ScanStatusResponse>("/import/scan/status");
+	}
+
+	async getWatcherStatus() {
+		return this.request<WatcherStatusResponse>("/import/watcher/status");
 	}
 
 	async cancelScan() {

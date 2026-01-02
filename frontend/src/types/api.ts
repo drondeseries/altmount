@@ -113,6 +113,13 @@ export interface ImportStatusResponse {
 	last_error?: string;
 }
 
+export interface WatcherStatusResponse {
+	enabled: boolean;
+	path: string;
+	interval_seconds: number;
+	running: boolean;
+}
+
 // Health types
 export const HealthStatus = {
 	PENDING: "pending",

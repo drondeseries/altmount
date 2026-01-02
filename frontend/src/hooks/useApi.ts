@@ -401,6 +401,15 @@ export const useCancelScan = () => {
 	});
 };
 
+// Directory Watcher hooks
+export const useWatcherStatus = (refetchInterval?: number) => {
+	return useQuery({
+		queryKey: ["import", "watcher", "status"],
+		queryFn: () => apiClient.getWatcherStatus(),
+		refetchInterval: refetchInterval,
+	});
+};
+
 // NZBDav Import hooks
 export const useNzbdavImportStatus = (refetchInterval?: number) => {
 	return useQuery({

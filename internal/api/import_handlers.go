@@ -76,6 +76,31 @@ func (s *Server) handleGetScanStatus(c *fiber.Ctx) error {
 	})
 }
 
+// handleGetWatcherStatus handles GET /import/watcher/status
+func (s *Server) handleGetWatcherStatus(c *fiber.Ctx) error {
+	// Check if importer service is available
+	if s.importerService == nil {
+		return c.Status(500).JSON(fiber.Map{
+			"success": false,
+			"message": "Importer service not available",
+		})
+	}
+
+	// Get current watcher status
+	status := s.importerService.GetWatcherStatus()
+	response := WatcherStatusResponse{
+		Enabled:         status.Enabled,
+		Path:            status.Path,
+		IntervalSeconds: status.IntervalSeconds,
+		Running:         status.Running,
+	}
+
+	return c.Status(200).JSON(fiber.Map{
+		"success": true,
+		"data":    response,
+	})
+}
+
 // handleCancelScan handles DELETE /import/scan
 func (s *Server) handleCancelScan(c *fiber.Ctx) error {
 	// Check if importer service is available
