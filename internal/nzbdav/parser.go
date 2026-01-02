@@ -148,7 +148,7 @@ func (p *Parser) Parse() (<-chan *ParsedNzb, <-chan error) {
 
 				// Send ParsedNzb to output channel
 				category := p.deriveCategory(releasePath)
-				relPath := p.deriveRelPath(releasePath, category)
+				relPath := p.deriveRelPath(releasePath, category, releaseName)
 				
 				select {
 				case out <- &ParsedNzb{
@@ -202,7 +202,7 @@ func (p *Parser) deriveCategory(path string) string {
 	return "other"
 }
 
-func (p *Parser) deriveRelPath(path, category string) string {
+func (p *Parser) deriveRelPath(path, category, releaseName string) string {
 	// 1. Clean path separators
 	path = strings.ReplaceAll(path, "\\", "/")
 	path = strings.Trim(path, "/")
@@ -210,8 +210,14 @@ func (p *Parser) deriveRelPath(path, category string) string {
 	// 2. Identify and remove category prefix
 	parts := strings.Split(path, "/")
 	
-	// Remove the last part (Release Name) as that is handled by the release name itself
+	// Remove the last part (usually "extracted" or the release name)
 	if len(parts) > 0 {
+		parts = parts[:len(parts)-1]
+	}
+
+	// If the current last part matches the release name, remove it too
+	// This happens when the path is /tv/Show/Release/extracted or /tv/Release/extracted
+	if len(parts) > 0 && strings.EqualFold(parts[len(parts)-1], releaseName) {
 		parts = parts[:len(parts)-1]
 	}
 
