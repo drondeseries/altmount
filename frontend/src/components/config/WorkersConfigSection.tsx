@@ -252,6 +252,53 @@ export function ImportConfigSection({
 					)}
 				</div>
 
+				<div className="divider" />
+
+				{/* Directory Watcher Configuration */}
+				<div className="space-y-4">
+					<div>
+						<h4 className="font-medium text-lg">Directory Watcher</h4>
+						<p className="text-base-content/70 text-sm">
+							Automatically monitor a directory for new NZB files and add them to the queue.
+						</p>
+					</div>
+
+					<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend">Watch Directory</legend>
+							<input
+								type="text"
+								className="input"
+								placeholder="/path/to/watch"
+								value={formData.watch_dir || ""}
+								readOnly={isReadOnly}
+								onChange={(e) => handleInputChange("watch_dir", e.target.value)}
+							/>
+							<p className="label">Path to monitor for new .nzb files.</p>
+						</fieldset>
+
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend">Watch Interval (Seconds)</legend>
+							<input
+								type="number"
+								className="input"
+								value={formData.watch_interval_seconds || 10}
+								readOnly={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleInputChange(
+										"watch_interval_seconds",
+										Number.parseInt(e.target.value, 10) || 10,
+									)
+								}
+							/>
+							<p className="label">How often to scan the watch directory (default: 10s).</p>
+						</fieldset>
+					</div>
+				</div>
+
+				<div className="divider" />
+
 				<fieldset className="fieldset">
 					<legend className="fieldset-legend">Segment Sample Percentage</legend>
 					<input
