@@ -210,15 +210,20 @@ func (p *Parser) deriveRelPath(path, category, releaseName string) string {
 	// 2. Identify and remove category prefix
 	parts := strings.Split(path, "/")
 	
-	// Remove the last part (usually "extracted" or the release name)
-	if len(parts) > 0 {
-		parts = parts[:len(parts)-1]
-	}
+	// Recursively remove redundant trailing folders
+	// These are typically "extracted", "Release.Name", or "Release Name"
+	for len(parts) > 0 {
+		lastPart := parts[len(parts)-1]
+		normalizedLast := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(lastPart), ".", " "), "_", " ")
+		normalizedRelease := strings.ReplaceAll(strings.ReplaceAll(strings.ToLower(releaseName), ".", " "), "_", " ")
 
-	// If the current last part matches the release name, remove it too
-	// This happens when the path is /tv/Show/Release/extracted or /tv/Release/extracted
-	if len(parts) > 0 && strings.EqualFold(parts[len(parts)-1], releaseName) {
-		parts = parts[:len(parts)-1]
+		if strings.EqualFold(lastPart, "extracted") || 
+		   strings.EqualFold(lastPart, releaseName) || 
+		   normalizedLast == normalizedRelease {
+			parts = parts[:len(parts)-1]
+			continue
+		}
+		break
 	}
 
 	// Find where the category folder is
