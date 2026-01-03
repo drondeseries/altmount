@@ -184,15 +184,6 @@ export function LibraryScanStatus({
 										<strong>Files Deleted:</strong> {status.last_sync_result.files_deleted}
 									</span>
 									<span>
-										<strong>Meta Deleted:</strong> {status.last_sync_result.metadata_deleted}
-									</span>
-									<span>
-										<strong>Lib Deleted:</strong> {status.last_sync_result.library_files_deleted}
-									</span>
-									<span>
-										<strong>Dirs Deleted:</strong> {status.last_sync_result.library_dirs_deleted}
-									</span>
-									<span>
 										<strong>Duration:</strong> {(status.last_sync_result.duration / 1e9).toFixed(2)}
 										s
 									</span>
