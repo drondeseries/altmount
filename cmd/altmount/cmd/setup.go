@@ -327,6 +327,7 @@ func startHealthWorker(
 	ctx context.Context,
 	cfg *config.Config,
 	healthRepo *database.HealthRepository,
+        repo *database.Repository,
 	poolManager pool.Manager,
 	configManager *config.Manager,
 	rcloneClient rclonecli.RcloneRcClient,
@@ -355,7 +356,8 @@ func startHealthWorker(
 	// Create library sync worker (always create, but only start if enabled)
 	librarySyncWorker := health.NewLibrarySyncWorker(
 		metadataService,
-		healthRepo,
+                healthRepo,
+		repo,
 		configManager.GetConfigGetter(),
 		configManager,
 		rcloneClient,
