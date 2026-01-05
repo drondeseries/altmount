@@ -34,6 +34,23 @@ export function ImportConfigSection({
 		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.import));
 	};
 
+	const handleNestedInputChange = (
+		field: keyof ImportConfig,
+		nestedField: string,
+		value: string | number | boolean,
+	) => {
+		const currentNested = (formData[field] as Record<string, unknown>) || {};
+		const newData = {
+			...formData,
+			[field]: {
+				...currentNested,
+				[nestedField]: value,
+			},
+		};
+		setFormData(newData);
+		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.import));
+	};
+
 	const handleSave = async () => {
 		if (onUpdate && hasChanges) {
 			await onUpdate("import", formData);
@@ -252,6 +269,8 @@ export function ImportConfigSection({
 					)}
 				</div>
 
+				<div className="divider" />
+
 				<div className="space-y-4">
 					<div>
 						<h4 className="font-medium">Watch Directory</h4>
@@ -294,6 +313,54 @@ export function ImportConfigSection({
 						</fieldset>
 					)}
 				</div>
+
+				<div className="divider" />
+
+				{/* NZB Cleanup Behavior Configuration */}
+				<div className="space-y-4">
+					<div>
+						<h4 className="font-medium text-lg">NZB Cleanup Behavior</h4>
+						<p className="text-base-content/70 text-sm">
+							Configure what happens to the source NZB file after processing.
+						</p>
+					</div>
+
+					<div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend">On Success</legend>
+							<select
+								className="select w-full"
+								value={formData.nzb_cleanup_behavior?.on_success || "delete"}
+								disabled={isReadOnly}
+								onChange={(e) => handleNestedInputChange("nzb_cleanup_behavior", "on_success", e.target.value)}
+							>
+								<option value="delete">Delete</option>
+								<option value="keep">Keep</option>
+							</select>
+							<p className="label">
+								Action when import is successful (default: delete)
+							</p>
+						</fieldset>
+
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend">On Failure</legend>
+							<select
+								className="select w-full"
+								value={formData.nzb_cleanup_behavior?.on_failure || "delete"}
+								disabled={isReadOnly}
+								onChange={(e) => handleNestedInputChange("nzb_cleanup_behavior", "on_failure", e.target.value)}
+							>
+								<option value="delete">Delete</option>
+								<option value="keep">Keep (Move to failed folder)</option>
+							</select>
+							<p className="label">
+								Action when import fails (default: delete)
+							</p>
+						</fieldset>
+					</div>
+				</div>
+
+				<div className="divider" />
 
 				<fieldset className="fieldset">
 					<legend className="fieldset-legend">Segment Sample Percentage</legend>
