@@ -1127,12 +1127,12 @@ func (r *HealthRepository) GetAllHealthCheckRecords(ctx context.Context) ([]Auto
 	var records []AutomaticHealthCheckRecord
 	for rows.Next() {
 		var (
-			path             string
-			libraryPath      *string
-			releaseDate      *time.Time
+			path               string
+			libraryPath        *string
+			releaseDate        *time.Time
 			scheduledCheckAtNT sql.NullTime
-			sourceNzbPath    *string
-			status           HealthStatus
+			sourceNzbPath      *string
+			status             HealthStatus
 		)
 
 		if err := rows.Scan(&path, &libraryPath, &releaseDate, &scheduledCheckAtNT, &sourceNzbPath, &status); err != nil {

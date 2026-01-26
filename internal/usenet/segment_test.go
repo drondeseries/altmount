@@ -184,7 +184,7 @@ func TestSegmentWriter_NilBuffer(t *testing.T) {
 
 	seg := &segment{
 		Id:     "test-segment",
-		buffer: nil, // Nil buffer
+		buffer: nil,  // Nil buffer
 		closed: true, // Mark as closed so buffer won't be allocated
 		ready:  make(chan struct{}),
 	}

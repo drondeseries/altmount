@@ -12,7 +12,7 @@ import (
 func TestUsenetReader_Race_Close_GetBufferedOffset(t *testing.T) {
 	// Setup
 	ctx := context.Background()
-	
+
 	// Create a dummy segment range
 	segments := []*segment{
 		newSegment("1", 0, 100, 101, nil),

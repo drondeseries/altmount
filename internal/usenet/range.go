@@ -116,7 +116,7 @@ func int64AccumulatedLen(segs []*segment) int64 {
 	return total
 }
 
-// CheckMetadataIntegrity verifies that the segments provided by the loader 
+// CheckMetadataIntegrity verifies that the segments provided by the loader
 // cover the entire file range [0, fileSize-1] without any gaps.
 // Returns an error if any part of the file is not covered by segment data.
 func CheckMetadataIntegrity(fileSize int64, ml SegmentLoader) error {
@@ -137,7 +137,7 @@ func CheckMetadataIntegrity(fileSize int64, ml SegmentLoader) error {
 		// there's a gap in the metadata.
 		// (Note: in altmount segments are expected to be perfectly sequential
 		// because of how they are imported from NZBs)
-		
+
 		usableLen := src.End - src.Start + 1
 		if usableLen <= 0 {
 			continue

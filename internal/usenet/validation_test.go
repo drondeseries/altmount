@@ -111,11 +111,11 @@ func (m *MockConnectionPool) Post(ctx context.Context, w io.Reader) error {
 func (m *MockConnectionPool) Head(ctx context.Context, id string, groups []string) (string, error) {
 	return "", nil
 }
-func (m *MockConnectionPool) Quit() {}
-func (m *MockConnectionPool) GetMaxProviders() int { return 1 }
-func (m *MockConnectionPool) GetMinProviders() int { return 1 }
+func (m *MockConnectionPool) Quit()                     {}
+func (m *MockConnectionPool) GetMaxProviders() int      { return 1 }
+func (m *MockConnectionPool) GetMinProviders() int      { return 1 }
 func (m *MockConnectionPool) GetActiveConnections() int { return 0 }
-func (m *MockConnectionPool) GetTotalConnections() int { return 0 }
+func (m *MockConnectionPool) GetTotalConnections() int  { return 0 }
 
 func TestValidateSegmentAvailabilityDetailed_Hybrid(t *testing.T) {
 	// Setup

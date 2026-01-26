@@ -351,13 +351,13 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 				targetMovie = movie
 				break
 			}
-			
+
 			// Try match by filename (the most robust way if paths differ)
 			movieFileName := filepath.Base(movie.MovieFile.Path)
 			requestFileName := filepath.Base(filePath)
 			if movieFileName == requestFileName {
-				slog.InfoContext(ctx, "Found Radarr movie match by filename", 
-					"movie", movie.Title, 
+				slog.InfoContext(ctx, "Found Radarr movie match by filename",
+					"movie", movie.Title,
 					"path", movie.MovieFile.Path)
 				targetMovie = movie
 				break

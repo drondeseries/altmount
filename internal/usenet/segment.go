@@ -141,11 +141,11 @@ type segment struct {
 	ready      chan struct{} // Closed when download completes
 
 	// Reader state
-	once          sync.Once
-	cachedReader  io.Reader // Cached reader instance
-	downloadErr   error     // Stores download error for explicit retrieval
-	closed        bool      // Tracks if segment has been closed
-	mx            sync.Mutex
+	once         sync.Once
+	cachedReader io.Reader // Cached reader instance
+	downloadErr  error     // Stores download error for explicit retrieval
+	closed       bool      // Tracks if segment has been closed
+	mx           sync.Mutex
 }
 
 // newSegment creates a new segment without allocating a buffer.
