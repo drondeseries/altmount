@@ -32,10 +32,12 @@ go.work.sum
 .vscode/
 example/
 
-./altmount
+/altmount
 *.db*
 *node_modules*
 .git
 *debug*
 rclone.conf
 db.sqlite
+*.log
+*.py
