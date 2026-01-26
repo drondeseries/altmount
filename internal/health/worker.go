@@ -444,7 +444,7 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 }
 
 // performDirectCheck performs a health check on a single file using the HealthChecker
-func (hw *HealthWorker) performDirectCheck(ctx context.Context, filePath string) error {
+func (hw *HealthWorker) performDirectCheck(ctx context.Context, filePath string, opts ...CheckOptions) error {
 	// Create cancellable context for this check
 	checkCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -477,9 +477,8 @@ func (hw *HealthWorker) performDirectCheck(ctx context.Context, filePath string)
 		return fmt.Errorf("file health record not found: %s", filePath)
 	}
 
-	opts := CheckOptions{}
 	// Delegate to HealthChecker
-	event := hw.healthChecker.CheckFile(checkCtx, filePath, opts)
+	event := hw.healthChecker.CheckFile(checkCtx, filePath, opts...)
 
 	// Check if cancelled during check
 	select {
@@ -592,10 +591,12 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 									return
 								}
 			
-								// Perform check
-								opts := CheckOptions{}
-								event := hw.healthChecker.CheckFile(ctx, fh.FilePath, opts)
-			
+								                // Perform check
+								                opts := CheckOptions{}
+								                if fh.LastError != nil && strings.Contains(*fh.LastError, "no NZB data available for file") {
+								                    opts.ForceFullCheck = true
+								                }
+								                event := hw.healthChecker.CheckFile(ctx, fh.FilePath, opts)			
 								// Prepare result for batch update
 								update, sideEffect := hw.prepareUpdateForResult(ctx, fh, event)
 
@@ -633,10 +634,12 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 		wg.Go(func() {
 			slog.InfoContext(ctx, "Checking repair status for file", "file_path", fh.FilePath)
 
-			// Perform check
-			opts := CheckOptions{}
-			event := hw.healthChecker.CheckFile(ctx, fh.FilePath, opts)
-
+			                // Perform check
+			                opts := CheckOptions{}
+			                if fh.LastError != nil && strings.Contains(*fh.LastError, "no NZB data available for file") {
+			                    opts.ForceFullCheck = true
+			                }
+			                event := hw.healthChecker.CheckFile(ctx, fh.FilePath, opts)
 			// Prepare result for batch update
 			update, sideEffect := hw.prepareUpdateForResult(ctx, fh, event)
 
