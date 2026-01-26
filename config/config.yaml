@@ -110,7 +110,7 @@ import:
     import_dir: null
 log:
     file: /config/altmount.log
-    level: info
+    level: debug
     max_size: 100
     max_age: 30
     max_backups: 10

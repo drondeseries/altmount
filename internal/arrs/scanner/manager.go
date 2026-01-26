@@ -332,7 +332,7 @@ func (m *Manager) TriggerDownloadScan(ctx context.Context, instanceType string) 
 
 // triggerRadarrRescanByPath triggers a rescan in Radarr for the given file path
 func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.Radarr, filePath, relativePath, instanceName string) error {
-	slog.DebugContext(ctx, "Checking Radarr for file path",
+	slog.InfoContext(ctx, "Searching Radarr for matching movie",
 		"instance", instanceName,
 		"file_path", filePath,
 		"relative_path", relativePath)
@@ -351,10 +351,21 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 				targetMovie = movie
 				break
 			}
+			
+			// Try match by filename (the most robust way if paths differ)
+			movieFileName := filepath.Base(movie.MovieFile.Path)
+			requestFileName := filepath.Base(filePath)
+			if movieFileName == requestFileName {
+				slog.InfoContext(ctx, "Found Radarr movie match by filename", 
+					"movie", movie.Title, 
+					"path", movie.MovieFile.Path)
+				targetMovie = movie
+				break
+			}
+
 			// Try match without .strm extension if filePath is a .strm file
 			if strings.HasSuffix(filePath, ".strm") {
 				strippedPath := strings.TrimSuffix(filePath, ".strm")
-				// Check if movie file path (without its own extension) matches stripped filePath
 				if strings.TrimSuffix(movie.MovieFile.Path, filepath.Ext(movie.MovieFile.Path)) == strippedPath {
 					targetMovie = movie
 					break
@@ -376,7 +387,7 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 	}
 
 	if targetMovie == nil {
-		slog.DebugContext(ctx, "No movie found with file path",
+		slog.WarnContext(ctx, "No movie found with matching file path in Radarr",
 			"instance", instanceName,
 			"file_path", filePath)
 
@@ -447,7 +458,7 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 		libraryDir = *cfg.Health.LibraryDir
 	}
 
-	slog.DebugContext(ctx, "Triggering Sonarr rescan/re-download by path",
+	slog.InfoContext(ctx, "Searching Sonarr for matching series",
 		"instance", instanceName,
 		"file_path", filePath,
 		"relative_path", relativePath,
@@ -473,7 +484,7 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 		for _, show := range series {
 			showFolderName := filepath.Base(show.Path)
 			if strings.Contains(relativePath, showFolderName) {
-				slog.DebugContext(ctx, "Found potential series match by folder name", "series", show.Title, "folder", showFolderName)
+				slog.InfoContext(ctx, "Found series match by folder name", "series", show.Title, "folder", showFolderName)
 				targetSeries = show
 				break
 			}
@@ -481,13 +492,13 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 	}
 
 	if targetSeries == nil {
+		slog.WarnContext(ctx, "No series found in Sonarr matching file path", "file_path", filePath)
 		return fmt.Errorf("no series found containing file path: %s", filePath)
 	}
 
-	slog.DebugContext(ctx, "Found matching series for file",
+	slog.InfoContext(ctx, "Found matching series, searching for episode file",
 		"series_title", targetSeries.Title,
-		"series_path", targetSeries.Path,
-		"file_path", filePath)
+		"series_path", targetSeries.Path)
 
 	// Get all episodes for this specific series
 	episodes, err := client.GetSeriesEpisodesContext(ctx, &sonarr.GetEpisode{
@@ -510,6 +521,14 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 			targetEpisodeFile = episodeFile
 			break
 		}
+
+		// Try match by filename
+		if filepath.Base(episodeFile.Path) == filepath.Base(filePath) {
+			slog.InfoContext(ctx, "Found Sonarr episode match by filename", "path", episodeFile.Path)
+			targetEpisodeFile = episodeFile
+			break
+		}
+
 		// Try match without .strm extension
 		if strings.HasSuffix(filePath, ".strm") {
 			strippedPath := strings.TrimSuffix(filePath, ".strm")
