@@ -610,6 +610,42 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 	}
 
 	if len(episodeIDs) == 0 {
+		// Fallback: Try to find episodes by parsing SxxExx from the filename
+		// This handles cases where Sonarr has already unlinked the file
+		fileName := filepath.Base(filePath)
+		slog.InfoContext(ctx, "No linked episodes found, attempting filename parsing fallback", "filename", fileName)
+
+		for _, episode := range episodes {
+			// Construct SxxExx pattern (e.g. S01E01)
+			sxxExx := fmt.Sprintf("S%02dE%02d", episode.SeasonNumber, episode.EpisodeNumber)
+			if strings.Contains(strings.ToUpper(fileName), sxxExx) {
+				slog.InfoContext(ctx, "Found Sonarr episode match by filename pattern",
+					"pattern", sxxExx,
+					"episode_id", episode.ID)
+				episodeIDs = append(episodeIDs, episode.ID)
+			}
+		}
+	}
+
+	if len(episodeIDs) == 0 {
+		// Fallback: Try to find episodes by parsing SxxExx from the filename
+		// This handles cases where Sonarr has already unlinked the file
+		fileName := filepath.Base(filePath)
+		slog.InfoContext(ctx, "No linked episodes found, attempting filename parsing fallback", "filename", fileName)
+
+		for _, episode := range episodes {
+			// Construct SxxExx pattern (e.g. S01E01)
+			sxxExx := fmt.Sprintf("S%02dE%02d", episode.SeasonNumber, episode.EpisodeNumber)
+			if strings.Contains(strings.ToUpper(fileName), sxxExx) {
+				slog.InfoContext(ctx, "Found Sonarr episode match by filename pattern",
+					"pattern", sxxExx,
+					"episode_id", episode.ID)
+				episodeIDs = append(episodeIDs, episode.ID)
+			}
+		}
+	}
+
+	if len(episodeIDs) == 0 {
 		return fmt.Errorf("no episodes found for file: %s: %w", filePath, model.ErrPathMatchFailed)
 	}
 
