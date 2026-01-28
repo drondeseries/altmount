@@ -116,7 +116,7 @@ func (hc *HealthChecker) checkSingleFile(ctx context.Context, filePath string, f
 
 	cfg := hc.configGetter()
 	samplePercentage := cfg.GetSegmentSamplePercentage()
-	verifyData := false
+	verifyData := cfg.GetVerifyData()
 
 	// Override sample percentage if forced full check is requested
 	if len(opts) > 0 && opts[0].ForceFullCheck {
