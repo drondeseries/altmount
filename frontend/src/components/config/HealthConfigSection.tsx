@@ -384,23 +384,25 @@ export function HealthConfigSection({
 								validation of all segments (slower).
 							</p>
 						</fieldset>
-						<fieldset className="fieldset">
-							<legend className="fieldset-legend">Hybrid Data Verification</legend>
-							<label className="label cursor-pointer">
-								<span className="label-text">Verify data (1 byte)</span>
-								<input
-									type="checkbox"
-									className="checkbox"
-									checked={formData.verify_data ?? false}
-									disabled={isReadOnly}
-									onChange={(e) => handleInputChange("verify_data", e.target.checked)}
-								/>
-							</label>
-							<p className="label text-sm">
-								Read 1 byte of data from each checked segment to verify file integrity on the
-								provider side. Catches "ghost" files that exist but are unreadable.
-							</p>
-						</fieldset>
+						{!formData.check_all_segments && (
+							<fieldset className="fieldset">
+								<legend className="fieldset-legend">Hybrid Data Verification</legend>
+								<label className="label cursor-pointer">
+									<span className="label-text">Verify data (1 byte)</span>
+									<input
+										type="checkbox"
+										className="checkbox"
+										checked={formData.verify_data ?? false}
+										disabled={isReadOnly}
+										onChange={(e) => handleInputChange("verify_data", e.target.checked)}
+									/>
+								</label>
+								<p className="label text-sm">
+									Read 1 byte of data from each checked segment to verify file integrity on the
+									provider side. Catches "ghost" files.
+								</p>
+							</fieldset>
+						)}
 						{formData.segment_sample_percentage !== undefined && !formData.check_all_segments && (
 							<fieldset className="fieldset">
 								<legend className="fieldset-legend">Segment Sample Percentage</legend>
