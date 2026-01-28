@@ -387,6 +387,20 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 	}
 
 	if targetMovie == nil {
+		// Fallback: Check if the file is inside a movie folder
+		// This handles cases where Radarr has already detected the file as missing/unlinked
+		for _, movie := range movies {
+			if strings.Contains(filePath, movie.Path) {
+				slog.InfoContext(ctx, "Found Radarr movie match by folder path (fallback)",
+					"movie", movie.Title,
+					"path", movie.Path)
+				targetMovie = movie
+				break
+			}
+		}
+	}
+
+	if targetMovie == nil {
 		slog.WarnContext(ctx, "No movie found with matching file path in Radarr",
 			"instance", instanceName,
 			"file_path", filePath)
@@ -401,19 +415,26 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 		"movie_path", targetMovie.Path,
 		"file_path", filePath)
 
-	// Try to blocklist the release associated with this file
-	if err := m.blocklistRadarrMovieFile(ctx, client, targetMovie.ID, targetMovie.MovieFile.ID); err != nil {
-		slog.WarnContext(ctx, "Failed to blocklist Radarr release", "error", err)
-	}
+	// If we found the movie but it has no file (or different file), we can't blocklist the specific file ID
+	// But we can still trigger search
+	if targetMovie.HasFile && targetMovie.MovieFile != nil {
+		// Try to blocklist the release associated with this file
+		if err := m.blocklistRadarrMovieFile(ctx, client, targetMovie.ID, targetMovie.MovieFile.ID); err != nil {
+			slog.WarnContext(ctx, "Failed to blocklist Radarr release", "error", err)
+		}
 
-	// Delete the existing file
-	err = client.DeleteMovieFilesContext(ctx, targetMovie.MovieFile.ID)
-	if err != nil {
-		slog.WarnContext(ctx, "Failed to delete movie file, continuing with rescan",
-			"instance", instanceName,
-			"movie_id", targetMovie.ID,
-			"file_id", targetMovie.MovieFile.ID,
-			"error", err)
+		// Delete the existing file
+		err = client.DeleteMovieFilesContext(ctx, targetMovie.MovieFile.ID)
+		if err != nil {
+			slog.WarnContext(ctx, "Failed to delete movie file, continuing with rescan",
+				"instance", instanceName,
+				"movie_id", targetMovie.ID,
+				"file_id", targetMovie.MovieFile.ID,
+				"error", err)
+		}
+	} else {
+		slog.InfoContext(ctx, "Movie has no file linked in Radarr, skipping blocklist/delete and proceeding to search",
+			"movie", targetMovie.Title)
 	}
 
 	// Trigger rescan for the movie
