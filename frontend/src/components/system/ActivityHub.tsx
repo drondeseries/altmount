@@ -1,7 +1,6 @@
 import { Download, Play, FileVideo } from "lucide-react";
 import { useState, useMemo } from "react";
 import { useActiveStreams, useQueue } from "../../hooks/useApi";
-import { useConfig } from "../../hooks/useConfig";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
 import { StatusBadge } from "../ui/StatusBadge";
 import { formatBytes, formatSpeed, formatDuration } from "../../lib/utils";
@@ -11,22 +10,17 @@ export function ActivityHub() {
 	const [activeTab, setActiveTab] = useState<"playback" | "imports">("playback");
 	const { data: allStreams, isLoading: streamsLoading } = useActiveStreams();
 	const { data: queueItems, isLoading: queueLoading } = useQueue({ status: "processing", limit: 10 });
-	const { data: config } = useConfig();
 
 	// Group streams by file_path to show "unique playback sessions"
 	const groupedStreams = useMemo(() => {
 		if (!allStreams) return [];
 		
-		const completeDir = config?.sabnzbd?.complete_dir || "/complete";
-
 		// Filter to show only active streaming sessions (WebDAV or FUSE)
-		// AND exclude items that are in the complete folder (likely imports/rescans)
 		// AND exclude system tools like ffprobe/ffmpeg
 		const streamingOnly = allStreams.filter(
 			(s) => {
 				const isSystemSource = (s.source === "WebDAV" || s.source === "FUSE");
 				const isStreaming = s.status === "Streaming";
-				const isLibraryPath = !s.file_path.startsWith(completeDir);
 				
 				// Filter out ffprobe/ffmpeg (commonly used by Sonarr/Radarr for scans)
 				const ua = s.user_agent?.toLowerCase() || "";
@@ -35,7 +29,7 @@ export function ActivityHub() {
 					ua.includes("ffmpeg") || 
 					ua.includes("lavf");
 				
-				return isSystemSource && isStreaming && isLibraryPath && !isSystemTool;
+				return isSystemSource && isStreaming && !isSystemTool;
 			}
 		);
 
