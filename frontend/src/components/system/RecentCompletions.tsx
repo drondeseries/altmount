@@ -4,7 +4,7 @@ import { formatRelativeTime } from "../../lib/utils";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
 
 export function RecentCompletions() {
-	const { data: queue, isLoading } = useQueue({ status: "completed", limit: 10 });
+	const { data: queue, isLoading } = useQueue({ status: "completed", limit: 10, refetchInterval: 10000 });
 
 	if (isLoading) return <LoadingSpinner size="sm" />;
 	if (!queue?.data || queue.data.length === 0) return null;
