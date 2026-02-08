@@ -295,6 +295,18 @@ func (s *Server) handleGetQueueStats(c *fiber.Ctx) error {
 	return RespondSuccess(c, response)
 }
 
+// handleGetQueueHistoricalStats handles GET /api/queue/stats/history
+func (s *Server) handleGetQueueHistoricalStats(c *fiber.Ctx) error {
+	// Get up to 365 days of history
+	stats, err := s.queueRepo.GetImportHistory(c.Context(), 365)
+	if err != nil {
+		return RespondInternalError(c, "Failed to retrieve queue historical statistics", err.Error())
+	}
+
+	response := ToQueueHistoricalStatsResponse(stats)
+	return RespondSuccess(c, response)
+}
+
 // handleClearCompletedQueue handles DELETE /api/queue/completed
 func (s *Server) handleClearCompletedQueue(c *fiber.Ctx) error {
 	// Clear completed items

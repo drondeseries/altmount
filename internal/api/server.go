@@ -169,6 +169,7 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	// Queue endpoints
 	api.Get("/queue", s.handleListQueue)
 	api.Get("/queue/stats", s.handleGetQueueStats)
+	api.Get("/queue/stats/history", s.handleGetQueueHistoricalStats)
 	api.Get("/queue/progress/stream", s.handleProgressStream) // SSE endpoint for real-time progress
 	api.Delete("/queue/completed", s.handleClearCompletedQueue)
 	api.Delete("/queue/failed", s.handleClearFailedQueue)

@@ -142,3 +142,11 @@ type SystemStat struct {
 	Value     int64     `db:"value"`
 	UpdatedAt time.Time `db:"updated_at"`
 }
+
+// ImportDailyStat represents historical import statistics for a specific day
+type ImportDailyStat struct {
+	Day            time.Time `db:"day"`
+	CompletedCount int       `db:"completed_count"`
+	FailedCount    int       `db:"failed_count"`
+	UpdatedAt      time.Time `db:"updated_at"`
+}

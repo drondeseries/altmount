@@ -282,9 +282,13 @@ func (r *Repository) UpdateQueueItemStatus(ctx context.Context, id int64, status
 	case QueueStatusCompleted:
 		query = `UPDATE import_queue SET status = ?, completed_at = ?, updated_at = ?, error_message = NULL WHERE id = ?`
 		args = []interface{}{status, now, now, id}
+		// Track successful import
+		_ = r.IncrementDailyStat(ctx, "completed")
 	case QueueStatusFailed:
 		query = `UPDATE import_queue SET status = ?, error_message = ?, updated_at = ? WHERE id = ?`
 		args = []interface{}{status, errorMessage, now, id}
+		// Track failed import
+		_ = r.IncrementDailyStat(ctx, "failed")
 	default:
 		query = `UPDATE import_queue SET status = ?, error_message = ?, updated_at = ? WHERE id = ?`
 		args = []interface{}{status, errorMessage, now, id}
@@ -296,6 +300,25 @@ func (r *Repository) UpdateQueueItemStatus(ctx context.Context, id int64, status
 	}
 
 	return nil
+}
+
+// IncrementDailyStat increments the completed or failed count for the current day
+func (r *Repository) IncrementDailyStat(ctx context.Context, statType string) error {
+	column := "completed_count"
+	if statType == "failed" {
+		column = "failed_count"
+	}
+
+	query := fmt.Sprintf(`
+		INSERT INTO import_daily_stats (day, %s, updated_at)
+		VALUES (date('now'), 1, datetime('now'))
+		ON CONFLICT(day) DO UPDATE SET
+		%s = %s + 1,
+		updated_at = datetime('now')
+	`, column, column, column)
+
+	_, err := r.db.ExecContext(ctx, query)
+	return err
 }
 
 // GetQueueItem retrieves a specific queue item by ID
@@ -1017,4 +1040,36 @@ func (r *Repository) GetSystemState(ctx context.Context, key string) (string, er
 		return "", fmt.Errorf("failed to get system state %s: %w", key, err)
 	}
 	return value, nil
+}
+
+// GetImportHistory retrieves historical import statistics for the last N days
+func (r *Repository) GetImportHistory(ctx context.Context, days int) ([]*ImportDailyStat, error) {
+	query := `
+		SELECT day, completed_count, failed_count, updated_at
+		FROM import_daily_stats
+		WHERE day >= date('now', ?)
+		ORDER BY day ASC
+	`
+
+	rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf("-%d days", days))
+	if err != nil {
+		return nil, fmt.Errorf("failed to get import history: %w", err)
+	}
+	defer rows.Close()
+
+	var stats []*ImportDailyStat
+	for rows.Next() {
+		var s ImportDailyStat
+		var dayStr string
+		err := rows.Scan(&dayStr, &s.CompletedCount, &s.FailedCount, &s.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan import daily stat: %w", err)
+		}
+
+		// Parse day string (YYYY-MM-DD)
+		s.Day, _ = time.Parse("2006-01-02", dayStr)
+		stats = append(stats, &s)
+	}
+
+	return stats, nil
 }

@@ -342,6 +342,29 @@ type QueueStatsResponse struct {
 	LastUpdated         time.Time `json:"last_updated"`
 }
 
+// QueueHistoryRange represents statistics for a specific time range
+type QueueHistoryRange struct {
+	Completed  int     `json:"completed"`
+	Failed     int     `json:"failed"`
+	Percentage float64 `json:"percentage"`
+}
+
+// DailyStat represents statistics for a single day
+type DailyStat struct {
+	Day       string `json:"day"`
+	Completed int    `json:"completed"`
+	Failed    int    `json:"failed"`
+}
+
+// QueueHistoricalStatsResponse represents historical queue statistics
+type QueueHistoricalStatsResponse struct {
+	Last24Hours QueueHistoryRange `json:"last_24_hours"`
+	Last7Days   QueueHistoryRange `json:"last_7_days"`
+	Last30Days  QueueHistoryRange `json:"last_30_days"`
+	Last365Days QueueHistoryRange `json:"last_365_days"`
+	Daily       []DailyStat       `json:"daily"`
+}
+
 // Health API Types
 
 // HealthItemResponse represents a health record in API responses
@@ -537,6 +560,61 @@ func ToQueueStatsResponse(stats *database.QueueStats) *QueueStatsResponse {
 		AvgProcessingTimeMs: stats.AvgProcessingTimeMs,
 		LastUpdated:         stats.LastUpdated,
 	}
+}
+
+// ToQueueHistoricalStatsResponse converts database.ImportDailyStat slice to QueueHistoricalStatsResponse
+func ToQueueHistoricalStatsResponse(stats []*database.ImportDailyStat) *QueueHistoricalStatsResponse {
+	response := &QueueHistoricalStatsResponse{
+		Daily: make([]DailyStat, 0, len(stats)),
+	}
+
+	now := time.Now().UTC()
+	day24h := now.Add(-24 * time.Hour)
+	day7d := now.Add(-7 * 24 * time.Hour)
+	day30d := now.Add(-30 * 24 * time.Hour)
+	day365d := now.Add(-365 * 24 * time.Hour)
+
+	for _, s := range stats {
+		// Daily list
+		response.Daily = append(response.Daily, DailyStat{
+			Day:       s.Day.Format("2006-01-02"),
+			Completed: s.CompletedCount,
+			Failed:    s.FailedCount,
+		})
+
+		// Aggregates
+		if s.Day.After(day365d) || s.Day.Format("2006-01-02") == day365d.Format("2006-01-02") {
+			response.Last365Days.Completed += s.CompletedCount
+			response.Last365Days.Failed += s.FailedCount
+		}
+		if s.Day.After(day30d) || s.Day.Format("2006-01-02") == day30d.Format("2006-01-02") {
+			response.Last30Days.Completed += s.CompletedCount
+			response.Last30Days.Failed += s.FailedCount
+		}
+		if s.Day.After(day7d) || s.Day.Format("2006-01-02") == day7d.Format("2006-01-02") {
+			response.Last7Days.Completed += s.CompletedCount
+			response.Last7Days.Failed += s.FailedCount
+		}
+		if s.Day.After(day24h) || s.Day.Format("2006-01-02") == day24h.Format("2006-01-02") {
+			response.Last24Hours.Completed += s.CompletedCount
+			response.Last24Hours.Failed += s.FailedCount
+		}
+	}
+
+	// Calculate percentages
+	calcPercentage := func(r *QueueHistoryRange) {
+		total := r.Completed + r.Failed
+		if total > 0 {
+			r.Percentage = (float64(r.Completed) / float64(total)) * 100
+		}
+	}
+
+	calcPercentage(&response.Last24Hours)
+	calcPercentage(&response.Last7Days)
+	calcPercentage(&response.Last30Days)
+	calcPercentage(&response.Last365Days)
+
+	return response
 }
 
 // ToHealthItemResponse converts database.FileHealth to HealthItemResponse
