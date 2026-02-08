@@ -103,7 +103,7 @@ import:
         - .wtv
         - .mk3d
         - .dvr-ms
-    max_import_connections: 5
+    max_import_connections: 15
     import_cache_size_mb: 64
     segment_sample_percentage: 1
     import_strategy: NONE

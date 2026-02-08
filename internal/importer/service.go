@@ -26,7 +26,6 @@ import (
 	"github.com/javi11/altmount/internal/importer/queue"
 	"github.com/javi11/altmount/internal/importer/scanner"
 	"github.com/javi11/altmount/internal/metadata"
-	"github.com/javi11/altmount/internal/pathutil"
 	"github.com/javi11/altmount/internal/pool"
 	"github.com/javi11/altmount/internal/progress"
 	"github.com/javi11/altmount/internal/sabnzbd"
@@ -189,6 +188,9 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		readTimeout = 5 * time.Minute
 	}
 
+	// Create processor with poolManager for dynamic pool access
+	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter)
+
 	ctx, cancel := context.WithCancel(context.Background())
 
 	// Create post-processor coordinator
@@ -204,6 +206,7 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		config:          config,
 		metadataService: metadataService,
 		database:        database,
+		processor:       processor,
 		postProcessor:   postProc,
 		rcloneClient:    rcloneClient,
 		configGetter:    configGetter,
@@ -217,10 +220,6 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		cancelFuncs:     make(map[int64]context.CancelFunc),
 		paused:          false,
 	}
-
-	// Create processor with poolManager for dynamic pool access
-	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter)
-	service.processor = processor
 
 	// Create scanner adapter for directory scanning
 	scannerAdapter := &queueAdapterForScanner{
@@ -579,12 +578,12 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 
 	// Calculate file size before adding to queue
 	var fileSize *int64
-	if size, err := s.CalculateFileSizeOnly(filePath); err != nil {
+	if size, err := s.CalculateFileSizeOnly(filePath); err == nil {
+		fileSize = &size
+	} else {
 		s.log.WarnContext(ctx, "Failed to calculate file size", "file", filePath, "error", err)
 		// Continue with NULL file size - don't fail the queue addition
 		fileSize = nil
-	} else {
-		fileSize = &size
 	}
 
 	// Use default priority if not specified
@@ -761,8 +760,16 @@ func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, bas
 	// Prepend SABnzbd CompleteDir to virtualDir
 	cfg := s.configGetter()
 	if cfg.SABnzbd.CompleteDir != "" {
-		virtualDir = pathutil.JoinAbsPath(cfg.SABnzbd.CompleteDir, virtualDir)
-		virtualDir = filepath.ToSlash(virtualDir)
+		completeDir := filepath.ToSlash(cfg.SABnzbd.CompleteDir)
+		// Ensure completeDir is absolute for comparison
+		if !strings.HasPrefix(completeDir, "/") {
+			completeDir = "/" + completeDir
+		}
+
+		if !strings.HasPrefix(virtualDir, completeDir) {
+			virtualDir = filepath.Join(completeDir, virtualDir)
+			virtualDir = filepath.ToSlash(virtualDir)
+		}
 	}
 
 	return virtualDir
@@ -834,33 +841,18 @@ func (s *Service) ensurePersistentNzb(ctx context.Context, item *database.Import
 			return fmt.Errorf("failed to copy NZB content: %w", err)
 		}
 
-		// Remove source if copy successful
-		// Note: We close srcFile via defer, but for removal on Windows/some FS we might need to close it first.
-		// Since we are in a function and defer runs at end, we can't remove yet if we don't close.
-		// But in this block we can just let it stay until end of function? No, we want to remove it.
-		// For simplicity, we can ignore removal failure or try to handle it better.
-		// Actually, we should probably close before removing.
+		// Close files explicitly to allow deletion
+		srcFile.Close()
+		dstFile.Close()
+
+		if err := os.Remove(item.NzbPath); err != nil {
+			s.log.WarnContext(ctx, "Failed to remove source NZB after copy", "path", item.NzbPath, "error", err)
+		}
 	}
 
-	// If we copied, we should remove the original.
-	// But `os.Rename` handles removal.
-	// If we fell back to copy, we need to remove.
-	if err != nil { // This err refers to Rename failure
-		// Close files (deferred, but we might want to close src explicitly if we want to delete)
-		// Since we didn't assign srcFile/dstFile to vars outside, we rely on GC/Defer.
-		// But defer runs at function exit.
-		// So removal might fail if open.
-		// Let's rely on standard practice or simple cleanup.
-		// If Rename failed, we copied.
-		// We should try to remove the source file.
-		os.Remove(item.NzbPath)
-	}
-
-	// Update item path in memory
+	// Update DB
 	oldPath := item.NzbPath
 	item.NzbPath = newPath
-
-	// Update item path in DB
 	if err := s.database.Repository.UpdateQueueItemNzbPath(ctx, item.ID, newPath); err != nil {
 		// If DB update fails, we are in a weird state (file moved but DB points to old).
 		// We should probably try to move it back or just fail.

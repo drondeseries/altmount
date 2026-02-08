@@ -318,57 +318,31 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 			"original_path", path,
 			"normalized_path", normalizedPath)
 
-				if s.healthRepo != nil {
+		if s.healthRepo != nil {
+			var releaseDate *time.Time
+			var sourceNzb *string
 
-					var releaseDate *time.Time
-
-					var sourceNzb *string
-
-		
-
-					// Try to read metadata to get release date
-
-					if s.metadataService != nil {
-
-						meta, err := s.metadataService.ReadFileMetadata(normalizedPath)
-
-						if err == nil && meta != nil {
-
-							if meta.ReleaseDate != 0 {
-
-								t := time.Unix(meta.ReleaseDate, 0)
-
-								releaseDate = &t
-
-							}
-
-							if meta.SourceNzbPath != "" {
-
-								sourceNzb = &meta.SourceNzbPath
-
-							}
-
-						} else {
-
-							// SAFETY: If metadata does not exist for this path, it means the file was renamed
-
-							// and we don't have a record for the new name yet. We should NOT add a health
-
-							// record for a path without metadata, as it will just be marked corrupted.
-
-							// The Library Sync will eventually discover the new mapping.
-
-							slog.DebugContext(c.Context(), "Skipping webhook health addition: no metadata found for path",
-
-								"path", normalizedPath)
-
-							continue
-
-						}
-
+			// Try to read metadata to get release date
+			if s.metadataService != nil {
+				meta, err := s.metadataService.ReadFileMetadata(normalizedPath)
+				if err == nil && meta != nil {
+					if meta.ReleaseDate != 0 {
+						t := time.Unix(meta.ReleaseDate, 0)
+						releaseDate = &t
 					}
-
-		
+					if meta.SourceNzbPath != "" {
+						sourceNzb = &meta.SourceNzbPath
+					}
+				} else {
+					// SAFETY: If metadata does not exist for this path, it means the file was renamed
+					// and we don't have a record for the new name yet. We should NOT add a health
+					// record for a path without metadata, as it will just be marked corrupted.
+					// The Library Sync will eventually discover the new mapping.
+					slog.DebugContext(c.Context(), "Skipping webhook health addition: no metadata found for path",
+						"path", normalizedPath)
+					continue
+				}
+			}
 
 			// Add to health check (pending status) with high priority (Next) to ensure it's processed right away
 			err := s.healthRepo.AddFileToHealthCheckWithMetadata(c.Context(), normalizedPath, 2, sourceNzb, database.HealthPriorityNext, releaseDate)

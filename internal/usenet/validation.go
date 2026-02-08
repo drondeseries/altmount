@@ -53,36 +53,28 @@ func ValidateSegmentAvailability(
 	}
 
 	// Select which segments to validate
-	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage, nil)
+	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage)
 	totalToValidate := len(segmentsToValidate)
 
 	// Atomic counter for progress tracking (thread-safe for concurrent validation)
 	var validatedCount int32
 
 	// Validate segments concurrently with connection limit
-	pl := concpool.New().WithErrors().WithFirstError().WithMaxGoroutines(maxConnections).WithContext(ctx)
+	pl := concpool.New().WithErrors().WithFirstError().WithMaxGoroutines(maxConnections)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
-		pl.Go(func(ctx context.Context) error {
+		pl.Go(func() error {
 			checkCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
 			var err error
 			if verifyData {
 				// Hybrid mode: attempt to read a few bytes of the segment body
-				// to ensure the provider actually has the data.
-				// We use a limited writer to read 1 byte and check if it is all zeros.
-				lw := &limitedWriter{limit: 1, allZeros: true}
+				lw := &limitedWriter{limit: 1}
 				_, err = usenetPool.Body(checkCtx, seg.Id, lw, []string{})
 
-				// If we reached our limit, it means the segment data is accessible.
 				if errors.Is(err, ErrLimitReached) {
-					// Check if the data was just filler zeros (ghost file)
-					if lw.allZeros {
-						err = fmt.Errorf("segment with ID %s contains only zeros", seg.Id)
-					} else {
-						err = nil
-					}
+					err = nil
 				}
 			} else {
 				// Standard mode: only perform STAT command
@@ -147,7 +139,7 @@ func ValidateSegmentAvailabilityDetailed(
 	}
 
 	// Select which segments to validate
-	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage, nil)
+	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage)
 	result.TotalChecked = len(segmentsToValidate)
 
 	// Atomic counter for progress tracking (thread-safe for concurrent validation)
@@ -160,10 +152,10 @@ func ValidateSegmentAvailabilityDetailed(
 
 	// Validate segments concurrently with connection limit
 	// We don't use WithFirstError because we want to check all selected segments
-	pl := concpool.New().WithErrors().WithMaxGoroutines(maxConnections).WithContext(ctx)
+	pl := concpool.New().WithErrors().WithMaxGoroutines(maxConnections)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
-		pl.Go(func(ctx context.Context) error {
+		pl.Go(func() error {
 			checkCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
@@ -171,18 +163,13 @@ func ValidateSegmentAvailabilityDetailed(
 			if verifyData {
 				// Hybrid mode: attempt to read a few bytes of the segment body
 				// to ensure the provider actually has the data.
-				// We use a limited writer to read 1 byte and check if it is all zeros.
-				lw := &limitedWriter{limit: 1, allZeros: true}
+				// We use a limited writer to only read 1 byte.
+				lw := &limitedWriter{limit: 1}
 				_, err = usenetPool.Body(checkCtx, seg.Id, lw, []string{})
 
-				// If we reached our limit, it means the segment data is accessible.
+				// If we reached our 1-byte limit, it means the segment data is accessible.
 				if errors.Is(err, ErrLimitReached) {
-					// Check if the data was just filler zeros (ghost file)
-					if lw.allZeros {
-						err = fmt.Errorf("segment with ID %s contains only zeros", seg.Id)
-					} else {
-						err = nil
-					}
+					err = nil
 				}
 			} else {
 				// Standard mode: only perform STAT command
@@ -225,24 +212,11 @@ func ValidateSegmentAvailabilityDetailed(
 
 // limitedWriter is an io.Writer that stops after reaching a certain byte limit
 type limitedWriter struct {
-	limit    int64
-	read     int64
-	allZeros bool
+	limit int64
+	read  int64
 }
 
 func (lw *limitedWriter) Write(p []byte) (n int, err error) {
-	// Initialize allZeros on first write if we haven't read anything yet
-	if lw.read == 0 && len(p) > 0 {
-		lw.allZeros = true
-	}
-
-	for _, b := range p {
-		if b != 0 {
-			lw.allZeros = false
-			break
-		}
-	}
-
 	canWrite := lw.limit - lw.read
 	if canWrite <= 0 {
 		return 0, ErrLimitReached
@@ -263,11 +237,7 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 // - Validates last 2 segments (incomplete upload detection)
 // - Validates random middle segments based on samplePercentage (general integrity check)
 // A minimum of 5 segments are always validated for statistical validity when sampling.
-func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentage int, rnd *rand.Rand) []*metapb.SegmentData {
-	if rnd == nil {
-		rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
-	}
-
+func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentage int) []*metapb.SegmentData {
 	if samplePercentage == 100 {
 		return segments
 	}
@@ -332,7 +302,7 @@ func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentag
 
 		if randomSamples > 0 {
 			// Random sampling without replacement from middle section
-			perm := rnd.Perm(middleRange)
+			perm := rand.Perm(middleRange)
 			for i := 0; i < randomSamples; i++ {
 				toValidate = append(toValidate, segments[middleStart+perm[i]])
 			}

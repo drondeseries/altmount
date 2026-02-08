@@ -675,19 +675,18 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 					if cfg.Metadata.DeleteSourceNzbOnRemoval != nil {
 						deleteSourceNzb = *cfg.Metadata.DeleteSourceNzbOnRemoval
 					}
-										err := lsw.metadataService.DeleteFileMetadataWithSourceNzb(ctx, relativeMountPath, deleteSourceNzb)
-										if err != nil {
-											slog.ErrorContext(ctx, "Failed to delete metadata file", "error", err)
-											continue
-										}
-										// Remove from our set so the database cleanup step below knows it's gone
-										delete(metaFileSet, relativeMountPath)
-									}
-									metadataDeletedCount++
-								}
-							}
-						}
-					
+					err := lsw.metadataService.DeleteFileMetadataWithSourceNzb(ctx, relativeMountPath, deleteSourceNzb)
+					if err != nil {
+						slog.ErrorContext(ctx, "Failed to delete metadata file", "error", err)
+						continue
+					}
+					// Remove from our set so the database cleanup step below knows it's gone
+					delete(metaFileSet, relativeMountPath)
+				}
+				metadataDeletedCount++
+			}
+		}
+	}
 
 	// Cleanup orphaned library files (symlinks and STRM files without metadata)
 	libraryFilesDeletedCount := 0
@@ -756,7 +755,7 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	}
 
 	// Find files to delete (in database but not in filesystem or not in use)
-	// SAFETY: If mount protection is triggered (shouldCleanup is false), 
+	// SAFETY: If mount protection is triggered (shouldCleanup is false),
 	// we pass nil for filesInUse to skip the 'in-use' check and prevent mass record deletion.
 	effectiveFilesInUse := filesInUse
 	if !shouldCleanup {
