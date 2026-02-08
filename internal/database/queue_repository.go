@@ -327,6 +327,47 @@ func (r *QueueRepository) GetImportHistory(ctx context.Context, days int) ([]*Im
 	return stats, nil
 }
 
+// AddImportHistory records a successful file import in the persistent history table
+func (r *QueueRepository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
+	query := `
+		INSERT INTO import_history (nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+	`
+	_, err := r.db.ExecContext(ctx, query,
+		history.NzbID, history.NzbName, history.FileName, history.FileSize,
+		history.VirtualPath, history.Category)
+	if err != nil {
+		return fmt.Errorf("failed to add import history: %w", err)
+	}
+	return nil
+}
+
+// ListImportHistory retrieves the last N successful imports from the persistent history
+func (r *QueueRepository) ListImportHistory(ctx context.Context, limit int) ([]*ImportHistory, error) {
+	query := `
+		SELECT id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at
+		FROM import_history
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list import history: %w", err)
+	}
+	defer rows.Close()
+
+	var history []*ImportHistory
+	for rows.Next() {
+		var h ImportHistory
+		err := rows.Scan(&h.ID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.Category, &h.CompletedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan import history: %w", err)
+		}
+		history = append(history, &h)
+	}
+	return history, nil
+}
+
 // IncrementRetryCountAndResetStatus increments the retry count and resets the status to pending
 func (r *QueueRepository) IncrementRetryCountAndResetStatus(ctx context.Context, id int64, errorMessage *string) (bool, error) {
 	query := `

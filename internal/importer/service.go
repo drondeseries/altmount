@@ -190,6 +190,8 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		readTimeout = 5 * time.Minute
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+
 	// Create post-processor coordinator
 	postProc := postprocessor.NewCoordinator(postprocessor.Config{
 		ConfigGetter:    configGetter,
@@ -659,7 +661,7 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		}
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles)
+	return s.processor.ProcessNzbFile(ctx, item, allowedExtensionsOverride, &virtualDir, extractedFiles)
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
