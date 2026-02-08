@@ -283,10 +283,10 @@ func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentag
 	}
 
 	// Optimization: Cap the number of samples for very large files to prevent
-	// excessive network I/O. 1000 random samples + 5 fixed samples is plenty
+	// excessive network I/O. 50 random samples + 5 fixed samples is plenty
 	// for a reliable health check even on 100GB+ files.
-	if targetSamples > 1005 {
-		targetSamples = 1005
+	if targetSamples > 55 {
+		targetSamples = 55
 	}
 
 	// If target samples equals or exceeds total segments, validate all

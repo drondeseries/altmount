@@ -14,13 +14,7 @@ import (
 	"github.com/javi11/altmount/internal/metadata"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/database"
 )
-
-// HistoryRecorder defines the interface for recording persistent import history
-type HistoryRecorder interface {
-	AddImportHistory(ctx context.Context, history *database.ImportHistory) error
-}
 
 // ProcessSingleFile processes a single file (creates and writes metadata)
 func ProcessSingleFile(
@@ -35,9 +29,6 @@ func ProcessSingleFile(
 	segmentSamplePercentage int,
 	allowedFileExtensions []string,
 	timeout time.Duration,
-	recorder HistoryRecorder,
-	queueID int64,
-	category *string,
 ) (string, error) {
 	// Validate file extension before processing
 	if !utils.HasAllowedFilesInRegular([]parser.ParsedFile{file}, allowedFileExtensions) {
@@ -111,18 +102,6 @@ func ProcessSingleFile(
 	// Write file metadata to disk
 	if err := metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
 		return "", fmt.Errorf("failed to write metadata for single file %s: %w", file.Filename, err)
-	}
-
-	// Record in persistent history
-	if recorder != nil {
-		_ = recorder.AddImportHistory(ctx, &database.ImportHistory{
-			NzbID:       &queueID,
-			NzbName:     filepath.Base(nzbPath),
-			FileName:    file.Filename,
-			FileSize:    file.Size,
-			VirtualPath: virtualFilePath,
-			Category:    category,
-		})
 	}
 
 	slog.InfoContext(ctx, "Successfully processed single file",

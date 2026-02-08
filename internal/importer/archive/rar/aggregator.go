@@ -18,13 +18,7 @@ import (
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
 	"github.com/javi11/altmount/internal/progress"
-	"github.com/javi11/altmount/internal/database"
 )
-
-// HistoryRecorder defines the interface for recording persistent import history
-type HistoryRecorder interface {
-	AddImportHistory(ctx context.Context, history *database.ImportHistory) error
-}
 
 var (
 	// ErrNoAllowedFiles indicates that the archive contains no files matching allowed extensions
@@ -102,9 +96,6 @@ func ProcessArchive(
 	allowedFileExtensions []string,
 	timeout time.Duration,
 	extractedFiles []parser.ExtractedFileInfo,
-	recorder HistoryRecorder,
-	queueID int64,
-	category *string,
 ) error {
 	if len(archiveFiles) == 0 {
 		return nil
@@ -282,18 +273,6 @@ func ProcessArchive(
 		// Write file metadata to disk
 		if err := metadataService.WriteFileMetadata(virtualFilePath, fileMeta); err != nil {
 			return fmt.Errorf("failed to write metadata for RAR file %s: %w", rarContent.Filename, err)
-		}
-
-		// Record in persistent history
-		if recorder != nil {
-			_ = recorder.AddImportHistory(ctx, &database.ImportHistory{
-				NzbID:       &queueID,
-				NzbName:     filepath.Base(nzbPath),
-				FileName:    baseFilename,
-				FileSize:    rarContent.Size,
-				VirtualPath: virtualFilePath,
-				Category:    category,
-			})
 		}
 
 		slog.InfoContext(ctx, "Created metadata for RAR extracted file",

@@ -16,13 +16,7 @@ import (
 	"github.com/javi11/altmount/internal/metadata"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/database"
 )
-
-// HistoryRecorder defines the interface for recording persistent import history
-type HistoryRecorder interface {
-	AddImportHistory(ctx context.Context, history *database.ImportHistory) error
-}
 
 // ProcessRegularFiles processes multiple regular files
 func ProcessRegularFiles(
@@ -37,9 +31,6 @@ func ProcessRegularFiles(
 	segmentSamplePercentage int,
 	allowedFileExtensions []string,
 	timeout time.Duration,
-	recorder HistoryRecorder,
-	queueID int64,
-	category *string,
 ) error {
 	if len(files) == 0 {
 		return nil
@@ -131,18 +122,6 @@ func ProcessRegularFiles(
 		// Write file metadata to disk
 		if err := metadataService.WriteFileMetadata(virtualPath, fileMeta); err != nil {
 			return fmt.Errorf("failed to write metadata for file %s: %w", filename, err)
-		}
-
-		// Record in persistent history
-		if recorder != nil {
-			_ = recorder.AddImportHistory(ctx, &database.ImportHistory{
-				NzbID:       &queueID,
-				NzbName:     filepath.Base(nzbPath),
-				FileName:    filename,
-				FileSize:    file.Size,
-				VirtualPath: virtualPath,
-				Category:    category,
-			})
 		}
 
 		slog.DebugContext(ctx, "Created metadata file",

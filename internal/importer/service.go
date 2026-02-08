@@ -26,7 +26,6 @@ import (
 	"github.com/javi11/altmount/internal/importer/queue"
 	"github.com/javi11/altmount/internal/importer/scanner"
 	"github.com/javi11/altmount/internal/metadata"
-	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pathutil"
 	"github.com/javi11/altmount/internal/pool"
 	"github.com/javi11/altmount/internal/progress"
@@ -220,7 +219,7 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	}
 
 	// Create processor with poolManager for dynamic pool access
-	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter, service)
+	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter)
 	service.processor = processor
 
 	// Create scanner adapter for directory scanning
@@ -661,7 +660,7 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		}
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item, allowedExtensionsOverride, &virtualDir, extractedFiles)
+	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles)
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
@@ -919,20 +918,6 @@ func (s *Service) handleProcessingSuccess(ctx context.Context, item *database.Im
 		return err
 	}
 
-	// Double-check file health before marking as completed.
-	// If the file is obviously broken (metadata gap), we should fail the import immediately
-	// so Sonarr/Radarr can re-grab it without it getting stuck in 'complete' folder.
-	if meta, err := s.metadataService.ReadFileMetadata(resultingPath); err == nil && meta != nil {
-		if meta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED {
-			errMsg := "File is corrupted (metadata gap detected during import)"
-			if err := s.database.Repository.UpdateQueueItemStatus(ctx, item.ID, database.QueueStatusFailed, &errMsg); err != nil {
-				return err
-			}
-			s.log.WarnContext(ctx, "Import failed: file is corrupted", "queue_id", item.ID, "path", resultingPath)
-			return nil
-		}
-	}
-
 	// Refresh mount path if needed before post-processing
 	s.postProcessor.RefreshMountPathIfNeeded(ctx, resultingPath, item.ID)
 
@@ -995,30 +980,7 @@ func (s *Service) handleProcessingFailure(ctx context.Context, item *database.Im
 			"error", processingErr)
 	}
 
-	// Handle automatic retries for transient errors
-	if !IsNonRetryable(processingErr) {
-		retried, err := s.database.Repository.IncrementRetryCountAndResetStatus(ctx, item.ID, &errorMessage)
-		if err == nil && retried {
-			s.log.InfoContext(ctx, "Item failed with transient error, scheduled for retry",
-				"queue_id", item.ID,
-				"retry_count", item.RetryCount+1,
-				"max_retries", item.MaxRetries)
-
-			// Clear progress tracking
-			if s.broadcaster != nil {
-				s.broadcaster.ClearProgress(int(item.ID))
-			}
-			return
-		}
-
-		if err != nil {
-			s.log.ErrorContext(ctx, "Failed to increment retry count", "queue_id", item.ID, "error", err)
-		} else {
-			s.log.WarnContext(ctx, "Max retries reached for transient error", "queue_id", item.ID)
-		}
-	}
-
-	// Mark as failed in queue database (non-retryable or max retries reached)
+	// Mark as failed in queue database (no automatic retry)
 	if err := s.database.Repository.UpdateQueueItemStatus(ctx, item.ID, database.QueueStatusFailed, &errorMessage); err != nil {
 		s.log.ErrorContext(ctx, "Failed to mark item as failed", "queue_id", item.ID, "error", err)
 	} else {
