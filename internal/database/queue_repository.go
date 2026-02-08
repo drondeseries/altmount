@@ -316,14 +316,11 @@ func (r *QueueRepository) GetImportHistory(ctx context.Context, days int) ([]*Im
 	var stats []*ImportDailyStat
 	for rows.Next() {
 		var s ImportDailyStat
-		var dayStr string
-		err := rows.Scan(&dayStr, &s.CompletedCount, &s.FailedCount, &s.UpdatedAt)
+		err := rows.Scan(&s.Day, &s.CompletedCount, &s.FailedCount, &s.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan import daily stat: %w", err)
 		}
 
-		// Parse day string (YYYY-MM-DD)
-		s.Day, _ = time.Parse("2006-01-02", dayStr)
 		stats = append(stats, &s)
 	}
 
