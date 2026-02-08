@@ -209,7 +209,7 @@ func TestValidateSegmentAvailabilityDetailed_Hybrid_PartialZeros(t *testing.T) {
 
 func TestSelectSegmentsForValidation(t *testing.T) {
 	// Seed random for predictability in middle segments
-	rand.Seed(1)
+	rnd := rand.New(rand.NewSource(1))
 
 	// Create 100 dummy segments
 	segments := make([]*metapb.SegmentData, 100)
@@ -218,12 +218,12 @@ func TestSelectSegmentsForValidation(t *testing.T) {
 	}
 
 	t.Run("100 percent", func(t *testing.T) {
-		selected := selectSegmentsForValidation(segments, 100)
+		selected := selectSegmentsForValidation(segments, 100, rnd)
 		assert.Equal(t, 100, len(selected))
 	})
 
 	t.Run("10 percent", func(t *testing.T) {
-		selected := selectSegmentsForValidation(segments, 10)
+		selected := selectSegmentsForValidation(segments, 10, rnd)
 		// 10% of 100 = 10 segments
 		assert.Equal(t, 10, len(selected))
 
@@ -249,7 +249,7 @@ func TestSelectSegmentsForValidation(t *testing.T) {
 
 	t.Run("minimum 5", func(t *testing.T) {
 		// 1% of 100 = 1 segment, but minimum is 5
-		selected := selectSegmentsForValidation(segments, 1)
+		selected := selectSegmentsForValidation(segments, 1, rnd)
 		assert.Equal(t, 5, len(selected))
 	})
 
@@ -260,7 +260,7 @@ func TestSelectSegmentsForValidation(t *testing.T) {
 			largeSegments[i] = &metapb.SegmentData{Id: fmt.Sprintf("seg%d", i)}
 		}
 
-		selected := selectSegmentsForValidation(largeSegments, 10)
+		selected := selectSegmentsForValidation(largeSegments, 10, rnd)
 		assert.Equal(t, 1005, len(selected), "Should be capped at 1005")
 	})
 }

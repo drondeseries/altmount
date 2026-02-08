@@ -53,7 +53,7 @@ func ValidateSegmentAvailability(
 	}
 
 	// Select which segments to validate
-	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage)
+	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage, nil)
 	totalToValidate := len(segmentsToValidate)
 
 	// Atomic counter for progress tracking (thread-safe for concurrent validation)
@@ -63,7 +63,7 @@ func ValidateSegmentAvailability(
 	pl := concpool.New().WithErrors().WithFirstError().WithMaxGoroutines(maxConnections).WithContext(ctx)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
-		pl.Go(func() error {
+		pl.Go(func(ctx context.Context) error {
 			checkCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
@@ -147,7 +147,7 @@ func ValidateSegmentAvailabilityDetailed(
 	}
 
 	// Select which segments to validate
-	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage)
+	segmentsToValidate := selectSegmentsForValidation(segments, samplePercentage, nil)
 	result.TotalChecked = len(segmentsToValidate)
 
 	// Atomic counter for progress tracking (thread-safe for concurrent validation)
@@ -163,7 +163,7 @@ func ValidateSegmentAvailabilityDetailed(
 	pl := concpool.New().WithErrors().WithMaxGoroutines(maxConnections).WithContext(ctx)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
-		pl.Go(func() error {
+		pl.Go(func(ctx context.Context) error {
 			checkCtx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
 
@@ -263,7 +263,11 @@ func (lw *limitedWriter) Write(p []byte) (n int, err error) {
 // - Validates last 2 segments (incomplete upload detection)
 // - Validates random middle segments based on samplePercentage (general integrity check)
 // A minimum of 5 segments are always validated for statistical validity when sampling.
-func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentage int) []*metapb.SegmentData {
+func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentage int, rnd *rand.Rand) []*metapb.SegmentData {
+	if rnd == nil {
+		rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
+	}
+
 	if samplePercentage == 100 {
 		return segments
 	}
@@ -328,7 +332,7 @@ func selectSegmentsForValidation(segments []*metapb.SegmentData, samplePercentag
 
 		if randomSamples > 0 {
 			// Random sampling without replacement from middle section
-			perm := rand.Perm(middleRange)
+			perm := rnd.Perm(middleRange)
 			for i := 0; i < randomSamples; i++ {
 				toValidate = append(toValidate, segments[middleStart+perm[i]])
 			}

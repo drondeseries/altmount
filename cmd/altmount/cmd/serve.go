@@ -332,6 +332,7 @@ func setupSPARoutes(app *fiber.App) {
 	}
 
 	// Cli mode - use embedded filesystem
+	//nolint:staticcheck
 	buildFS, err := frontend.GetBuildFS()
 	if err != nil { //nolint:staticcheck
 		// Docker or development - serve static files with SPA fallback

@@ -120,6 +120,7 @@ func TestBuildSegmentIndex(t *testing.T) {
 			} else {
 				if idx == nil {
 					t.Errorf("buildSegmentIndex() = nil, want non-nil")
+					return
 				}
 				if len(idx.offsets) != len(tt.segments) {
 					t.Errorf("buildSegmentIndex() offsets len = %d, want %d", len(idx.offsets), len(tt.segments))
