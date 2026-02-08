@@ -76,6 +76,10 @@ func ValidateSegmentAvailability(
 				if errors.Is(err, ErrLimitReached) {
 					err = nil
 				}
+
+				if err == nil && !lw.hasData {
+					err = fmt.Errorf("segment with ID %s contains only zero bytes", seg.Id)
+				}
 			} else {
 				// Standard mode: only perform STAT command
 				_, err = usenetPool.Stat(checkCtx, seg.Id, []string{})
@@ -171,6 +175,10 @@ func ValidateSegmentAvailabilityDetailed(
 				if errors.Is(err, ErrLimitReached) {
 					err = nil
 				}
+
+				if err == nil && !lw.hasData {
+					err = fmt.Errorf("segment with ID %s contains only zero bytes", seg.Id)
+				}
 			} else {
 				// Standard mode: only perform STAT command
 				_, err = usenetPool.Stat(checkCtx, seg.Id, []string{})
@@ -211,12 +219,23 @@ func ValidateSegmentAvailabilityDetailed(
 }
 
 // limitedWriter is an io.Writer that stops after reaching a certain byte limit
+// and tracks if any non-zero bytes were seen.
 type limitedWriter struct {
-	limit int64
-	read  int64
+	limit   int64
+	read    int64
+	hasData bool
 }
 
 func (lw *limitedWriter) Write(p []byte) (n int, err error) {
+	if !lw.hasData {
+		for _, b := range p {
+			if b != 0 {
+				lw.hasData = true
+				break
+			}
+		}
+	}
+
 	canWrite := lw.limit - lw.read
 	if canWrite <= 0 {
 		return 0, ErrLimitReached
