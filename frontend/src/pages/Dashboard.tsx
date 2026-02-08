@@ -5,6 +5,7 @@ import { QueueChart } from "../components/charts/QueueChart";
 import { ActiveStreamsCard } from "../components/system/ActiveStreamsCard";
 import { PoolMetricsCard } from "../components/system/PoolMetricsCard";
 import { ProviderCard } from "../components/system/ProviderCard";
+import { QueueHistoricalStatsCard } from "../components/queue/QueueHistoricalStatsCard";
 import { ErrorAlert } from "../components/ui/ErrorAlert";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
 import { StatusBadge } from "../components/ui/StatusBadge";
@@ -156,6 +157,8 @@ export function Dashboard() {
 						)}
 					</div>
 				</div>
+
+				<QueueHistoricalStatsCard />
 			</div>
 
 			{/* Provider Status */}

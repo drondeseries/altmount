@@ -64,6 +64,26 @@ export interface QueueStats {
 	last_updated: string;
 }
 
+export interface QueueHistoryRange {
+	completed: number;
+	failed: number;
+	percentage: number;
+}
+
+export interface DailyStat {
+	day: string;
+	completed: number;
+	failed: number;
+}
+
+export interface QueueHistoricalStatsResponse {
+	last_24_hours: QueueHistoryRange;
+	last_7_days: QueueHistoryRange;
+	last_30_days: QueueHistoryRange;
+	last_365_days: QueueHistoryRange;
+	daily: DailyStat[];
+}
+
 // NZBLNK upload types
 export interface NZBLnkResult {
 	link: string;

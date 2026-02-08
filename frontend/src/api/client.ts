@@ -251,6 +251,14 @@ export class APIClient {
 		return this.request<QueueStats>("/queue/stats");
 	}
 
+	async getQueueHistory(days?: number) {
+		const searchParams = new URLSearchParams();
+		if (days) searchParams.set("days", days.toString());
+
+		const query = searchParams.toString();
+		return this.request<any>(`/queue/stats/history${query ? `?${query}` : ""}`);
+	}
+
 	async clearCompletedQueue(olderThan?: string) {
 		const searchParams = new URLSearchParams();
 		if (olderThan) searchParams.set("older_than", olderThan);

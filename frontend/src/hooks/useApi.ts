@@ -36,6 +36,15 @@ export const useQueueStats = () => {
 	});
 };
 
+export const useQueueHistory = (days?: number) => {
+	return useQuery({
+		queryKey: ["queue", "history", days],
+		queryFn: () => apiClient.getQueueHistory(days),
+		// Refetch historical stats less frequently (every 5 minutes)
+		refetchInterval: 5 * 60 * 1000,
+	});
+};
+
 export const useDeleteQueueItem = () => {
 	const queryClient = useQueryClient();
 
