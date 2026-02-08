@@ -419,7 +419,7 @@ func (p *Parser) fetchAllFirstSegments(ctx context.Context, files []nzbparser.Nz
 		err       error
 	}
 
-	concPool := concpool.NewWithResults[fetchResult]().WithMaxGoroutines(runtime.NumCPU()).WithContext(ctx).WithFirstError()
+	concPool := concpool.NewWithResults[fetchResult]().WithMaxGoroutines(runtime.NumCPU()).WithContext(ctx)
 
 	// Fetch first segment of each file in parallel
 	for idx, file := range files {
@@ -471,8 +471,14 @@ func (p *Parser) fetchAllFirstSegments(ctx context.Context, files []nzbparser.Nz
 
 				// Transient error (saturation, timeout, network error, etc.)
 				return fetchResult{
-					err: err,
-				}, err
+					segmentID: firstSegment.ID,
+					data: &FirstSegmentData{
+						File:                fileToFetch,
+						MissingFirstSegment: true,
+						OriginalIndex:       originalIndex,
+					},
+					err: fmt.Errorf("failed to get body reader (transient): %w", err),
+				}, nil
 			}
 			defer r.Close()
 
