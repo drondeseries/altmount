@@ -16,33 +16,21 @@ export function ActivityHub() {
 		if (!allStreams) return [];
 		
 		// Filter to show only active streaming sessions (WebDAV or FUSE)
-		// AND exclude system tools like ffprobe/ffmpeg
 		const streamingOnly = allStreams.filter(
 			(s) => {
 				const isSystemSource = (s.source === "WebDAV" || s.source === "FUSE");
 				const isStreaming = s.status === "Streaming";
 				
-				// Filter out ffprobe/ffmpeg (commonly used by Sonarr/Radarr for scans)
-				const ua = s.user_agent?.toLowerCase() || "";
-				const isSystemTool = 
-					ua.includes("ffprobe") || 
-					ua.includes("ffmpeg") || 
-					ua.includes("lavf");
+				// Heuristic: Filter out metadata probes and very short system scans
+				// 1. If reading the very end of the file (last 10MB), it's likely a probe
+				const isAtEnd = s.total_size > 0 && s.current_offset > (s.total_size - (10 * 1024 * 1024));
+				// 2. If it's very new and hasn't sent much data yet, hide it temporarily 
+				// (Plex/Infuse will pass this threshold in seconds)
+				const isTooNew = s.bytes_sent < (20 * 1024 * 1024);
+				const ageSeconds = (new Date().getTime() - new Date(s.started_at).getTime()) / 1000;
 				
-				if (isSystemTool) return false;
-
-				// Heuristic: If it's rclone (the mount), check if it's a probe
-				if (ua.includes("rclone")) {
-					// 1. If reading the very end of the file (last 10MB), it's likely a probe
-					const isAtEnd = s.total_size > 0 && s.current_offset > (s.total_size - (10 * 1024 * 1024));
-					// 2. If it's very new and hasn't sent much data yet, hide it temporarily 
-					// (Plex/Infuse will pass this threshold in seconds)
-					const isTooNew = s.bytes_sent < (20 * 1024 * 1024);
-					const ageSeconds = (new Date().getTime() - new Date(s.started_at).getTime()) / 1000;
-					
-					if (isAtEnd) return false;
-					if (isTooNew && ageSeconds < 15) return false;
-				}
+				if (isAtEnd) return false;
+				if (isTooNew && ageSeconds < 15) return false;
 				
 				return isSystemSource && isStreaming;
 			}
