@@ -30,12 +30,10 @@ export function ActivityHub() {
 				
 				// Filter out ffprobe/ffmpeg (commonly used by Sonarr/Radarr for scans)
 				const ua = s.user_agent?.toLowerCase() || "";
-				const ip = s.client_ip || "";
 				const isSystemTool = 
 					ua.includes("ffprobe") || 
 					ua.includes("ffmpeg") || 
-					ua.includes("lavf") ||
-					(ua.includes("rclone") && (ip.includes("[::1]") || ip.includes("127.0.0.1")));
+					ua.includes("lavf");
 				
 				return isSystemSource && isStreaming && isLibraryPath && !isSystemTool;
 			}
