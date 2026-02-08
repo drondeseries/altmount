@@ -297,8 +297,20 @@ func (s *Server) handleGetQueueStats(c *fiber.Ctx) error {
 
 // handleGetQueueHistoricalStats handles GET /api/queue/stats/history
 func (s *Server) handleGetQueueHistoricalStats(c *fiber.Ctx) error {
-	// Get up to 365 days of history
-	stats, err := s.queueRepo.GetImportHistory(c.Context(), 365)
+	// Get optional days parameter, default to 30
+	days := 30
+	if daysStr := c.Query("days"); daysStr != "" {
+		if d, err := strconv.Atoi(daysStr); err == nil && d > 0 {
+			days = d
+		}
+	}
+
+	// Limit to max 365 days for performance
+	if days > 365 {
+		days = 365
+	}
+
+	stats, err := s.queueRepo.GetImportHistory(c.Context(), days)
 	if err != nil {
 		return RespondInternalError(c, "Failed to retrieve queue historical statistics", err.Error())
 	}
