@@ -6,9 +6,10 @@ import { ActiveStreamsCard } from "../components/system/ActiveStreamsCard";
 import { PoolMetricsCard } from "../components/system/PoolMetricsCard";
 import { ProviderCard } from "../components/system/ProviderCard";
 import { QueueHistoricalStatsCard } from "../components/queue/QueueHistoricalStatsCard";
+import { ActivityHub } from "../components/system/ActivityHub";
+import { RecentCompletions } from "../components/system/RecentCompletions";
 import { ErrorAlert } from "../components/ui/ErrorAlert";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
-import { StatusBadge } from "../components/ui/StatusBadge";
 import { useHealthStats, usePoolMetrics, useQueueStats } from "../hooks/useApi";
 
 export function Dashboard() {
@@ -126,37 +127,8 @@ export function Dashboard() {
 
 			{/* Detailed Status */}
 			<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-				{/* Queue Details */}
-				<div className="card bg-base-100 shadow-lg">
-					<div className="card-body">
-						<h2 className="card-title">
-							<Download className="h-5 w-5" />
-							Queue Status
-						</h2>
-						{queueMetrics ? (
-							<div className="space-y-3">
-								<div className="flex items-center justify-between">
-									<span>Queued</span>
-									<StatusBadge status={`${queueMetrics.pendingItems} items`} />
-								</div>
-								<div className="flex items-center justify-between">
-									<span>Processing</span>
-									<StatusBadge status={`${queueMetrics.processingCount} items`} />
-								</div>
-								<div className="flex items-center justify-between">
-									<span>Completed</span>
-									<StatusBadge status={`${queueMetrics.completedCount} items`} />
-								</div>
-								<div className="flex items-center justify-between">
-									<span>Failed</span>
-									<StatusBadge status={`${queueMetrics.failedCount} items`} />
-								</div>
-							</div>
-						) : (
-							<LoadingSpinner />
-						)}
-					</div>
-				</div>
+				{/* Activity Hub (Tabs for Playback & Imports) */}
+				<ActivityHub />
 
 				<QueueHistoricalStatsCard />
 			</div>
@@ -198,6 +170,8 @@ export function Dashboard() {
 					</div>
 				</div>
 			</div>
+
+			<RecentCompletions />
 
 			{/* Issues Alert */}
 			{queueMetrics?.hasFailures || (healthStats && healthStats.corrupted > 0) ? (

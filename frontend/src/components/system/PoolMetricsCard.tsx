@@ -1,7 +1,9 @@
 import { Network, RotateCcw } from "lucide-react";
+import { useEffect, useState } from "react";
 import { usePoolMetrics, useResetSystemStats } from "../../hooks/useApi";
 import { BytesDisplay } from "../ui/BytesDisplay";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
+import { formatSpeed } from "../../lib/utils";
 
 interface PoolMetricsCardProps {
 	className?: string;
@@ -10,15 +12,18 @@ interface PoolMetricsCardProps {
 export function PoolMetricsCard({ className }: PoolMetricsCardProps) {
 	const { data: poolMetrics, isLoading, error } = usePoolMetrics();
 	const resetStats = useResetSystemStats();
+	const [speedHistory, setHistory] = useState<number[]>([]);
 
-	// Helper function to format speed
-	const formatSpeed = (bytesPerSec: number) => {
-		if (bytesPerSec === 0) return "0 B/s";
-		const units = ["B/s", "KB/s", "MB/s", "GB/s"];
-		const index = Math.floor(Math.log(bytesPerSec) / Math.log(1024));
-		const value = bytesPerSec / 1024 ** index;
-		return `${value.toFixed(1)} ${units[index]}`;
-	};
+	// Update speed history
+	useEffect(() => {
+		if (poolMetrics) {
+			setHistory(prev => {
+				const next = [...prev, poolMetrics.download_speed_bytes_per_sec];
+				if (next.length > 20) return next.slice(1);
+				return next;
+			});
+		}
+	}, [poolMetrics]);
 
 	const handleReset = () => {
 		if (window.confirm("Are you sure you want to reset all cumulative download statistics?")) {
@@ -121,6 +126,23 @@ export function PoolMetricsCard({ className }: PoolMetricsCardProps) {
 								<span className="font-medium text-error">
 									{poolMetrics.total_errors.toLocaleString()}
 								</span>
+							</div>
+						)}
+
+						{/* Speed Sparkline */}
+						{speedHistory.length > 1 && (
+							<div className="mt-4 flex h-8 items-end gap-0.5 overflow-hidden">
+								{speedHistory.map((val, i) => {
+									const max = Math.max(...speedHistory, 1024 * 1024);
+									const height = (val / max) * 100;
+									return (
+										<div
+											key={i}
+											className="flex-1 bg-primary/30 rounded-t-[1px]"
+											style={{ height: `${Math.max(4, height)}%` }}
+										/>
+									);
+								})}
 							</div>
 						)}
 					</div>
