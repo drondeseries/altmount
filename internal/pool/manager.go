@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javi11/altmount/internal/database"
 	"github.com/javi11/nntppool/v2"
 )
 
@@ -27,9 +26,6 @@ type Manager interface {
 
 	// GetMetrics returns the current pool metrics with calculated speeds
 	GetMetrics() (MetricsSnapshot, error)
-
-	// ResetMetrics resets cumulative statistics
-	ResetMetrics(ctx context.Context) error
 }
 
 // manager implements the Manager interface
@@ -37,16 +33,14 @@ type manager struct {
 	mu             sync.RWMutex
 	pool           nntppool.UsenetConnectionPool
 	metricsTracker *MetricsTracker
-	repo           *database.Repository
 	ctx            context.Context
 	logger         *slog.Logger
 }
 
 // NewManager creates a new pool manager
-func NewManager(ctx context.Context, repo *database.Repository) Manager {
+func NewManager(ctx context.Context) Manager {
 	return &manager{
 		ctx:    ctx,
-		repo:   repo,
 		logger: slog.Default().With("component", "pool"),
 	}
 }
@@ -72,7 +66,6 @@ func (m *manager) SetProviders(providers []nntppool.UsenetProviderConfig) error 
 	if m.pool != nil {
 		m.logger.InfoContext(m.ctx, "Shutting down existing NNTP connection pool")
 		if m.metricsTracker != nil {
-			m.metricsTracker.UpdatePersistence(m.ctx)
 			m.metricsTracker.Stop()
 			m.metricsTracker = nil
 		}
@@ -103,7 +96,7 @@ func (m *manager) SetProviders(providers []nntppool.UsenetProviderConfig) error 
 	m.pool = pool
 
 	// Start metrics tracker
-	m.metricsTracker = NewMetricsTracker(pool, m.repo)
+	m.metricsTracker = NewMetricsTracker(pool)
 	m.metricsTracker.Start(m.ctx)
 
 	m.logger.InfoContext(m.ctx, "NNTP connection pool created successfully")
@@ -118,7 +111,6 @@ func (m *manager) ClearPool() error {
 	if m.pool != nil {
 		m.logger.InfoContext(m.ctx, "Clearing NNTP connection pool")
 		if m.metricsTracker != nil {
-			m.metricsTracker.UpdatePersistence(m.ctx)
 			m.metricsTracker.Stop()
 			m.metricsTracker = nil
 		}
@@ -152,16 +144,3 @@ func (m *manager) GetMetrics() (MetricsSnapshot, error) {
 
 	return m.metricsTracker.GetSnapshot(), nil
 }
-
-// ResetMetrics resets cumulative statistics
-func (m *manager) ResetMetrics(ctx context.Context) error {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-
-	if m.metricsTracker == nil {
-		return fmt.Errorf("metrics tracker not available")
-	}
-
-	return m.metricsTracker.ResetStats(ctx)
-}
-
