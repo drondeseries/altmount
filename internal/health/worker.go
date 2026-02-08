@@ -769,7 +769,18 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		pathForRescan = pathutil.JoinAbsPath(hw.configGetter().MountPath, filePath)
 	}
 
-	// Step 4: Trigger rescan through the ARR service
+	// Delete the metadata file locally so FUSE/WebDAV stops showing it.
+	// This ensures Sonarr/Radarr actually see the file as missing during their scan.
+	// We need the relative path for metadata deletion.
+	relativePath := strings.TrimPrefix(filePath, hw.configGetter().MountPath)
+	relativePath = strings.TrimPrefix(relativePath, "/")
+
+	slog.InfoContext(ctx, "Deleting metadata file for corrupted item to trigger replacement", "file_path", filePath)
+	if delMetaErr := hw.metadataService.DeleteFileMetadata(relativePath); delMetaErr != nil {
+		slog.WarnContext(ctx, "Failed to delete corrupted metadata file, proceeding with ARR trigger", "error", delMetaErr)
+	}
+
+	// Step 4: Trigger targeted rescan and search through the ARR service
 	err := hw.arrsService.TriggerFileRescan(ctx, pathForRescan, filePath)
 	if err != nil {
 		if errors.Is(err, arrs.ErrEpisodeAlreadySatisfied) {
