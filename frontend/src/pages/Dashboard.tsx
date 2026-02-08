@@ -2,7 +2,6 @@ import { AlertTriangle, CheckCircle, Download, Network } from "lucide-react";
 import { useMemo } from "react";
 import { HealthChart } from "../components/charts/HealthChart";
 import { QueueChart } from "../components/charts/QueueChart";
-import { ActiveStreamsCard } from "../components/system/ActiveStreamsCard";
 import { PoolMetricsCard } from "../components/system/PoolMetricsCard";
 import { ProviderCard } from "../components/system/ProviderCard";
 import { QueueHistoricalStatsCard } from "../components/queue/QueueHistoricalStatsCard";
@@ -64,7 +63,7 @@ export function Dashboard() {
 			</div>
 
 			{/* System Stats Cards */}
-			<div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+			<div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
 				{/* Queue Status */}
 				<div className="card bg-base-100 shadow-lg">
 					<div className="card-body">
@@ -120,9 +119,6 @@ export function Dashboard() {
 
 				{/* Pool Metrics */}
 				<PoolMetricsCard />
-
-				{/* Active Streams */}
-				<ActiveStreamsCard />
 			</div>
 
 			{/* Detailed Status */}

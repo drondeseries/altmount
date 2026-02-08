@@ -1,16 +1,49 @@
-import { Download, Play } from "lucide-react";
-import { useState } from "react";
+import { Download, Play, FileVideo } from "lucide-react";
+import { useState, useMemo } from "react";
 import { useActiveStreams, useQueue } from "../../hooks/useApi";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
 import { StatusBadge } from "../ui/StatusBadge";
-import { formatBytes, formatSpeed } from "../../lib/utils";
+import { formatBytes, formatSpeed, formatDuration } from "../../lib/utils";
+import type { ActiveStream } from "../../types/api";
 
 export function ActivityHub() {
 	const [activeTab, setActiveTab] = useState<"playback" | "imports">("playback");
-	const { data: streams, isLoading: streamsLoading } = useActiveStreams();
+	const { data: allStreams, isLoading: streamsLoading } = useActiveStreams();
 	const { data: queueItems, isLoading: queueLoading } = useQueue({ status: "processing", limit: 10 });
 
-	const playbackCount = streams?.length || 0;
+	// Group streams by file_path to show "unique playback sessions"
+	const groupedStreams = useMemo(() => {
+		if (!allStreams) return [];
+		
+		// Filter to show only active streaming sessions (WebDAV or FUSE)
+		const streamingOnly = allStreams.filter(
+			(s) => (s.source === "WebDAV" || s.source === "FUSE") && s.status === "Streaming",
+		);
+
+		const groups: Record<string, ActiveStream> = {};
+		
+		for (const stream of streamingOnly) {
+			if (!groups[stream.file_path]) {
+				groups[stream.file_path] = { ...stream };
+			} else {
+				// Aggregate data for the same file
+				groups[stream.file_path].bytes_sent += stream.bytes_sent;
+				groups[stream.file_path].bytes_per_second += stream.bytes_per_second;
+				// Use the highest offset as current position
+				if (stream.current_offset > groups[stream.file_path].current_offset) {
+					groups[stream.file_path].current_offset = stream.current_offset;
+				}
+				// Use highest buffered offset
+				if (stream.buffered_offset > groups[stream.file_path].buffered_offset) {
+					groups[stream.file_path].buffered_offset = stream.buffered_offset;
+				}
+			}
+		}
+		
+		return Object.values(groups);
+	}, [allStreams]);
+
+	const playbackCount = groupedStreams.length;
 	const importCount = queueItems?.data?.length || 0;
 
 	return (
@@ -19,7 +52,7 @@ export function ActivityHub() {
 				<div className="tabs tabs-bordered w-full grid grid-cols-2">
 					<button
 						type="button"
-						className={`tab tab-lg gap-2 ${activeTab === "playback" ? "tab-active font-bold" : ""}`}
+						className={`tab tab-lg gap-2 ${activeTab === "playback" ? "tab-active font-bold border-primary text-primary" : ""}`}
 						onClick={() => setActiveTab("playback")}
 					>
 						<Play className="h-4 w-4" />
@@ -28,7 +61,7 @@ export function ActivityHub() {
 					</button>
 					<button
 						type="button"
-						className={`tab tab-lg gap-2 ${activeTab === "imports" ? "tab-active font-bold" : ""}`}
+						className={`tab tab-lg gap-2 ${activeTab === "imports" ? "tab-active font-bold border-secondary text-secondary" : ""}`}
 						onClick={() => setActiveTab("imports")}
 					>
 						<Download className="h-4 w-4" />
@@ -41,27 +74,58 @@ export function ActivityHub() {
 					{activeTab === "playback" && (
 						<div className="space-y-4">
 							{streamsLoading ? (
-								<LoadingSpinner />
-							) : streams && streams.length > 0 ? (
-								streams.map((stream) => (
-									<div key={stream.id} className="border-b border-base-300 pb-3 last:border-0">
-										<div className="flex justify-between items-start mb-1">
-											<span className="font-medium text-sm truncate max-w-[70%]" title={stream.file_path}>
-												{stream.file_path.split('/').pop()}
-											</span>
-											<span className="text-xs font-mono text-primary">{formatSpeed(stream.bytes_per_second)}</span>
+								<div className="flex justify-center py-10"><LoadingSpinner /></div>
+							) : groupedStreams.length > 0 ? (
+								groupedStreams.map((stream) => {
+									const position = stream.current_offset > 0 ? stream.current_offset : stream.bytes_sent;
+									const progress = stream.total_size > 0 ? Math.round((position / stream.total_size) * 100) : 0;
+									const bufferedProgress = stream.total_size > 0 ? Math.round((stream.buffered_offset / stream.total_size) * 100) : 0;
+
+									return (
+										<div key={stream.id} className="group flex flex-col gap-2 rounded-lg bg-base-200/30 p-3">
+											<div className="flex items-center gap-3">
+												<FileVideo className="h-8 w-8 text-primary/70 shrink-0" />
+												<div className="min-w-0 flex-1">
+													<div className="truncate font-medium text-sm" title={stream.file_path}>
+														{stream.file_path.split("/").pop()}
+													</div>
+													<div className="flex items-center gap-2 mt-1">
+														<span className="text-[10px] text-success font-bold">STREAMING</span>
+														<span className="text-base-content/40 text-[10px]">•</span>
+														<span className="text-base-content/60 text-[10px]">{formatBytes(stream.total_size)}</span>
+													</div>
+												</div>
+												<div className="text-right shrink-0">
+													<div className="text-xs font-mono text-primary font-bold">{formatSpeed(stream.bytes_per_second)}</div>
+													{stream.eta > 0 && (
+														<div className="text-[10px] text-base-content/40 font-mono">
+															{formatDuration(stream.eta)} left
+														</div>
+													)}
+												</div>
+											</div>
+
+											<div className="space-y-1 mt-1">
+												<div className="flex justify-between items-center px-0.5 text-[10px]">
+													<span className="font-medium text-primary">{progress}%</span>
+													<span className="text-base-content/40">{formatBytes(position)} / {formatBytes(stream.total_size)}</span>
+												</div>
+												<div className="relative h-1.5 w-full overflow-hidden rounded-full bg-neutral">
+													{bufferedProgress > progress && (
+														<div
+															className="absolute top-0 left-0 h-full bg-primary/20 transition-all duration-500 ease-out"
+															style={{ width: `${bufferedProgress}%` }}
+														/>
+													)}
+													<div
+														className="absolute top-0 left-0 h-full bg-primary transition-all duration-500 ease-out"
+														style={{ width: `${progress}%` }}
+													/>
+												</div>
+											</div>
 										</div>
-										<div className="flex justify-between text-xs text-base-content/60 mb-2">
-											<span>{stream.user_name || "Anonymous"}</span>
-											<span>{formatBytes(stream.current_offset)} / {formatBytes(stream.total_size)}</span>
-										</div>
-										<progress 
-											className="progress progress-primary w-full h-1.5" 
-											value={stream.current_offset} 
-											max={stream.total_size}
-										/>
-									</div>
-								))
+									);
+								})
 							) : (
 								<div className="text-center py-10 text-base-content/50">
 									<Play className="h-8 w-8 mx-auto mb-2 opacity-20" />
@@ -74,29 +138,38 @@ export function ActivityHub() {
 					{activeTab === "imports" && (
 						<div className="space-y-4">
 							{queueLoading ? (
-								<LoadingSpinner />
+								<div className="flex justify-center py-10"><LoadingSpinner /></div>
 							) : queueItems?.data && queueItems.data.length > 0 ? (
 								queueItems.data.map((item) => (
-									<div key={item.id} className="border-b border-base-300 pb-3 last:border-0">
-										<div className="flex justify-between items-start mb-1">
-											<span className="font-medium text-sm truncate max-w-[75%]" title={item.nzb_path}>
-												{item.target_path || item.nzb_path.split('/').pop()}
-											</span>
-											<StatusBadge status="processing" className="badge-sm" />
+									<div key={item.id} className="group flex flex-col gap-2 rounded-lg bg-base-200/30 p-3 border-l-4 border-secondary">
+										<div className="flex justify-between items-start">
+											<div className="min-w-0 flex-1">
+												<div className="truncate font-medium text-sm" title={item.nzb_path}>
+													{item.target_path || item.nzb_path.split('/').pop()}
+												</div>
+												<div className="flex items-center gap-2 mt-1 text-[10px] text-base-content/60">
+													<StatusBadge status="processing" className="badge-xs h-4" />
+													<span>Worker #{item.id % 10}</span>
+													<span>•</span>
+													<span>Attempt {item.retry_count + 1}</span>
+												</div>
+											</div>
+											{item.percentage !== undefined && (
+												<div className="text-xs font-bold text-secondary">{item.percentage}%</div>
+											)}
 										</div>
-										<div className="flex justify-between text-xs text-base-content/60 mb-2">
-											<span>Worker #{item.id % 10}</span>
-											<span>Attempt {item.retry_count + 1}</span>
+										
+										<div className="mt-1">
+											{item.percentage !== undefined ? (
+												<progress 
+													className="progress progress-secondary w-full h-1.5" 
+													value={item.percentage} 
+													max="100"
+												/>
+											) : (
+												<progress className="progress progress-secondary w-full h-1.5 animate-pulse" />
+											)}
 										</div>
-										{item.percentage !== undefined ? (
-											<progress 
-												className="progress progress-secondary w-full h-1.5" 
-												value={item.percentage} 
-												max="100"
-											/>
-										) : (
-											<progress className="progress progress-secondary w-full h-1.5" />
-										)}
 									</div>
 								))
 							) : (
