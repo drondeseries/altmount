@@ -405,6 +405,10 @@ func (ms *MetadataService) cleanupEmptyDirsRecursive(path string, protected []st
 	if isEmpty && path != ms.rootPath && !ms.isCompleteDir(path) {
 		// Check protected list
 		base := filepath.Base(path)
+		if strings.EqualFold(base, "corrupted_metadata") {
+			return nil
+		}
+
 		for _, p := range protected {
 			if strings.EqualFold(base, p) {
 				return nil

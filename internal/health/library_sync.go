@@ -814,6 +814,11 @@ func (lsw *LibrarySyncWorker) getAllMetadataFiles(ctx context.Context) ([]string
 			return nil // Skip errors
 		}
 
+		// Skip the corrupted_metadata directory
+		if info.IsDir() && info.Name() == "corrupted_metadata" {
+			return filepath.SkipDir
+		}
+
 		// Only include .meta files
 		if !info.IsDir() && strings.HasSuffix(info.Name(), ".meta") {
 			metaFiles = append(metaFiles, path)

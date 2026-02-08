@@ -672,7 +672,7 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 
 	// Build list of protected directories (categories and complete dir)
 	cfg := hw.configGetter()
-	protected := []string{"complete"} // Always protect 'complete'
+	protected := []string{"complete", "corrupted_metadata"} // Protect 'complete' and safety folder
 	if cfg.SABnzbd.CompleteDir != "" {
 		protected = append(protected, filepath.Base(cfg.SABnzbd.CompleteDir))
 	}
