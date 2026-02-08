@@ -60,7 +60,7 @@ func NewProcessor(metadataService *metadata.MetadataService, poolManager pool.Ma
 		configGetter:            configGetter,
 		maxImportConnections:    maxImportConnections,
 		segmentSamplePercentage: segmentSamplePercentage,
-		validationTimeout:       60 * time.Second, // Increased to 60s to handle slow provider responses
+		validationTimeout:       5 * time.Second, // Default validation timeout for imports
 		allowedFileExtensions:   allowedFileExtensions,
 		log:                     slog.Default().With("component", "nzb-processor"),
 		broadcaster:             broadcaster,
