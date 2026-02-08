@@ -29,7 +29,22 @@ export function ActivityHub() {
 					ua.includes("ffmpeg") || 
 					ua.includes("lavf");
 				
-				return isSystemSource && isStreaming && !isSystemTool;
+				if (isSystemTool) return false;
+
+				// Heuristic: If it's rclone (the mount), check if it's a probe
+				if (ua.includes("rclone")) {
+					// 1. If reading the very end of the file (last 10MB), it's likely a probe
+					const isAtEnd = s.total_size > 0 && s.current_offset > (s.total_size - (10 * 1024 * 1024));
+					// 2. If it's very new and hasn't sent much data yet, hide it temporarily 
+					// (Plex/Infuse will pass this threshold in seconds)
+					const isTooNew = s.bytes_sent < (20 * 1024 * 1024);
+					const ageSeconds = (new Date().getTime() - new Date(s.started_at).getTime()) / 1000;
+					
+					if (isAtEnd) return false;
+					if (isTooNew && ageSeconds < 15) return false;
+				}
+				
+				return isSystemSource && isStreaming;
 			}
 		);
 
