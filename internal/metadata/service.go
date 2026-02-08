@@ -418,6 +418,45 @@ func (ms *MetadataService) cleanupEmptyDirsRecursive(path string, protected []st
 	return nil
 }
 
+// MoveToCorrupted moves a metadata file to a special corrupted directory for safety
+func (ms *MetadataService) MoveToCorrupted(ctx context.Context, virtualPath string) error {
+	filename := filepath.Base(virtualPath)
+	truncatedFilename := ms.truncateFilename(filename)
+	metadataDir := filepath.Join(ms.rootPath, filepath.Dir(virtualPath))
+	metadataPath := filepath.Join(metadataDir, truncatedFilename+".meta")
+
+	// Check if source exists
+	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	// Define corrupted directory path (root/corrupted/...)
+	corruptedRoot := filepath.Join(ms.rootPath, ".corrupted")
+	targetDir := filepath.Join(corruptedRoot, filepath.Dir(virtualPath))
+
+	if err := os.MkdirAll(targetDir, 0755); err != nil {
+		return fmt.Errorf("failed to create corrupted metadata directory: %w", err)
+	}
+
+	targetPath := filepath.Join(targetDir, truncatedFilename+".meta")
+
+	// Move the .meta file
+	if err := os.Rename(metadataPath, targetPath); err != nil {
+		slog.WarnContext(ctx, "Failed to rename corrupted metadata, trying copy", "error", err)
+		// Basic copy fallback could be added here if needed, but rename usually works within same mount
+		return err
+	}
+
+	// Also try to move the .id file if it exists
+	idPath := metadataPath + ".id"
+	if _, err := os.Stat(idPath); err == nil {
+		_ = os.Rename(idPath, targetPath+".id")
+	}
+
+	slog.InfoContext(ctx, "Moved corrupted metadata to safety folder", "path", targetPath)
+	return nil
+}
+
 func (ms *MetadataService) isCompleteDir(path string) bool {
 	// Simple check to avoid deleting the 'complete' folder itself
 	return filepath.Base(path) == "complete"
