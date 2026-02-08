@@ -189,7 +189,7 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	}
 
 	// Create processor with poolManager for dynamic pool access
-	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter)
+	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -220,6 +220,9 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		cancelFuncs:     make(map[int64]context.CancelFunc),
 		paused:          false,
 	}
+
+	// Set recorder for processor
+	processor.SetRecorder(service)
 
 	// Create scanner adapter for directory scanning
 	scannerAdapter := &queueAdapterForScanner{
@@ -659,7 +662,7 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		}
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles)
+	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles, item.Category)
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
@@ -691,17 +694,12 @@ func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, bas
 					cleanRel = ""
 				}
 
-				if cleanRel == "" {
+				cleanBase := filepath.ToSlash(*basePath)
+				// Avoid duplication if basePath already starts with relDir (common with Watcher or manual imports)
+				if *basePath != "" && (cleanBase == cleanRel || strings.HasPrefix(cleanBase, cleanRel+"/")) {
 					virtualDir = *basePath
 				} else {
-					cleanBase := filepath.ToSlash(*basePath)
-
-					// Avoid duplication if basePath already starts with relDir (common with Watcher or manual imports)
-					if *basePath != "" && (cleanBase == cleanRel || strings.HasPrefix(cleanBase, cleanRel+"/")) {
-						virtualDir = *basePath
-					} else {
-						virtualDir = filepath.Join(*basePath, cleanRel)
-					}
+					virtualDir = filepath.Join(*basePath, cleanRel)
 				}
 			}
 

@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/pathutil"
 )
 
 // NotifyVFS notifies rclone VFS about file changes
@@ -76,7 +75,7 @@ func (c *Coordinator) RefreshMountPathIfNeeded(ctx context.Context, resultingPat
 	}
 
 	cfg := c.configGetter()
-	mountPath := pathutil.JoinAbsPath(cfg.MountPath, filepath.Dir(resultingPath))
+	mountPath := filepath.Join(cfg.MountPath, filepath.Dir(strings.TrimPrefix(resultingPath, "/")))
 
 	if _, err := os.Stat(mountPath); err != nil {
 		if os.IsNotExist(err) {
