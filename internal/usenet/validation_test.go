@@ -253,7 +253,7 @@ func TestSelectSegmentsForValidation(t *testing.T) {
 		assert.Equal(t, 5, len(selected))
 	})
 
-	t.Run("cap 1005", func(t *testing.T) {
+	t.Run("cap 55", func(t *testing.T) {
 		// Create 20,000 segments (10% = 2000)
 		largeSegments := make([]*metapb.SegmentData, 20000)
 		for i := 0; i < 20000; i++ {
@@ -261,6 +261,6 @@ func TestSelectSegmentsForValidation(t *testing.T) {
 		}
 
 		selected := selectSegmentsForValidation(largeSegments, 10, rnd)
-		assert.Equal(t, 1005, len(selected), "Should be capped at 1005")
+		assert.Equal(t, 55, len(selected), "Should be capped at 55")
 	})
 }
