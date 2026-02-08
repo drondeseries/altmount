@@ -150,3 +150,15 @@ type ImportDailyStat struct {
 	FailedCount    int       `db:"failed_count"`
 	UpdatedAt      time.Time `db:"updated_at"`
 }
+
+// ImportHistory represents a persistent record of a single imported file
+type ImportHistory struct {
+	ID           int64     `db:"id"`
+	NzbID        *int64    `db:"nzb_id"` // Nullable if queue item deleted
+	NzbName      string    `db:"nzb_name"`
+	FileName     string    `db:"file_name"`
+	FileSize     int64     `db:"file_size"`
+	VirtualPath  string    `db:"virtual_path"`
+	Category     *string   `db:"category"`
+	CompletedAt  time.Time `db:"completed_at"`
+}

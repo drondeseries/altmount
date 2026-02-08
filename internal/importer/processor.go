@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/javi11/altmount/internal/config"
+	"github.com/javi11/altmount/internal/database"
 	"github.com/javi11/altmount/internal/importer/archive/rar"
 	"github.com/javi11/altmount/internal/importer/archive/sevenzip"
 	"github.com/javi11/altmount/internal/importer/filesystem"
@@ -41,6 +42,7 @@ type Processor struct {
 	allowedFileExtensions   []string
 	log                     *slog.Logger
 	broadcaster             *progress.ProgressBroadcaster // WebSocket progress broadcaster
+	recorder                HistoryRecorder
 
 	// Pre-compiled regex patterns for RAR file sorting
 	rarPartPattern    *regexp.Regexp // pattern.part###.rar
@@ -49,7 +51,7 @@ type Processor struct {
 }
 
 // NewProcessor creates a new NZB processor using metadata storage
-func NewProcessor(metadataService *metadata.MetadataService, poolManager pool.Manager, maxImportConnections int, segmentSamplePercentage int, allowedFileExtensions []string, importCacheSizeMB int, readTimeout time.Duration, broadcaster *progress.ProgressBroadcaster, configGetter config.ConfigGetter) *Processor {
+func NewProcessor(metadataService *metadata.MetadataService, poolManager pool.Manager, maxImportConnections int, segmentSamplePercentage int, allowedFileExtensions []string, importCacheSizeMB int, readTimeout time.Duration, broadcaster *progress.ProgressBroadcaster, configGetter config.ConfigGetter, recorder HistoryRecorder) *Processor {
 	return &Processor{
 		parser:                  parser.NewParser(poolManager),
 		strmParser:              parser.NewStrmParser(),
@@ -64,6 +66,7 @@ func NewProcessor(metadataService *metadata.MetadataService, poolManager pool.Ma
 		allowedFileExtensions:   allowedFileExtensions,
 		log:                     slog.Default().With("component", "nzb-processor"),
 		broadcaster:             broadcaster,
+		recorder:                recorder,
 
 		// Initialize pre-compiled regex patterns for RAR file sorting
 		rarPartPattern:    regexp.MustCompile(`^(.+)\.part(\d+)\.rar$`), // filename.part001.rar
@@ -148,9 +151,15 @@ func (proc *Processor) checkCancellation(ctx context.Context) error {
 }
 
 // ProcessNzbFile processes an NZB or STRM file maintaining the folder structure relative to relative path
-func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePath string, queueID int, allowedExtensionsOverride *[]string, virtualDirOverride *string, extractedFiles []parser.ExtractedFileInfo) (string, error) {
+func (proc *Processor) ProcessNzbFile(ctx context.Context, item *database.ImportQueueItem, allowedExtensionsOverride *[]string, virtualDirOverride *string, extractedFiles []parser.ExtractedFileInfo) (string, error) {
 	// Determine max connections to use
 	maxConnections := proc.maxImportConnections
+	queueID := int(item.ID)
+	filePath := item.NzbPath
+	relativePath := ""
+	if item.RelativePath != nil {
+		relativePath = *item.RelativePath
+	}
 
 	// Determine allowed file extensions to use
 	allowedExtensions := proc.allowedFileExtensions
@@ -233,23 +242,23 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 	switch parsed.Type {
 	case parser.NzbTypeSingleFile:
 		proc.updateProgress(queueID, 30)
-		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout)
+		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout, item.Category)
 
 	case parser.NzbTypeMultiFile:
 		proc.updateProgress(queueID, 30)
-		result, err = proc.processMultiFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout)
+		result, err = proc.processMultiFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout, item.Category)
 
 	case parser.NzbTypeRarArchive:
 		proc.updateProgress(queueID, 30)
-		result, err = proc.processRarArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions, proc.validationTimeout, parsed.ExtractedFiles)
+		result, err = proc.processRarArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions, proc.validationTimeout, parsed.ExtractedFiles, item.Category)
 
 	case parser.NzbType7zArchive:
 		proc.updateProgress(queueID, 30)
-		result, err = proc.processSevenZipArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions, proc.validationTimeout, parsed.ExtractedFiles)
+		result, err = proc.processSevenZipArchive(ctx, virtualDir, regularFiles, archiveFiles, parsed, queueID, maxConnections, allowedExtensions, proc.validationTimeout, parsed.ExtractedFiles, item.Category)
 
 	case parser.NzbTypeStrm:
 		proc.updateProgress(queueID, 30)
-		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout)
+		result, err = proc.processSingleFile(ctx, virtualDir, regularFiles, par2Files, parsed.Path, queueID, maxConnections, allowedExtensions, proc.validationTimeout, item.Category)
 
 	default:
 		return "", NewNonRetryableError(fmt.Sprintf("unknown file type: %s", parsed.Type), nil)
@@ -274,6 +283,7 @@ func (proc *Processor) processSingleFile(
 	maxConnections int,
 	allowedExtensions []string,
 	timeout time.Duration,
+	category *string,
 ) (string, error) {
 	if len(regularFiles) == 0 {
 		return "", fmt.Errorf("no regular files to process")
@@ -343,6 +353,9 @@ func (proc *Processor) processSingleFile(
 		samplePercentage,
 		allowedExtensions,
 		timeout,
+		proc.recorder,
+		int64(queueID),
+		category,
 	)
 	if err != nil {
 		return "", err
@@ -361,6 +374,7 @@ func (proc *Processor) processMultiFile(
 	maxConnections int,
 	allowedExtensions []string,
 	timeout time.Duration,
+	category *string,
 ) (string, error) {
 	// If there's only one regular file (and the rest are likely PAR2s), avoid creating a redundant
 	// NZB-named directory that matches the file itself. Instead, keep the file directly under the
@@ -417,6 +431,9 @@ func (proc *Processor) processMultiFile(
 		samplePercentage,
 		allowedExtensions,
 		timeout,
+		proc.recorder,
+		int64(queueID),
+		category,
 	); err != nil {
 		return "", err
 	}
@@ -435,6 +452,7 @@ func (proc *Processor) processRarArchive(
 	allowedExtensions []string,
 	timeout time.Duration,
 	extractedFiles []parser.ExtractedFileInfo,
+	category *string,
 ) (string, error) {
 	// Create NZB folder
 	nzbFolder, err := filesystem.CreateNzbFolder(virtualDir, proc.getCleanNzbName(parsed.Path, queueID), proc.metadataService)
@@ -460,6 +478,9 @@ func (proc *Processor) processRarArchive(
 			proc.segmentSamplePercentage,
 			allowedExtensions,
 			proc.validationTimeout,
+			proc.recorder,
+			int64(queueID),
+			category,
 		); err != nil {
 			slog.DebugContext(ctx, "Failed to process regular files", "error", err)
 		}
@@ -502,6 +523,9 @@ func (proc *Processor) processRarArchive(
 			allowedExtensions,
 			timeout,
 			extractedFiles,
+			proc.recorder,
+			int64(queueID),
+			category,
 		)
 		if err != nil {
 			return "", err
@@ -523,6 +547,7 @@ func (proc *Processor) processSevenZipArchive(
 	allowedExtensions []string,
 	timeout time.Duration,
 	extractedFiles []parser.ExtractedFileInfo,
+	category *string,
 ) (string, error) {
 	// Create NZB folder
 	nzbFolder, err := filesystem.CreateNzbFolder(virtualDir, proc.getCleanNzbName(parsed.Path, queueID), proc.metadataService)
@@ -548,6 +573,9 @@ func (proc *Processor) processSevenZipArchive(
 			proc.segmentSamplePercentage,
 			allowedExtensions,
 			proc.validationTimeout,
+			proc.recorder,
+			int64(queueID),
+			category,
 		); err != nil {
 			slog.DebugContext(ctx, "Failed to process regular files", "error", err)
 		}
@@ -590,6 +618,9 @@ func (proc *Processor) processSevenZipArchive(
 			allowedExtensions,
 			timeout,
 			extractedFiles,
+			proc.recorder,
+			int64(queueID),
+			category,
 		)
 		if err != nil {
 			return "", err

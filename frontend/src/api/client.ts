@@ -745,6 +745,14 @@ export class APIClient {
 		return this.request<ScanStatusResponse>("/import/scan/status");
 	}
 
+	async getImportHistory(limit?: number) {
+		const searchParams = new URLSearchParams();
+		if (limit) searchParams.set("limit", limit.toString());
+
+		const query = searchParams.toString();
+		return this.request<any[]>(`/import/history${query ? `?${query}` : ""}`);
+	}
+
 	async cancelScan() {
 		return this.request<ScanStatusResponse>("/import/scan", {
 			method: "DELETE",

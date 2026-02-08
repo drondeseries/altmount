@@ -190,11 +190,6 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		readTimeout = 5 * time.Minute
 	}
 
-	// Create processor with poolManager for dynamic pool access
-	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter)
-
-	ctx, cancel := context.WithCancel(context.Background())
-
 	// Create post-processor coordinator
 	postProc := postprocessor.NewCoordinator(postprocessor.Config{
 		ConfigGetter:    configGetter,
@@ -208,7 +203,6 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		config:          config,
 		metadataService: metadataService,
 		database:        database,
-		processor:       processor,
 		postProcessor:   postProc,
 		rcloneClient:    rcloneClient,
 		configGetter:    configGetter,
@@ -222,6 +216,10 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 		cancelFuncs:     make(map[int64]context.CancelFunc),
 		paused:          false,
 	}
+
+	// Create processor with poolManager for dynamic pool access
+	processor := NewProcessor(metadataService, poolManager, maxImportConnections, segmentSamplePercentage, allowedFileExtensions, importCacheSizeMB, readTimeout, broadcaster, configGetter, service)
+	service.processor = processor
 
 	// Create scanner adapter for directory scanning
 	scannerAdapter := &queueAdapterForScanner{
@@ -251,6 +249,11 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	)
 
 	return service, nil
+}
+
+// AddImportHistory records a successful file import in persistent history
+func (s *Service) AddImportHistory(ctx context.Context, history *database.ImportHistory) error {
+	return s.database.Repository.AddImportHistory(ctx, history)
 }
 
 // Start starts the NZB import service (queue workers only, manual scanning available via API)

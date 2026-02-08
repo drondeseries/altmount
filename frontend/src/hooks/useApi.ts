@@ -410,6 +410,14 @@ export const useCancelScan = () => {
 	});
 };
 
+export const useImportHistory = (limit?: number, refetchInterval?: number) => {
+	return useQuery({
+		queryKey: ["import", "history", limit],
+		queryFn: () => apiClient.getImportHistory(limit),
+		refetchInterval: refetchInterval,
+	});
+};
+
 // NZBDav Import hooks
 export const useNzbdavImportStatus = (refetchInterval?: number) => {
 	return useQuery({

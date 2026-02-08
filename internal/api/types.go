@@ -349,6 +349,18 @@ type QueueHistoryRange struct {
 	Percentage float64 `json:"percentage"`
 }
 
+// ImportHistoryResponse represents a persistent import record in API responses
+type ImportHistoryResponse struct {
+	ID          int64     `json:"id"`
+	NzbID       *int64    `json:"nzb_id"`
+	NzbName     string    `json:"nzb_name"`
+	FileName    string    `json:"file_name"`
+	FileSize    int64     `json:"file_size"`
+	VirtualPath string    `json:"virtual_path"`
+	Category    *string   `json:"category"`
+	CompletedAt time.Time `json:"completed_at"`
+}
+
 // DailyStat represents statistics for a single day
 type DailyStat struct {
 	Day       string `json:"day"`
@@ -615,6 +627,23 @@ func ToQueueHistoricalStatsResponse(stats []*database.ImportDailyStat) *QueueHis
 	calcPercentage(&response.Last365Days)
 
 	return response
+}
+
+// ToImportHistoryResponse converts database.ImportHistory to ImportHistoryResponse
+func ToImportHistoryResponse(h *database.ImportHistory) *ImportHistoryResponse {
+	if h == nil {
+		return nil
+	}
+	return &ImportHistoryResponse{
+		ID:          h.ID,
+		NzbID:       h.NzbID,
+		NzbName:     h.NzbName,
+		FileName:    h.FileName,
+		FileSize:    h.FileSize,
+		VirtualPath: h.VirtualPath,
+		Category:    h.Category,
+		CompletedAt: h.CompletedAt,
+	}
 }
 
 // ToHealthItemResponse converts database.FileHealth to HealthItemResponse
