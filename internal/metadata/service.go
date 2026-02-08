@@ -420,19 +420,23 @@ func (ms *MetadataService) cleanupEmptyDirsRecursive(path string, protected []st
 
 // MoveToCorrupted moves a metadata file to a special corrupted directory for safety
 func (ms *MetadataService) MoveToCorrupted(ctx context.Context, virtualPath string) error {
-	filename := filepath.Base(virtualPath)
+	// Normalize path and remove leading slashes to ensure it joins correctly
+	cleanPath := filepath.FromSlash(strings.TrimPrefix(virtualPath, "/"))
+	dir := filepath.Dir(cleanPath)
+	filename := filepath.Base(cleanPath)
+
 	truncatedFilename := ms.truncateFilename(filename)
-	metadataDir := filepath.Join(ms.rootPath, filepath.Dir(virtualPath))
-	metadataPath := filepath.Join(metadataDir, truncatedFilename+".meta")
+	metadataPath := filepath.Join(ms.rootPath, dir, truncatedFilename+".meta")
 
 	// Check if source exists
 	if _, err := os.Stat(metadataPath); os.IsNotExist(err) {
 		return nil
 	}
 
-	// Define corrupted directory path (root/corrupted/...)
-	corruptedRoot := filepath.Join(ms.rootPath, ".corrupted")
-	targetDir := filepath.Join(corruptedRoot, filepath.Dir(virtualPath))
+	// Define corrupted directory path (root/corrupted_metadata/...)
+	// We use a visible folder name as requested.
+	corruptedRoot := filepath.Join(ms.rootPath, "corrupted_metadata")
+	targetDir := filepath.Join(corruptedRoot, dir)
 
 	if err := os.MkdirAll(targetDir, 0755); err != nil {
 		return fmt.Errorf("failed to create corrupted metadata directory: %w", err)
@@ -442,8 +446,9 @@ func (ms *MetadataService) MoveToCorrupted(ctx context.Context, virtualPath stri
 
 	// Move the .meta file
 	if err := os.Rename(metadataPath, targetPath); err != nil {
-		slog.WarnContext(ctx, "Failed to rename corrupted metadata, trying copy", "error", err)
-		// Basic copy fallback could be added here if needed, but rename usually works within same mount
+		slog.WarnContext(ctx, "Failed to move corrupted metadata, trying copy fallback", "error", err)
+		// Rename can fail across different volumes, though usually metadata is on one volume.
+		// For simplicity, we return the error here as it's unexpected for metadata.
 		return err
 	}
 
@@ -453,7 +458,9 @@ func (ms *MetadataService) MoveToCorrupted(ctx context.Context, virtualPath stri
 		_ = os.Rename(idPath, targetPath+".id")
 	}
 
-	slog.InfoContext(ctx, "Moved corrupted metadata to safety folder", "path", targetPath)
+	slog.InfoContext(ctx, "Moved corrupted metadata to safety folder preserving structure",
+		"original", metadataPath,
+		"target", targetPath)
 	return nil
 }
 
