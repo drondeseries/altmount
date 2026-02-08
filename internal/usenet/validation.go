@@ -71,8 +71,8 @@ func ValidateSegmentAvailability(
 			if verifyData {
 				// Hybrid mode: attempt to read a few bytes of the segment body
 				// to ensure the provider actually has the data.
-				// We use a limited writer to read 16 bytes and check if they are all zeros.
-				lw := &limitedWriter{limit: 16, allZeros: true}
+				// We use a limited writer to read 1 byte and check if it is all zeros.
+				lw := &limitedWriter{limit: 1, allZeros: true}
 				_, err = usenetPool.Body(checkCtx, seg.Id, lw, []string{})
 
 				// If we reached our limit, it means the segment data is accessible.
@@ -171,8 +171,8 @@ func ValidateSegmentAvailabilityDetailed(
 			if verifyData {
 				// Hybrid mode: attempt to read a few bytes of the segment body
 				// to ensure the provider actually has the data.
-				// We use a limited writer to read 16 bytes and check if they are all zeros.
-				lw := &limitedWriter{limit: 16, allZeros: true}
+				// We use a limited writer to read 1 byte and check if it is all zeros.
+				lw := &limitedWriter{limit: 1, allZeros: true}
 				_, err = usenetPool.Body(checkCtx, seg.Id, lw, []string{})
 
 				// If we reached our limit, it means the segment data is accessible.
