@@ -60,7 +60,7 @@ func ValidateSegmentAvailability(
 	var validatedCount int32
 
 	// Validate segments concurrently with connection limit
-	pl := concpool.New().WithErrors().WithFirstError().WithMaxGoroutines(maxConnections)
+	pl := concpool.New().WithErrors().WithFirstError().WithMaxGoroutines(maxConnections).WithContext(ctx)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
 		pl.Go(func() error {
@@ -160,7 +160,7 @@ func ValidateSegmentAvailabilityDetailed(
 
 	// Validate segments concurrently with connection limit
 	// We don't use WithFirstError because we want to check all selected segments
-	pl := concpool.New().WithErrors().WithMaxGoroutines(maxConnections)
+	pl := concpool.New().WithErrors().WithMaxGoroutines(maxConnections).WithContext(ctx)
 	for _, segment := range segmentsToValidate {
 		seg := segment // Capture loop variable
 		pl.Go(func() error {
