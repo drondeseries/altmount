@@ -28,22 +28,35 @@ export function QueueHistoricalStatsCard() {
 	return (
 		<div className="card bg-base-100 shadow-lg">
 			<div className="card-body">
-				<div className="flex items-center justify-between">
+				<div className="flex flex-wrap items-center justify-between gap-4">
 					<h2 className="card-title">
 						<History className="h-5 w-5" />
 						Import History
 					</h2>
-					<div className="join">
-						{ranges.map((range) => (
-							<button
-								key={range.label}
-								type="button"
-								className={`btn btn-xs join-item ${days === range.value ? "btn-primary" : "btn-ghost"}`}
-								onClick={() => setDays(range.value)}
-							>
-								{range.label}
-							</button>
-						))}
+					<div className="flex items-center gap-2">
+						<div className="join">
+							{ranges.map((range) => (
+								<button
+									key={range.label}
+									type="button"
+									className={`btn btn-sm join-item ${days === range.value ? "btn-primary" : "btn-outline"}`}
+									onClick={() => setDays(range.value)}
+								>
+									{range.label}
+								</button>
+							))}
+						</div>
+						<div className="flex items-center gap-1">
+							<input
+								type="number"
+								className="input input-bordered input-sm w-16"
+								value={days}
+								onChange={(e) => setDays(Math.max(1, Math.min(365, Number.parseInt(e.target.value) || 1)))}
+								min="1"
+								max="365"
+							/>
+							<span className="text-base-content/70 text-xs">days</span>
+						</div>
 					</div>
 				</div>
 
