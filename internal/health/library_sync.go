@@ -706,6 +706,7 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	}
 
 	// Cleanup orphaned library files (symlinks and STRM files without metadata)
+	metadataDeletedCount := 0
 	libraryFilesDeletedCount := 0
 	libraryDirsDeletedCount := 0
 
