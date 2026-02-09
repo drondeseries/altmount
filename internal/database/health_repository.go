@@ -1506,18 +1506,31 @@ func (r *HealthRepository) RenameHealthRecord(ctx context.Context, oldPath, newP
 	oldPath = strings.TrimPrefix(oldPath, "/")
 	newPath = strings.TrimPrefix(newPath, "/")
 
-	query := `
-		UPDATE file_health
-		SET file_path = ?,
-		    library_path = CASE 
-				WHEN library_path = ? THEN ? 
-				ELSE library_path 
-			END,
-		    updated_at = datetime('now')
-		WHERE file_path = ?
-	`
+		query := `
 
-        _, err := r.db.ExecContext(ctx, query, newPath, oldPath, newPath, oldPath)
+			UPDATE file_health
+
+			SET file_path = ?,
+
+			    library_path = CASE 
+
+					WHEN library_path IS NULL OR library_path = ? OR library_path = '/' || ? OR library_path LIKE '%' || ? THEN ? 
+
+					ELSE library_path 
+
+				END,
+
+			    updated_at = datetime('now')
+
+			WHERE file_path = ?
+
+		`
+
+	
+
+		_, err := r.db.ExecContext(ctx, query, newPath, oldPath, oldPath, oldPath, newPath, oldPath)
+
+	
         if err != nil {
                 return fmt.Errorf("failed to rename health record: %w", err)
         }

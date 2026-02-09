@@ -323,14 +323,14 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 			var releaseDate *time.Time
 			var sourceNzb *string
 
-			// Handle Rename specifically: try to find and re-link old record
-			if req.EventType == "Rename" {
+			// Handle Rename and Download specifically: try to find and re-link old record
+			if req.EventType == "Rename" || req.EventType == "Download" {
 				fileName := filepath.Base(normalizedPath)
 				// Try to find a record with the same filename but currently under /complete/
 				// or with a NULL library_path
 				if err := s.healthRepo.RelinkFileByFilename(c.Context(), fileName, normalizedPath, path); err == nil {
-					slog.InfoContext(c.Context(), "Successfully re-linked health record during Rename webhook",
-						"filename", fileName, "new_library_path", path)
+					slog.InfoContext(c.Context(), "Successfully re-linked health record during webhook",
+						"event", req.EventType, "filename", fileName, "new_library_path", path)
 					continue // Successfully re-linked, no need to add new
 				}
 			}
