@@ -632,17 +632,21 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			// try to see if it's at the expected location even if not in filesInUse
 			if existingRecord != nil && libraryPath == nil {
 				lp := existingRecord.LibraryPath
+				// A path needs recovery if it's nil, missing from disk, or is a relative path (buggy)
 				needsRecovery := lp == nil
 				
 				if !needsRecovery {
-					// It has a path, but is the file actually there?
-					if _, err := os.Stat(*lp); os.IsNotExist(err) {
+					// Check if path is absolute and file exists
+					if !filepath.IsAbs(*lp) {
+						needsRecovery = true
+					} else if _, err := os.Stat(*lp); os.IsNotExist(err) {
 						needsRecovery = true
 					}
 				}
 
 				if needsRecovery {
-					expectedPath := filepath.Join(cfg.MountPath, path)
+					// Use the configured mount path to build an absolute expected path
+					expectedPath := pathutil.JoinAbsPath(cfg.MountPath, path)
 					if _, err := os.Stat(expectedPath); err == nil {
 						// Found it! Use this recovered path
 						libStr := expectedPath
