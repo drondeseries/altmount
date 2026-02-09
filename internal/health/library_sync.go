@@ -632,9 +632,16 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 
 			// Fast Path Recovery: If record exists but has no library path OR has a broken 'complete' path, 
 			// try to see if it's at the expected location even if not in filesInUse
-			isBrokenCompletePath := recordExists && existingRecord.LibraryPath != nil && 
-				strings.Contains(*existingRecord.LibraryPath, "/complete/") && 
-				libraryPath == nil
+			isBrokenCompletePath := false
+			if recordExists && existingRecord.LibraryPath != nil {
+				lp := *existingRecord.LibraryPath
+				if strings.Contains(lp, "/complete/") {
+					// Check if it actually exists at that path
+					if _, err := os.Stat(lp); os.IsNotExist(err) {
+						isBrokenCompletePath = true
+					}
+				}
+			}
 
 			if recordExists && (existingRecord.LibraryPath == nil || isBrokenCompletePath) && libraryPath == nil {
 				expectedPath := filepath.Join(cfg.MountPath, path)
