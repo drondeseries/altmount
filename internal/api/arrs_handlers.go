@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -321,6 +322,18 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 		if s.healthRepo != nil {
 			var releaseDate *time.Time
 			var sourceNzb *string
+
+			// Handle Rename specifically: try to find and re-link old record
+			if req.EventType == "Rename" {
+				fileName := filepath.Base(normalizedPath)
+				// Try to find a record with the same filename but currently under /complete/
+				// or with a NULL library_path
+				if err := s.healthRepo.RelinkFileByFilename(c.Context(), fileName, normalizedPath, path); err == nil {
+					slog.InfoContext(c.Context(), "Successfully re-linked health record during Rename webhook",
+						"filename", fileName, "new_library_path", path)
+					continue // Successfully re-linked, no need to add new
+				}
+			}
 
 			// Try to read metadata to get release date
 			if s.metadataService != nil {
