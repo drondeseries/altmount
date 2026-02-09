@@ -620,47 +620,56 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 
 		p.Go(func() {
 			// Check if needs to be added or repaired
-			recordExists := false
 			var existingRecord *database.AutomaticHealthCheckRecord
 			if it, exists := dbPathSet[path]; exists {
-				recordExists = true
 				existingRecord = &it
 			}
 
-			// Look up library path from our map
+			// Look up library path from our map (found via symlinks/strm scanning)
 			libraryPath := lsw.getLibraryPath(path, filesInUse)
 
-			// Fast Path Recovery: If record exists but has no library path OR has a broken 'complete' path, 
+			// Path Recovery: If record exists but the physical path is broken, 
 			// try to see if it's at the expected location even if not in filesInUse
-			isBrokenCompletePath := false
-			if recordExists && existingRecord.LibraryPath != nil {
-				lp := *existingRecord.LibraryPath
-				if strings.Contains(lp, "/complete/") {
-					// Check if it actually exists at that path
-					if _, err := os.Stat(lp); os.IsNotExist(err) {
-						isBrokenCompletePath = true
+			if existingRecord != nil && libraryPath == nil {
+				lp := existingRecord.LibraryPath
+				needsRecovery := lp == nil
+				
+				if !needsRecovery {
+					// It has a path, but is the file actually there?
+					if _, err := os.Stat(*lp); os.IsNotExist(err) {
+						needsRecovery = true
+					}
+				}
+
+				if needsRecovery {
+					expectedPath := filepath.Join(cfg.MountPath, path)
+					if _, err := os.Stat(expectedPath); err == nil {
+						// Found it! Use this recovered path
+						libStr := expectedPath
+						libraryPath = &libStr
+						slog.InfoContext(ctx, "Recovered broken library path", 
+							"path", path, "new_location", expectedPath)
+						
+						// Update DB immediately for this recovered path
+						if err := lsw.healthRepo.UpdateLibraryPath(ctx, path, expectedPath); err != nil {
+							slog.ErrorContext(ctx, "Failed to update recovered library path", 
+								"path", path, "error", err)
+						}
 					}
 				}
 			}
 
-			if recordExists && (existingRecord.LibraryPath == nil || isBrokenCompletePath) && libraryPath == nil {
-				expectedPath := filepath.Join(cfg.MountPath, path)
-				if _, err := os.Stat(expectedPath); err == nil {
-					// Found it at the expected location!
-					libStr := expectedPath
-					libraryPath = &libStr
-					slog.InfoContext(ctx, "Recovered library path for record", 
-						"path", path, "recovered_location", expectedPath)
-					
-					// Update DB immediately for this recovered path
-					if err := lsw.healthRepo.UpdateLibraryPath(ctx, path, expectedPath); err != nil {
-						slog.ErrorContext(ctx, "Failed to update recovered library path", 
-							"path", path, "error", err)
-					}
+			// Determine if we need to update/add the record
+			needsProcess := existingRecord == nil
+			if !needsProcess {
+				// Update if library path changed (e.g. renamed or recovered)
+				oldLP := existingRecord.LibraryPath
+				if libraryPath != nil && (oldLP == nil || *oldLP != *libraryPath) {
+					needsProcess = true
 				}
 			}
 
-			if !recordExists || (existingRecord.LibraryPath == nil && libraryPath != nil) {
+			if needsProcess {
 				record, err := lsw.processMetadataForSync(ctx, path, libraryPath)
 				if err != nil {
 					slog.ErrorContext(ctx, "Failed to read metadata",
