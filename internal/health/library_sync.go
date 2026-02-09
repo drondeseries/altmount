@@ -596,8 +596,18 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	dbPathSet := syncMaps.dbPathSet
 
 	// Find files to add (in filesystem but not in database)
+	// Collect results via channel to avoid large slice allocations and lock contention
+	filesToAddChan := make(chan database.AutomaticHealthCheckRecord, 100)
 	var filesToAdd []database.AutomaticHealthCheckRecord
-	var filesToAddMu sync.Mutex
+	
+	// Start a goroutine to collect results from the channel
+	done := make(chan struct{})
+	go func() {
+		for record := range filesToAddChan {
+			filesToAdd = append(filesToAdd, record)
+		}
+		close(done)
+	}()
 
 	// Get concurrency setting (default to 10 if not set)
 	concurrency := cfg.Health.LibrarySyncConcurrency
@@ -611,6 +621,8 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	for mountRelativePath := range metaFileSet {
 		select {
 		case <-ctx.Done():
+			p.Wait()
+			close(filesToAddChan)
 			return nil
 		default:
 		}
@@ -691,9 +703,7 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 				}
 
 				if record != nil {
-					filesToAddMu.Lock()
-					filesToAdd = append(filesToAdd, *record)
-					filesToAddMu.Unlock()
+					filesToAddChan <- *record
 				}
 			}
 
@@ -703,8 +713,10 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		})
 	}
 
-	// Wait for all workers to complete
+	// Wait for all workers to complete and close results channel
 	p.Wait()
+	close(filesToAddChan)
+	<-done
 
 	// Additional cleanup of orphaned database records if enabled
 	// We no longer delete metadata files here for safety.
