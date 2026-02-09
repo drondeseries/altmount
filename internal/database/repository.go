@@ -1022,7 +1022,15 @@ func (r *Repository) BatchUpdateSystemStats(ctx context.Context, stats map[strin
 		return nil
 	}
 
-	tx, err := r.db.BeginTx(ctx, nil)
+	// Cast to *sql.DB to access BeginTx method
+	sqlDB, ok := r.db.(*sql.DB)
+	if !ok {
+		// If we're already in a transaction, we can just execute the statements
+		// However, it's better to provide a consistent way to handle this
+		return fmt.Errorf("repository not connected to sql.DB, cannot begin transaction")
+	}
+
+	tx, err := sqlDB.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
