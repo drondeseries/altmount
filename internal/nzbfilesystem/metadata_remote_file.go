@@ -297,6 +297,7 @@ func (mrf *MetadataRemoteFile) RenameFile(ctx context.Context, oldName, newName 
 		if err := os.Rename(oldDirPath, newDirPath); err != nil {
 			return false, fmt.Errorf("failed to rename directory: %w", err)
 		}
+
 		return true, nil
 	}
 

@@ -149,8 +149,75 @@ func (r *HealthRepository) GetUnhealthyFiles(ctx context.Context, limit int) ([]
 		return nil, fmt.Errorf("failed to iterate unhealthy files: %w", err)
 	}
 
-	return files, nil
-}
+				return files, nil
+
+	
+
+			}
+
+	
+
+	// RelinkFileByFilename attempts to find a health record with the same filename and update its paths
+
+	func (r *HealthRepository) RelinkFileByFilename(ctx context.Context, fileName, newVirtualPath, newLibraryPath string) error {
+
+		newVirtualPath = strings.TrimPrefix(newVirtualPath, "/")
+
+		
+
+		// We look for a record that:
+
+		// 1. Ends with the same filename
+
+		// 2. Is NOT already at the correct path
+
+		// 3. Either has a NULL library_path or is in /complete/
+
+		query := `
+
+			UPDATE file_health
+
+			SET file_path = ?,
+
+			    library_path = ?,
+
+			    updated_at = datetime('now')
+
+			WHERE (file_path LIKE '%' || ? OR library_path LIKE '%' || ?)
+
+			  AND file_path != ?
+
+			  AND (library_path IS NULL OR library_path LIKE '%/complete/%' OR library_path LIKE 'complete/%')
+
+		`
+
+	
+
+		result, err := r.db.ExecContext(ctx, query, newVirtualPath, newLibraryPath, fileName, fileName, newVirtualPath)
+
+		if err != nil {
+
+			return err
+
+		}
+
+	
+
+		rows, _ := result.RowsAffected()
+
+		if rows == 0 {
+
+			return fmt.Errorf("no matching record found to re-link")
+
+		}
+
+	
+
+		return nil
+
+	}
+
+	
 
 // SetPriority sets the priority for a file health record
 func (r *HealthRepository) SetPriority(ctx context.Context, id int64, priority HealthPriority) error {
@@ -1442,13 +1509,48 @@ func (r *HealthRepository) RenameHealthRecord(ctx context.Context, oldPath, newP
 	query := `
 		UPDATE file_health
 		SET file_path = ?,
+		    library_path = CASE 
+				WHEN library_path = ? THEN ? 
+				ELSE library_path 
+			END,
 		    updated_at = datetime('now')
 		WHERE file_path = ?
 	`
 
-	_, err := r.db.ExecContext(ctx, query, newPath, oldPath)
+        _, err := r.db.ExecContext(ctx, query, newPath, oldPath, newPath, oldPath)
+        if err != nil {
+                return fmt.Errorf("failed to rename health record: %w", err)
+        }
+
+        return nil
+}
+
+// RelinkFileByFilename attempts to find a health record with the same filename and update its paths
+func (r *HealthRepository) RelinkFileByFilename(ctx context.Context, fileName, newVirtualPath, newLibraryPath string) error {
+	newVirtualPath = strings.TrimPrefix(newVirtualPath, "/")
+	
+	// We look for a record that:
+	// 1. Ends with the same filename
+	// 2. Is NOT already at the correct path
+	// 3. Either has a NULL library_path or is in /complete/
+	query := `
+		UPDATE file_health
+		SET file_path = ?,
+		    library_path = ?,
+		    updated_at = datetime('now')
+		WHERE (file_path LIKE '%' || ? OR library_path LIKE '%' || ?)
+		  AND file_path != ?
+		  AND (library_path IS NULL OR library_path LIKE '%/complete/%' OR library_path LIKE 'complete/%')
+	`
+
+	result, err := r.db.ExecContext(ctx, query, newVirtualPath, newLibraryPath, fileName, fileName, newVirtualPath)
 	if err != nil {
-		return fmt.Errorf("failed to rename health record: %w", err)
+		return err
+	}
+
+	rows, _ := result.RowsAffected()
+	if rows == 0 {
+		return fmt.Errorf("no matching record found to re-link")
 	}
 
 	return nil

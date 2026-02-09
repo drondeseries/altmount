@@ -619,11 +619,37 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		path := mountRelativePath
 
 		p.Go(func() {
-			// Check if needs to be added
-			if it, exists := dbPathSet[path]; !exists || it.LibraryPath == nil {
-				// Look up library path from our map
-				libraryPath := lsw.getLibraryPath(path, filesInUse)
+			// Check if needs to be added or repaired
+			recordExists := false
+			var existingRecord *database.AutomaticHealthCheckRecord
+			if it, exists := dbPathSet[path]; exists {
+				recordExists = true
+				existingRecord = &it
+			}
 
+			// Look up library path from our map
+			libraryPath := lsw.getLibraryPath(path, filesInUse)
+
+			// Fast Path Recovery: If record exists but has no library path, 
+			// try to see if it's at the expected location even if not in filesInUse
+			if recordExists && existingRecord.LibraryPath == nil && libraryPath == nil {
+				expectedPath := filepath.Join(cfg.MountPath, path)
+				if _, err := os.Stat(expectedPath); err == nil {
+					// Found it at the expected location!
+					libStr := expectedPath
+					libraryPath = &libStr
+					slog.InfoContext(ctx, "Recovered library path for record", 
+						"path", path, "recovered_location", expectedPath)
+					
+					// Update DB immediately for this recovered path
+					if err := lsw.healthRepo.UpdateLibraryPath(ctx, path, expectedPath); err != nil {
+						slog.ErrorContext(ctx, "Failed to update recovered library path", 
+							"path", path, "error", err)
+					}
+				}
+			}
+
+			if !recordExists || (existingRecord.LibraryPath == nil && libraryPath != nil) {
 				record, err := lsw.processMetadataForSync(ctx, path, libraryPath)
 				if err != nil {
 					slog.ErrorContext(ctx, "Failed to read metadata",
@@ -656,8 +682,8 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	// Wait for all workers to complete
 	p.Wait()
 
-	// Additional cleanup of orphaned metadata files if enabled
-	metadataDeletedCount := 0
+	// Additional cleanup of orphaned database records if enabled
+	// We no longer delete metadata files here for safety.
 	if shouldCleanup {
 		// We already have libraryFiles from earlier in the function
 		for relativeMountPath := range metaFileSet {
@@ -670,20 +696,11 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			libraryPath := lsw.getLibraryPath(relativeMountPath, filesInUse)
 
 			if libraryPath == nil {
-				if !dryRun {
-					deleteSourceNzb := false
-					if cfg.Metadata.DeleteSourceNzbOnRemoval != nil {
-						deleteSourceNzb = *cfg.Metadata.DeleteSourceNzbOnRemoval
-					}
-					err := lsw.metadataService.DeleteFileMetadataWithSourceNzb(ctx, relativeMountPath, deleteSourceNzb)
-					if err != nil {
-						slog.ErrorContext(ctx, "Failed to delete metadata file", "error", err)
-						continue
-					}
-					// Remove from our set so the database cleanup step below knows it's gone
-					delete(metaFileSet, relativeMountPath)
-				}
-				metadataDeletedCount++
+				// We used to delete metadata here, but it's removed for safety.
+				// If a file is missing from the library, we just let the database cleanup handle it later
+				// or keep the metadata so it can be re-linked if found.
+				slog.DebugContext(ctx, "File missing from library, but preserving metadata for safety", 
+					"path", relativeMountPath)
 			}
 		}
 	}
