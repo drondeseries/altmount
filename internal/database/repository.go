@@ -1000,6 +1000,82 @@ func (r *Repository) GetSystemState(ctx context.Context, key string) (string, er
 	return value, nil
 }
 
+// UpdateSystemStat updates a numeric system statistic by key
+func (r *Repository) UpdateSystemStat(ctx context.Context, key string, value int64) error {
+	query := `
+		INSERT INTO system_stats (key, value, updated_at)
+		VALUES (?, ?, datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET
+		value = excluded.value,
+		updated_at = datetime('now')
+	`
+	_, err := r.db.ExecContext(ctx, query, key, value)
+	if err != nil {
+		return fmt.Errorf("failed to update system stat %s: %w", key, err)
+	}
+	return nil
+}
+
+// BatchUpdateSystemStats updates multiple numeric system statistics in a single transaction
+func (r *Repository) BatchUpdateSystemStats(ctx context.Context, stats map[string]int64) error {
+	if len(stats) == 0 {
+		return nil
+	}
+
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	query := `
+		INSERT INTO system_stats (key, value, updated_at)
+		VALUES (?, ?, datetime('now'))
+		ON CONFLICT(key) DO UPDATE SET
+		value = excluded.value,
+		updated_at = datetime('now')
+	`
+
+	stmt, err := tx.PrepareContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement: %w", err)
+	}
+	defer stmt.Close()
+
+	for key, value := range stats {
+		if _, err := stmt.ExecContext(ctx, key, value); err != nil {
+			return fmt.Errorf("failed to execute statement for key %s: %w", key, err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+// GetSystemStats retrieves all numeric system statistics
+func (r *Repository) GetSystemStats(ctx context.Context) (map[string]int64, error) {
+	query := `SELECT key, value FROM system_stats`
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get system stats: %w", err)
+	}
+	defer rows.Close()
+
+	stats := make(map[string]int64)
+	for rows.Next() {
+		var key string
+		var value int64
+		if err := rows.Scan(&key, &value); err != nil {
+			return nil, fmt.Errorf("failed to scan system stat: %w", err)
+		}
+		stats[key] = value
+	}
+	return stats, nil
+}
+
 // GetImportHistory retrieves historical import statistics for the last N days
 func (r *Repository) GetImportHistory(ctx context.Context, days int) ([]*ImportDailyStat, error) {
 	query := `

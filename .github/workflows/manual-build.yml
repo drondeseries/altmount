@@ -244,19 +244,26 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
       # Create sanitized branch name for tag
       - name: Create sanitized tag
         id: tag
         run: |
           # Replace / with - and remove other special characters
           SAFE_BRANCH=$(echo "${{ inputs.branch }}" | sed 's/\//-/g' | sed 's/[^a-zA-Z0-9._-]/-/g')
+          DATE=${{ steps.date.outputs.date }}
           TAG="${SAFE_BRANCH}-${{ inputs.tag_suffix }}"
+          DATED_TAG="${TAG}-${DATE}"
           AMD64_TAG="${TAG}-amd64"
           ARM64_TAG="${TAG}-arm64"
           echo "tag=$TAG" >> $GITHUB_OUTPUT
+          echo "dated_tag=$DATED_TAG" >> $GITHUB_OUTPUT
           echo "amd64_tag=$AMD64_TAG" >> $GITHUB_OUTPUT
           echo "arm64_tag=$ARM64_TAG" >> $GITHUB_OUTPUT
-          echo "Creating multi-arch manifest with tag: $TAG"
+          echo "Creating multi-arch manifest with tags: $TAG, $DATED_TAG"
 
       # Create and push multi-platform manifest
       - name: Create multi-platform manifest
@@ -264,14 +271,20 @@ jobs:
           AMD64_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.amd64_tag }}"
           ARM64_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.arm64_tag }}"
           MANIFEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.tag }}"
+          DATED_MANIFEST_TAG="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.dated_tag }}"
 
           echo "AMD64 Image: $AMD64_IMAGE"
           echo "ARM64 Image: $ARM64_IMAGE"
           echo "Manifest Tag: $MANIFEST_TAG"
+          echo "Dated Manifest Tag: $DATED_MANIFEST_TAG"
 
           # Create and push multi-arch manifest
           docker manifest create $MANIFEST_TAG $AMD64_IMAGE $ARM64_IMAGE
           docker manifest push $MANIFEST_TAG
+
+          # Create and push dated multi-arch manifest
+          docker manifest create $DATED_MANIFEST_TAG $AMD64_IMAGE $ARM64_IMAGE
+          docker manifest push $DATED_MANIFEST_TAG
 
       # Output manifest details
       - name: Manifest created successfully
@@ -279,6 +292,7 @@ jobs:
           echo "✅ Multi-architecture Docker manifest created successfully!"
           echo ""
           echo "📦 Multi-arch image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.tag }}"
+          echo "📦 Dated multi-arch image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.dated_tag }}"
           echo "📦 AMD64 image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.amd64_tag }}"
           echo "📦 ARM64 image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:${{ steps.tag.outputs.arm64_tag }}"
           echo ""

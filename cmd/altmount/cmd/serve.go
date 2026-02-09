@@ -77,7 +77,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 	}()
 
 	repos := setupRepositories(ctx, db)
-	poolManager := pool.NewManager(ctx)
+	poolManager := pool.NewManager(ctx, repos.MainRepo)
 
 	metadataService, metadataReader := initializeMetadata(cfg)
 

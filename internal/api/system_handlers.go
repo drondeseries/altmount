@@ -213,6 +213,25 @@ func (s *Server) handleSystemRestart(c *fiber.Ctx) error {
 	return result
 }
 
+// handleResetSystemStats handles POST /api/system/stats/reset
+func (s *Server) handleResetSystemStats(c *fiber.Ctx) error {
+	// Reset pool metrics
+	if s.poolManager != nil {
+		if err := s.poolManager.ResetMetrics(c.Context()); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"message": "Failed to reset pool metrics",
+				"details": err.Error(),
+			})
+		}
+	}
+
+	return c.Status(200).JSON(fiber.Map{
+		"success": true,
+		"message": "System statistics reset successfully",
+	})
+}
+
 // performRestart performs the actual server restart
 func (s *Server) performRestart(ctx context.Context) {
 	slog.InfoContext(ctx, "Initiating server restart process")

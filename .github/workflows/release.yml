@@ -457,12 +457,17 @@ jobs:
           echo "major=$MAJOR" >> $GITHUB_OUTPUT
           echo "minor=$MINOR" >> $GITHUB_OUTPUT
 
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d')" >> $GITHUB_OUTPUT
+
       # Create and push multi-platform manifests using temporary tags
       - name: Create multi-platform manifest
         run: |
           # Use temporary tagged images instead of digests
           AMD64_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:v${{ steps.version.outputs.version }}-amd64-temp"
           ARM64_IMAGE="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:v${{ steps.version.outputs.version }}-arm64-temp"
+          DATE=${{ steps.date.outputs.date }}
 
           echo "AMD64 Image: $AMD64_IMAGE"
           echo "ARM64 Image: $ARM64_IMAGE"
@@ -515,6 +520,13 @@ jobs:
             $AMD64_IMAGE \
             $ARM64_IMAGE
           docker manifest push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:latest
+
+          # Create and push dated latest manifest (multi-arch)
+          docker manifest create \
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:latest-${DATE} \
+            $AMD64_IMAGE \
+            $ARM64_IMAGE
+          docker manifest push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:latest-${DATE}
 
       # Clean up temporary tags
       - name: Clean up temporary tags
