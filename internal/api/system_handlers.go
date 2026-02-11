@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -214,6 +213,25 @@ func (s *Server) handleSystemRestart(c *fiber.Ctx) error {
 	return result
 }
 
+// handleResetSystemStats handles POST /api/system/stats/reset
+func (s *Server) handleResetSystemStats(c *fiber.Ctx) error {
+	// Reset pool metrics
+	if s.poolManager != nil {
+		if err := s.poolManager.ResetMetrics(c.Context()); err != nil {
+			return c.Status(500).JSON(fiber.Map{
+				"success": false,
+				"message": "Failed to reset pool metrics",
+				"details": err.Error(),
+			})
+		}
+	}
+
+	return c.Status(200).JSON(fiber.Map{
+		"success": true,
+		"message": "System statistics reset successfully",
+	})
+}
+
 // performRestart performs the actual server restart
 func (s *Server) performRestart(ctx context.Context) {
 	slog.InfoContext(ctx, "Initiating server restart process")
@@ -321,9 +339,8 @@ func (s *Server) handleGetPoolMetrics(c *fiber.Ctx) error {
 
 		if config != nil {
 			for _, p := range config.Providers {
-				// Match by provider name (v4 uses host:port as Name)
-				providerHost := fmt.Sprintf("%s:%d", p.Host, p.Port)
-				if ps.Name == providerHost || ps.Name == p.Host {
+				// Match by provider name (v4 uses host:port or host:port+username)
+				if ps.Name == p.NNTPPoolName() {
 					providerID = p.ID
 					host = p.Host
 					username = p.Username
@@ -331,6 +348,18 @@ func (s *Server) handleGetPoolMetrics(c *fiber.Ctx) error {
 					lastSpeedTestTime = p.LastSpeedTestTime
 					break
 				}
+			}
+		}
+
+		// Determine state and failure reason
+		state := "active"
+		failureReason := ""
+		if ps.ActiveConnections == 0 {
+			if ps.Ping.Err != nil {
+				state = "error"
+				failureReason = ps.Ping.Err.Error()
+			} else {
+				state = "connected"
 			}
 		}
 
@@ -345,15 +374,18 @@ func (s *Server) handleGetPoolMetrics(c *fiber.Ctx) error {
 		}
 
 		providers = append(providers, ProviderStatusResponse{
-			ID:                providerID,
-			Host:              host,
-			Username:          username,
-			UsedConnections:   ps.ActiveConnections,
-			MaxConnections:    ps.MaxConnections,
-			State:             "active",
-			ErrorCount:        errorCount,
-			LastSpeedTestMbps: lastSpeedTestMbps,
-			LastSpeedTestTime: lastSpeedTestTime,
+			ID:                    providerID,
+			Host:                  host,
+			Username:              username,
+			UsedConnections:       ps.ActiveConnections,
+			MaxConnections:        ps.MaxConnections,
+			State:                 state,
+			ErrorCount:            errorCount,
+			LastConnectionAttempt: ps.Ping.ServerTime,
+			LastSuccessfulConnect: ps.Ping.ServerTime,
+			FailureReason:         failureReason,
+			LastSpeedTestMbps:     lastSpeedTestMbps,
+			LastSpeedTestTime:     lastSpeedTestTime,
 		})
 	}
 
