@@ -216,6 +216,7 @@ type HealthConfig struct {
 	LibrarySyncConcurrency        int     `yaml:"library_sync_concurrency" mapstructure:"library_sync_concurrency" json:"library_sync_concurrency,omitempty"`
 	ResolveRepairOnImport         *bool   `yaml:"resolve_repair_on_import" mapstructure:"resolve_repair_on_import" json:"resolve_repair_on_import,omitempty"`
 	VerifyData                    *bool   `yaml:"verify_data" mapstructure:"verify_data" json:"verify_data,omitempty"`
+	CheckAllSegments              *bool   `yaml:"check_all_segments" mapstructure:"check_all_segments" json:"check_all_segments,omitempty"`
 }
 
 // GenerateProviderID creates a unique ID based on host, port, and username
@@ -501,10 +502,10 @@ func (c *Config) Validate() error {
 	// Validate RClone Mount configuration
 	if c.RClone.MountEnabled != nil && *c.RClone.MountEnabled {
 		if c.MountPath == "" {
-			return fmt.Errorf("rclone mount_path cannot be empty when mount is enabled")
+			return fmt.Errorf("mount_path cannot be empty when rclone mount is enabled")
 		}
 		if !filepath.IsAbs(c.MountPath) {
-			return fmt.Errorf("rclone mount_path must be an absolute path")
+			return fmt.Errorf("mount_path must be an absolute path")
 		}
 	}
 
@@ -611,8 +612,20 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate FUSE mount_path is set when enabled
-	if c.Fuse.Enabled != nil && *c.Fuse.Enabled && c.Fuse.MountPath == "" {
-		return fmt.Errorf("fuse.mount_path is required when fuse is enabled")
+	effectiveFusePath := c.GetFuseMountPath()
+
+	if c.Fuse.Enabled != nil && *c.Fuse.Enabled && effectiveFusePath != "" {
+		if !filepath.IsAbs(effectiveFusePath) {
+			return fmt.Errorf("fuse.mount_path must be an absolute path")
+		}
+	}
+
+	// Prevent RClone and FUSE from using the same mount path
+	if c.RClone.MountEnabled != nil && *c.RClone.MountEnabled &&
+		c.Fuse.Enabled != nil && *c.Fuse.Enabled &&
+		c.MountPath != "" && effectiveFusePath != "" &&
+		filepath.Clean(c.MountPath) == filepath.Clean(effectiveFusePath) {
+		return fmt.Errorf("rclone mount and native mount cannot use the same path: %s", c.MountPath)
 	}
 
 	return nil
@@ -1072,6 +1085,7 @@ func DefaultConfig(configDir ...string) *Config {
 	watchIntervalSeconds := 10 // Default watch interval
 	cleanupAutomaticImportFailure := false
 	metadataBackupEnabled := false
+	checkAllSegments := false
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
@@ -1207,6 +1221,7 @@ func DefaultConfig(configDir ...string) *Config {
 			SegmentSamplePercentage:       5,                      // Default: 5% segment sampling
 			LibrarySyncIntervalMinutes:    360,                    // Default: sync every 6 hours
 			ResolveRepairOnImport:         &resolveRepairOnImport, // Enabled by default
+			CheckAllSegments:              &checkAllSegments,
 		},
 		SABnzbd: SABnzbdConfig{
 			Enabled:               &sabnzbdEnabled,
@@ -1342,6 +1357,11 @@ func LoadConfig(configFile string) (*Config, error) {
 	// Unmarshal the config
 	if err := viper.Unmarshal(config); err != nil {
 		return nil, fmt.Errorf("error unmarshaling config: %w", err)
+	}
+
+	// Support mount_path under rclone section for backward compatibility or manual editing mistakes
+	if config.MountPath == "" && viper.IsSet("rclone.mount_path") {
+		config.MountPath = viper.GetString("rclone.mount_path")
 	}
 
 	// Ensure *bool pointers are not nil after unmarshal (viper may leave them nil if not set in YAML)
