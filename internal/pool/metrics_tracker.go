@@ -11,18 +11,23 @@ import (
 	"github.com/javi11/nntppool/v4"
 )
 
+// MissingRateWarningThreshold is the missing articles per minute rate that triggers a warning.
+const MissingRateWarningThreshold = 10.0
+
 // MetricsSnapshot represents pool metrics at a point in time with calculated values
 type MetricsSnapshot struct {
-	BytesDownloaded             int64            `json:"bytes_downloaded"`
-	BytesUploaded               int64            `json:"bytes_uploaded"`
-	ArticlesDownloaded          int64            `json:"articles_downloaded"`
-	ArticlesPosted              int64            `json:"articles_posted"`
-	TotalErrors                 int64            `json:"total_errors"`
-	ProviderErrors              map[string]int64 `json:"provider_errors"`
-	DownloadSpeedBytesPerSec    float64          `json:"download_speed_bytes_per_sec"`
-	MaxDownloadSpeedBytesPerSec float64          `json:"max_download_speed_bytes_per_sec"`
-	UploadSpeedBytesPerSec      float64          `json:"upload_speed_bytes_per_sec"`
-	Timestamp                   time.Time        `json:"timestamp"`
+	BytesDownloaded             int64              `json:"bytes_downloaded"`
+	BytesUploaded               int64              `json:"bytes_uploaded"`
+	ArticlesDownloaded          int64              `json:"articles_downloaded"`
+	ArticlesPosted              int64              `json:"articles_posted"`
+	TotalErrors                 int64              `json:"total_errors"`
+	ProviderErrors              map[string]int64   `json:"provider_errors"`
+	DownloadSpeedBytesPerSec    float64            `json:"download_speed_bytes_per_sec"`
+	MaxDownloadSpeedBytesPerSec float64            `json:"max_download_speed_bytes_per_sec"`
+	UploadSpeedBytesPerSec      float64            `json:"upload_speed_bytes_per_sec"`
+	Timestamp                   time.Time          `json:"timestamp"`
+	ProviderMissingRates        map[string]float64 `json:"provider_missing_rates"`
+	ProviderMissingWarning      map[string]bool    `json:"provider_missing_warning"`
 }
 
 // MetricsTracker tracks pool metrics over time and calculates rates
@@ -54,10 +59,11 @@ type MetricsTracker struct {
 
 // metricsample represents a single metrics sample at a point in time
 type metricsample struct {
-	totalBytes     int64
-	totalErrors    int64
-	providerErrors map[string]int64
-	timestamp      time.Time
+	avgSpeed        float64
+	totalErrors     int64
+	providerErrors  map[string]int64
+	providerMissing map[string]int64
+	timestamp       time.Time
 }
 
 // NewMetricsTracker creates a new metrics tracker
@@ -199,6 +205,42 @@ func (mt *MetricsTracker) getSnapshot(now time.Time, stats nntppool.ClientStats)
 		mergedProviderErrors[k] += v
 	}
 
+	// Compute windowed missing article rates per provider
+	missingRates := make(map[string]float64)
+	missingWarning := make(map[string]bool)
+
+	// Collect current missing counts from pool stats
+	currentMissing := make(map[string]int64)
+	for _, ps := range stats.Providers {
+		currentMissing[ps.Name] = ps.Missing
+	}
+
+	// Find the oldest sample within the calculation window
+	windowStart := now.Add(-mt.calculationWindow)
+	var oldestSample *metricsample
+	for i := range mt.samples {
+		if mt.samples[i].timestamp.After(windowStart) || mt.samples[i].timestamp.Equal(windowStart) {
+			oldestSample = &mt.samples[i]
+			break
+		}
+	}
+
+	if oldestSample != nil {
+		elapsed := now.Sub(oldestSample.timestamp)
+		if elapsed > 0 {
+			elapsedMinutes := elapsed.Minutes()
+			for name, current := range currentMissing {
+				old := oldestSample.providerMissing[name]
+				delta := current - old
+				if delta > 0 && elapsedMinutes > 0 {
+					rate := float64(delta) / elapsedMinutes
+					missingRates[name] = rate
+					missingWarning[name] = rate >= MissingRateWarningThreshold
+				}
+			}
+		}
+	}
+
 	return MetricsSnapshot{
 		BytesDownloaded:             bytesDownloaded + mt.initialBytesDownloaded,
 		BytesUploaded:               mt.initialBytesUploaded,
@@ -210,6 +252,8 @@ func (mt *MetricsTracker) getSnapshot(now time.Time, stats nntppool.ClientStats)
 		MaxDownloadSpeedBytesPerSec: mt.maxDownloadSpeed,
 		UploadSpeedBytesPerSec:      0, // v4 doesn't track uploads
 		Timestamp:                   now,
+		ProviderMissingRates:        missingRates,
+		ProviderMissingWarning:      missingWarning,
 	}
 }
 
@@ -336,22 +380,25 @@ func (mt *MetricsTracker) takeSample() {
 	mt.mu.Lock()
 	defer mt.mu.Unlock()
 
-	// Calculate total errors and provider errors
+	// Calculate total errors, provider errors, and provider missing counts
 	var totalErrors int64
 	providerErrors := make(map[string]int64)
+	providerMissing := make(map[string]int64)
 	for _, ps := range stats.Providers {
 		totalErrors += ps.Errors
 		providerErrors[ps.Name] = ps.Errors
+		providerMissing[ps.Name] = ps.Missing
 	}
 
 	bytesDownloaded := mt.liveBytesDownloaded.Load()
 
 	// Create sample
 	sample := metricsample{
-		totalBytes:     bytesDownloaded,
-		totalErrors:    totalErrors,
-		providerErrors: copyProviderErrors(providerErrors),
-		timestamp:      time.Now(),
+		avgSpeed:        stats.AvgSpeed,
+		totalErrors:     totalErrors,
+		providerErrors:  copyProviderErrors(providerErrors),
+		providerMissing: copyProviderErrors(providerMissing),
+		timestamp:       time.Now(),
 	}
 
 	// Add sample

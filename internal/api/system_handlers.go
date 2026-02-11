@@ -6,11 +6,15 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
 )
+
+// lastMissingWarnTime tracks the last time a missing article warning was logged per provider.
+var lastMissingWarnTime sync.Map
 
 // handleGetSystemStats handles GET /api/system/stats
 func (s *Server) handleGetSystemStats(c *fiber.Ctx) error {
@@ -351,16 +355,12 @@ func (s *Server) handleGetPoolMetrics(c *fiber.Ctx) error {
 			}
 		}
 
-		// Determine state and failure reason
-		state := "active"
-		failureReason := ""
-		if ps.ActiveConnections == 0 {
-			if ps.Ping.Err != nil {
-				state = "error"
-				failureReason = ps.Ping.Err.Error()
-			} else {
-				state = "connected"
-			}
+		// Fallback: use pool stats name if config match failed
+		if host == "" {
+			host = ps.Name
+		}
+		if providerID == "" {
+			providerID = ps.Name
 		}
 
 		// Get error count from metrics
@@ -373,20 +373,39 @@ func (s *Server) handleGetPoolMetrics(c *fiber.Ctx) error {
 			}
 		}
 
+		// Get missing rate and warning from metrics snapshot
+		missingRate := metrics.ProviderMissingRates[ps.Name]
+		missingWarning := metrics.ProviderMissingWarning[ps.Name]
+
 		providers = append(providers, ProviderStatusResponse{
-			ID:                    providerID,
-			Host:                  host,
-			Username:              username,
-			UsedConnections:       ps.ActiveConnections,
-			MaxConnections:        ps.MaxConnections,
-			State:                 state,
-			ErrorCount:            errorCount,
-			LastConnectionAttempt: ps.Ping.ServerTime,
-			LastSuccessfulConnect: ps.Ping.ServerTime,
-			FailureReason:         failureReason,
-			LastSpeedTestMbps:     lastSpeedTestMbps,
-			LastSpeedTestTime:     lastSpeedTestTime,
+			ID:                      providerID,
+			Host:                    host,
+			Username:                username,
+			UsedConnections:         ps.ActiveConnections,
+			MaxConnections:          ps.MaxConnections,
+			State:                   "active",
+			ErrorCount:              errorCount,
+			CurrentSpeedBytesPerSec: ps.AvgSpeed,
+			LastSpeedTestMbps:       lastSpeedTestMbps,
+			LastSpeedTestTime:       lastSpeedTestTime,
+			MissingCount:            ps.Missing,
+			MissingRatePerMinute:    missingRate,
+			MissingWarning:          missingWarning,
 		})
+
+		// Rate-limited warning logging (at most once per 60s per provider)
+		if missingWarning {
+			const warnCooldown = 60 * time.Second
+			now := time.Now()
+			if lastWarn, ok := lastMissingWarnTime.Load(ps.Name); !ok || now.Sub(lastWarn.(time.Time)) >= warnCooldown {
+				lastMissingWarnTime.Store(ps.Name, now)
+				slog.WarnContext(c.Context(), "NNTP provider has high missing article rate — consider using a backup provider",
+					"provider", host,
+					"missing_count", ps.Missing,
+					"missing_rate_per_minute", fmt.Sprintf("%.1f", missingRate),
+				)
+			}
+		}
 	}
 
 	// Map pool metrics to API response format

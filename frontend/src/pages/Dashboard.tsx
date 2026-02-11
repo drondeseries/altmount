@@ -1,17 +1,24 @@
 import { AlertTriangle, CheckCircle, Download, Network } from "lucide-react";
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
+import { HealthChart } from "../components/charts/HealthChart";
+import { QueueChart } from "../components/charts/QueueChart";
+import { ActiveStreamsCard } from "../components/system/ActiveStreamsCard";
 import { PoolMetricsCard } from "../components/system/PoolMetricsCard";
 import { ProviderCard } from "../components/system/ProviderCard";
 import { QueueHistoricalStatsCard } from "../components/queue/QueueHistoricalStatsCard";
 import { ActivityHub } from "../components/system/ActivityHub";
 import { ErrorAlert } from "../components/ui/ErrorAlert";
 import { LoadingSpinner } from "../components/ui/LoadingSpinner";
+import { StatusBadge } from "../components/ui/StatusBadge";
+import { useToast } from "../contexts/ToastContext";
 import { useHealthStats, usePoolMetrics, useQueueStats } from "../hooks/useApi";
 
 export function Dashboard() {
 	const { data: queueStats, error: queueError } = useQueueStats();
 	const { data: healthStats, error: healthError } = useHealthStats();
 	const { data: poolMetrics } = usePoolMetrics();
+	const { showToast } = useToast();
+	const warnedProvidersRef = useRef<Set<string>>(new Set());
 
 	const hasError = queueError || healthError;
 
@@ -43,6 +50,26 @@ export function Dashboard() {
 			completedCount: queueStats.total_completed,
 		};
 	}, [queueStats]);
+
+	// Fire warning toast when server reports missing_warning for a provider
+	useEffect(() => {
+		if (!poolMetrics?.providers) return;
+		const warned = warnedProvidersRef.current;
+
+		for (const provider of poolMetrics.providers) {
+			if (provider.missing_warning && !warned.has(provider.id)) {
+				warned.add(provider.id);
+				showToast({
+					type: "warning",
+					title: "High Missing Article Rate",
+					message: `${provider.host} has ~${Math.round(provider.missing_rate_per_minute)}/min missing articles. Consider using a backup provider.`,
+					duration: 10000,
+				});
+			} else if (!provider.missing_warning && warned.has(provider.id)) {
+				warned.delete(provider.id);
+			}
+		}
+	}, [poolMetrics?.providers, showToast]);
 
 	if (hasError) {
 		return (
