@@ -37,9 +37,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: frontend/node_modules
-          key: ${{ runner.os }}-bun-${{ hashFiles('frontend/bun.lock') }}
+          key: ${{ runner.os }}-bun-v1-${{ hashFiles('frontend/bun.lock') }}
           restore-keys: |
-            ${{ runner.os }}-bun-
+            ${{ runner.os }}-bun-v1-
 
       - name: Install frontend dependencies
         working-directory: frontend
