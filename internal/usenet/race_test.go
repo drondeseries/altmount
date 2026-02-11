@@ -9,6 +9,12 @@ import (
 	"github.com/javi11/nntppool/v4"
 )
 
+type mockMetricsTracker struct{}
+
+func (m *mockMetricsTracker) IncArticlesDownloaded()                      {}
+func (m *mockMetricsTracker) IncArticlesPosted()                          {}
+func (m *mockMetricsTracker) UpdateDownloadProgress(id string, bytes int64) {}
+
 func TestUsenetReader_Race_Close_GetBufferedOffset(t *testing.T) {
 	// Setup
 	ctx := context.Background()
@@ -29,7 +35,7 @@ func TestUsenetReader_Race_Close_GetBufferedOffset(t *testing.T) {
 		return nil, fmt.Errorf("mock error")
 	}
 
-	ur, err := NewUsenetReader(ctx, poolGetter, rg, 10)
+	ur, err := NewUsenetReader(ctx, poolGetter, rg, 10, &mockMetricsTracker{}, "test-stream")
 	if err != nil {
 		t.Fatalf("Failed to create UsenetReader: %v", err)
 	}

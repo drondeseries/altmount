@@ -60,6 +60,7 @@ type MetricsTracker struct {
 // metricsample represents a single metrics sample at a point in time
 type metricsample struct {
 	avgSpeed        float64
+	totalBytes      int64
 	totalErrors     int64
 	providerErrors  map[string]int64
 	providerMissing map[string]int64
@@ -395,6 +396,7 @@ func (mt *MetricsTracker) takeSample() {
 	// Create sample
 	sample := metricsample{
 		avgSpeed:        stats.AvgSpeed,
+		totalBytes:      bytesDownloaded,
 		totalErrors:     totalErrors,
 		providerErrors:  copyProviderErrors(providerErrors),
 		providerMissing: copyProviderErrors(providerMissing),

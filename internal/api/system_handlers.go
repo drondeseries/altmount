@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"

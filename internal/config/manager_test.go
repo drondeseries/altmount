@@ -34,7 +34,7 @@ func TestConfig_Validate_MountPaths(t *testing.T) {
 					Port: 8080,
 				},
 				Streaming: StreamingConfig{
-					MaxDownloadWorkers: 15,
+					MaxCacheSizeMB: 32,
 				},
 				Import: ImportConfig{
 					MaxProcessorWorkers:            2,
@@ -72,7 +72,7 @@ func TestConfig_Validate_MountPaths(t *testing.T) {
 					Port: 8080,
 				},
 				Streaming: StreamingConfig{
-					MaxDownloadWorkers: 15,
+					MaxCacheSizeMB: 32,
 				},
 				Import: ImportConfig{
 					MaxProcessorWorkers:            2,
@@ -110,7 +110,7 @@ func TestConfig_Validate_MountPaths(t *testing.T) {
 					Port: 8080,
 				},
 				Streaming: StreamingConfig{
-					MaxDownloadWorkers: 15,
+					MaxCacheSizeMB: 32,
 				},
 				Import: ImportConfig{
 					MaxProcessorWorkers:            2,
@@ -147,7 +147,7 @@ func TestConfig_Validate_MountPaths(t *testing.T) {
 					Port: 8080,
 				},
 				Streaming: StreamingConfig{
-					MaxDownloadWorkers: 15,
+					MaxCacheSizeMB: 32,
 				},
 				Import: ImportConfig{
 					MaxProcessorWorkers:            2,
@@ -184,7 +184,7 @@ func TestConfig_Validate_MountPaths(t *testing.T) {
 					Port: 8080,
 				},
 				Streaming: StreamingConfig{
-					MaxDownloadWorkers: 15,
+					MaxCacheSizeMB: 32,
 				},
 				Import: ImportConfig{
 					MaxProcessorWorkers:            2,
