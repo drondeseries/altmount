@@ -25,6 +25,12 @@ var (
 	_ io.ReadCloser = &UsenetReader{}
 )
 
+type MetricsTracker interface {
+	IncArticlesDownloaded()
+	IncArticlesPosted()
+	UpdateDownloadProgress(id string, bytesDownloaded int64)
+}
+
 type DataCorruptionError struct {
 	UnderlyingErr error
 	BytesRead     int64
@@ -51,6 +57,8 @@ type UsenetReader struct {
 	closeOnce          sync.Once
 	totalBytesRead     int64
 	poolGetter         func() (*nntppool.Client, error) // Dynamic pool getter
+	metricsTracker     MetricsTracker
+	streamID           string
 
 	// Dynamic download tracking
 	nextToDownload      int          // Index of next segment to download
@@ -66,6 +74,8 @@ func NewUsenetReader(
 	rg *segmentRange,
 	maxDownloadWorkers int,
 	maxCacheSizeMB int,
+	metricsTracker MetricsTracker,
+	streamID string,
 ) (*UsenetReader, error) {
 	log := slog.Default().With("component", "usenet-reader")
 	ctx, cancel := context.WithCancel(ctx)
@@ -84,6 +94,8 @@ func NewUsenetReader(
 		maxDownloadWorkers:  maxDownloadWorkers,
 		maxCacheSize:        maxCacheSize,
 		poolGetter:          poolGetter,
+		metricsTracker:      metricsTracker,
+		streamID:            streamID,
 		nextToDownload:      0,
 		downloadingSegments: make(map[int]bool),
 	}
@@ -347,6 +359,14 @@ func (b *UsenetReader) downloadSegmentWithRetry(ctx context.Context, segment *se
 			}
 
 			segment.writer.Write(result.Bytes)
+
+			if b.metricsTracker != nil {
+				b.metricsTracker.IncArticlesDownloaded()
+
+				if b.streamID != "" {
+					b.metricsTracker.UpdateDownloadProgress(b.streamID, int64(len(result.Bytes)))
+				}
+			}
 
 			return nil
 		},

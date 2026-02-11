@@ -104,6 +104,12 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string) (bool,
 		showCorrupted = sc
 	}
 
+	// Force showCorrupted if we are inside the corrupted_metadata folder
+	// normalizedName is clean and has no trailing slashes
+	if strings.HasPrefix(normalizedName, "corrupted_metadata/") || normalizedName == "corrupted_metadata" {
+		showCorrupted = true
+	}
+
 	// Check if this is a directory first
 	if mrf.metadataService.DirectoryExists(normalizedName) {
 		// Create a directory handle
@@ -297,6 +303,7 @@ func (mrf *MetadataRemoteFile) RenameFile(ctx context.Context, oldName, newName 
 		if err := os.Rename(oldDirPath, newDirPath); err != nil {
 			return false, fmt.Errorf("failed to rename directory: %w", err)
 		}
+
 		return true, nil
 	}
 
@@ -329,8 +336,10 @@ func (mrf *MetadataRemoteFile) RenameFile(ctx context.Context, oldName, newName 
 
 	// Clean up any health records for the new location and optionally for the directory
 	if mrf.healthRepository != nil {
-		// Remove health record for the specific resulting file (the new one)
-		_ = mrf.healthRepository.DeleteHealthRecord(ctx, normalizedNew)
+		// Update the health record path to follow the move
+		if err := mrf.healthRepository.RenameHealthRecord(ctx, normalizedOld, normalizedNew); err != nil {
+			slog.WarnContext(ctx, "Failed to update health record path during MOVE", "old", normalizedOld, "new", normalizedNew, "error", err)
+		}
 
 		// Check if we should resolve other repairs in the same directory
 		cfg := mrf.configGetter()
@@ -1212,7 +1221,7 @@ func (mvf *MetadataVirtualFile) createUsenetReader(ctx context.Context, start, e
 		}
 	}
 
-	return usenet.NewUsenetReader(ctx, mvf.poolManager.GetPool, rg, mvf.maxWorkers, mvf.maxCacheSizeMB)
+	return usenet.NewUsenetReader(ctx, mvf.poolManager.GetPool, rg, mvf.maxWorkers, mvf.maxCacheSizeMB, mvf.streamTracker, mvf.streamID)
 }
 
 // wrapWithEncryption wraps a usenet reader with encryption using metadata
