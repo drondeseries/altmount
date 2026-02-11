@@ -1214,7 +1214,7 @@ func (mvf *MetadataVirtualFile) createUsenetReader(ctx context.Context, start, e
 		}
 	}
 
-	return usenet.NewUsenetReader(ctx, mvf.poolManager.GetPool, rg, mvf.maxCacheSizeMB)
+	return usenet.NewUsenetReader(ctx, mvf.poolManager.GetPool, rg, mvf.maxCacheSizeMB, mvf.poolManager, mvf.name)
 }
 
 // wrapWithEncryption wraps a usenet reader with encryption using metadata
