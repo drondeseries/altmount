@@ -267,21 +267,22 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 				}
 			}
 
-			// Delete metadata
-			/*
-				if s.metadataService != nil {
-					// Check if we should delete source NZB
-					deleteSource := false
-					if cfg.Metadata.DeleteSourceNzbOnRemoval != nil {
-						deleteSource = *cfg.Metadata.DeleteSourceNzbOnRemoval
-					}
-					if err := s.metadataService.DeleteFileMetadataWithSourceNzb(c.Context(), normalizedPath, deleteSource); err != nil {
-						// Log as debug because it might already be gone
-						slog.DebugContext(c.Context(), "Failed to delete metadata from webhook (might be gone)", "path", normalizedPath, "error", err)
-					}
+			// Delete metadata - Safe for 'Upgrade' events
+			if req.EventType == "Upgrade" && s.metadataService != nil {
+				// Check if we should delete source NZB
+				deleteSource := false
+				if cfg.Metadata.DeleteSourceNzbOnRemoval != nil {
+					deleteSource = *cfg.Metadata.DeleteSourceNzbOnRemoval
 				}
-			*/
-			slog.InfoContext(c.Context(), "Skipping metadata deletion (preserved by safety policy)", "path", normalizedPath)
+				if err := s.metadataService.DeleteFileMetadataWithSourceNzb(c.Context(), normalizedPath, deleteSource); err != nil {
+					// Log as debug because it might already be gone
+					slog.DebugContext(c.Context(), "Failed to delete metadata from webhook (might be gone)", "path", normalizedPath, "error", err)
+				} else {
+					slog.InfoContext(c.Context(), "Successfully deleted old metadata during upgrade", "path", normalizedPath)
+				}
+			} else {
+				slog.InfoContext(c.Context(), "Skipping metadata deletion (preserved by safety policy)", "path", normalizedPath)
+			}
 		}
 	}
 
@@ -332,8 +333,8 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 			var releaseDate *time.Time
 			var sourceNzb *string
 
-			// Handle Rename and Download specifically: try to find and re-link old record
-			if req.EventType == "Rename" || req.EventType == "Download" {
+			// Handle Rename, Download and Upgrade specifically: try to find and re-link old record
+			if req.EventType == "Rename" || req.EventType == "Download" || req.EventType == "Upgrade" {
 				fileName := filepath.Base(normalizedPath)
 				// Try to find a record with the same filename but currently under /complete/
 				// or with a NULL library_path
