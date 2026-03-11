@@ -1259,7 +1259,13 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	fullStoragePath := filepath.Join(stratBasePath, strings.TrimPrefix(resultingPath, "/"))
 	fullStoragePath = filepath.ToSlash(filepath.Clean(fullStoragePath))
 
-	// Return the directory, not the file
+	// For SYMLINK and STRM strategies, we want to return the full file path.
+	// This helps Arrs find the specific file immediately.
+	if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK || cfg.Import.ImportStrategy == config.ImportStrategySTRM {
+		return fullStoragePath
+	}
+
+	// Return the directory, not the file for other strategies (None, etc)
 	if utils.HasPopularExtension(fullStoragePath) {
 		return filepath.Dir(fullStoragePath)
 	}
