@@ -21,7 +21,7 @@ import {
 	useDirectHealthCheck,
 	useHealth,
 	useHealthStats,
-	useRegenerateSymlinks,
+	useRegenerateLibraryFiles,
 	useRepairBulkHealthItems,
 	useRepairHealthItem,
 	useResetAllHealthChecks,
@@ -99,7 +99,7 @@ export function HealthPage() {
 	const repairBulkItems = useRepairBulkHealthItems();
 	const cleanupHealth = useCleanupHealth();
 	const resetAllHealth = useResetAllHealthChecks();
-	const regenerateSymlinks = useRegenerateSymlinks();
+	const regenerateSymlinks = useRegenerateLibraryFiles();
 	const directHealthCheck = useDirectHealthCheck();
 	const cancelHealthCheck = useCancelHealthCheck();
 	const repairHealthItem = useRepairHealthItem();
@@ -242,10 +242,10 @@ export function HealthPage() {
 		}
 	};
 
-	const handleRegenerateSymlinks = async () => {
+	const handleRegenerateLibraryFiles = async () => {
 		const confirmed = await confirmAction(
-			"Regenerate Symlinks",
-			"This will regenerate symlinks for all files without library path. This operation is only available when import strategy is set to SYMLINK. Are you sure you want to continue?",
+			"Regenerate Library Files",
+			"This will regenerate library files for all items missing a library path or pointing to the mount. This operation is only available when import strategy is set to SYMLINK or STRM. Are you sure you want to continue?",
 			{
 				type: "info",
 				confirmText: "Regenerate",
@@ -616,8 +616,8 @@ export function HealthPage() {
 								</button>
 							</li>
 							<li>
-								<button type="button" onClick={handleRegenerateSymlinks} className="gap-2">
-									<RefreshCw className="h-4 w-4" /> Regenerate Symlinks
+								<button type="button" onClick={handleRegenerateLibraryFiles} className="gap-2">
+									<RefreshCw className="h-4 w-4" /> Regenerate Library Files
 								</button>
 							</li>
 						</ul>

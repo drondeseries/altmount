@@ -210,11 +210,11 @@ export const useResetAllHealthChecks = () => {
 	});
 };
 
-export const useRegenerateSymlinks = () => {
+export const useRegenerateLibraryFiles = () => {
 	const queryClient = useQueryClient();
 
 	return useMutation({
-		mutationFn: () => apiClient.regenerateSymlinks(),
+		mutationFn: () => apiClient.regenerateLibraryFiles(),
 		onSuccess: () => {
 			queryClient.invalidateQueries({ queryKey: ["health"] });
 			queryClient.invalidateQueries({ queryKey: ["health", "stats"] });

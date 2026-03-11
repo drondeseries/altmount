@@ -137,6 +137,11 @@ func isFileAlreadyProcessed(metadataService *metadata.MetadataService, filePath 
 	return false
 }
 
+// GetPostProcessor returns the post-processor coordinator
+func (s *Service) GetPostProcessor() *postprocessor.Coordinator {
+	return s.postProcessor
+}
+
 // Service provides NZB import functionality with manual directory scanning and queue-based processing
 type Service struct {
 	config          ServiceConfig
@@ -820,37 +825,6 @@ func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, bas
 		virtualDir = "/" + virtualDir
 	}
 	virtualDir = filepath.ToSlash(virtualDir)
-
-	// Prepend SABnzbd CompleteDir to virtualDir
-	cfg := s.configGetter()
-	if cfg.SABnzbd.CompleteDir != "" {
-		completeDir := filepath.ToSlash(cfg.SABnzbd.CompleteDir)
-		// Ensure completeDir is absolute for comparison
-		if !strings.HasPrefix(completeDir, "/") {
-			completeDir = "/" + completeDir
-		}
-
-		// Normalize virtualDir for comparison
-		vDir := filepath.ToSlash(virtualDir)
-		if !strings.HasPrefix(vDir, "/") {
-			vDir = "/" + vDir
-		}
-
-		// Check if virtualDir already starts with completeDir at a directory boundary
-		hasPrefix := false
-		if completeDir == "/" {
-			hasPrefix = true
-		} else if strings.HasPrefix(vDir, completeDir) {
-			if len(vDir) == len(completeDir) || vDir[len(completeDir)] == '/' {
-				hasPrefix = true
-			}
-		}
-
-		if !hasPrefix {
-			virtualDir = filepath.Join(completeDir, virtualDir)
-			virtualDir = filepath.ToSlash(virtualDir)
-		}
-	}
 
 	return virtualDir
 }

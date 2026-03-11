@@ -7,13 +7,13 @@ interface HealthPageHeaderProps {
 	userInteracting: boolean;
 	isLoading: boolean;
 	isCleanupPending: boolean;
-	isRegenerateSymlinksPending: boolean;
+	isRegenerateLibraryFilesPending: boolean;
 	onToggleAutoRefresh: () => void;
 	onRefreshIntervalChange: (interval: number) => void;
 	onRefresh: () => void;
 	onResetAll: () => void;
 	onCleanup: () => void;
-	onRegenerateSymlinks: () => void;
+	onRegenerateLibraryFiles: () => void;
 	onUserInteractionStart: () => void;
 	onUserInteractionEnd: () => void;
 }
@@ -25,13 +25,13 @@ export function HealthPageHeader({
 	userInteracting,
 	isLoading,
 	isCleanupPending,
-	isRegenerateSymlinksPending,
+	isRegenerateLibraryFilesPending,
 	onToggleAutoRefresh,
 	onRefreshIntervalChange,
 	onRefresh,
 	onResetAll,
 	onCleanup,
-	onRegenerateSymlinks,
+	onRegenerateLibraryFiles,
 	onUserInteractionStart,
 	onUserInteractionEnd,
 }: HealthPageHeaderProps) {
@@ -89,11 +89,11 @@ export function HealthPageHeader({
 				<button
 					type="button"
 					className="btn btn-primary"
-					onClick={onRegenerateSymlinks}
-					disabled={isRegenerateSymlinksPending}
+					onClick={onRegenerateLibraryFiles}
+					disabled={isRegenerateLibraryFilesPending}
 				>
 					<Link className="h-4 w-4" />
-					Regenerate Symlinks
+					Regenerate Library Files
 				</button>
 				<button
 					type="button"

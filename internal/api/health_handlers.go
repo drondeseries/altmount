@@ -1246,7 +1246,7 @@ func (s *Server) handleResetAllHealthChecks(c *fiber.Ctx) error {
 	return RespondSuccess(c, response)
 }
 
-// handleRegenerateSymlinks handles POST /api/health/regenerate-symlinks
+// handleRegenerateLibraryFiles handles POST /api/health/regenerate-symlinks
 //
 //	@Summary		Regenerate library symlinks
 //	@Description	Regenerates all library symlinks and STRM files for files that already have metadata.
@@ -1257,32 +1257,32 @@ func (s *Server) handleResetAllHealthChecks(c *fiber.Ctx) error {
 //	@Security		BearerAuth
 //	@Security		ApiKeyAuth
 //	@Router			/health/regenerate-symlinks [post]
-func (s *Server) handleRegenerateSymlinks(c *fiber.Ctx) error {
+func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 	ctx := c.Context()
 	cfg := s.configManager.GetConfig()
 
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" && cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
 		return RespondBadRequest(c, "Symlink regeneration is not supported on Windows; use STRM import strategy instead", "")
 	}
 
-	// Validate that symlink strategy is enabled
-	if cfg.Import.ImportStrategy != config.ImportStrategySYMLINK {
-		return RespondBadRequest(c, "Symlink regeneration is only available when import strategy is set to SYMLINK", "")
+	// Validate that a supported strategy is enabled
+	if cfg.Import.ImportStrategy != config.ImportStrategySYMLINK && cfg.Import.ImportStrategy != config.ImportStrategySTRM {
+		return RespondBadRequest(c, "Library file regeneration is only available when import strategy is set to SYMLINK or STRM", "")
 	}
 
 	if cfg.Import.ImportDir == nil || *cfg.Import.ImportDir == "" {
 		return RespondBadRequest(c, "Import directory is not configured", "")
 	}
 
-	// Get all files without library path
-	files, err := s.healthRepo.GetFilesWithoutLibraryPath(ctx)
+	// Get all files without library path or with library path pointing to the mount
+	files, err := s.healthRepo.GetFilesWithoutLibraryPath(ctx, cfg.MountPath)
 	if err != nil {
-		return RespondInternalError(c, "Failed to retrieve files without library path", err.Error())
+		return RespondInternalError(c, "Failed to retrieve files for library file regeneration", err.Error())
 	}
 
 	if len(files) == 0 {
 		return RespondSuccess(c, fiber.Map{
-			"message":          "No files without library path found",
+			"message":          "No files needing library file regeneration found",
 			"files_processed":  0,
 			"symlinks_created": 0,
 			"errors":           []string{},
@@ -1298,47 +1298,68 @@ func (s *Server) handleRegenerateSymlinks(c *fiber.Ctx) error {
 		// Build the actual file path in the mount
 		actualPath := pathutil.JoinAbsPath(cfg.MountPath, file.FilePath)
 
-		// Build the symlink path in the import directory
-		symlinkPath := pathutil.JoinAbsPath(*cfg.Import.ImportDir, file.FilePath)
+		// Build the library file path in the import directory
+		var libraryPath string
+		if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+			libraryPath = pathutil.JoinAbsPath(*cfg.Import.ImportDir, file.FilePath)
+		} else {
+			// STRM files have the .strm extension
+			libraryPath = pathutil.JoinAbsPath(*cfg.Import.ImportDir, file.FilePath+".strm")
+		}
 
 		// Create directory if needed
-		baseDir := filepath.Dir(symlinkPath)
+		baseDir := filepath.Dir(libraryPath)
 		if err := os.MkdirAll(baseDir, 0755); err != nil {
 			errorCount++
 			errors = append(errors, fmt.Sprintf("%s: failed to create directory: %v", file.FilePath, err))
 			continue
 		}
 
-		// Remove existing symlink if present
-		if _, err := os.Lstat(symlinkPath); err == nil {
-			if err := os.Remove(symlinkPath); err != nil {
+		// Remove existing file if present (Lstat handles symlinks correctly)
+		if _, err := os.Lstat(libraryPath); err == nil {
+			if err := os.Remove(libraryPath); err != nil {
 				errorCount++
-				errors = append(errors, fmt.Sprintf("%s: failed to remove existing symlink: %v", file.FilePath, err))
+				errors = append(errors, fmt.Sprintf("%s: failed to remove existing library file: %v", file.FilePath, err))
 				continue
 			}
 		}
 
-		// Create the symlink
-		if err := os.Symlink(actualPath, symlinkPath); err != nil {
-			errorCount++
-			errors = append(errors, fmt.Sprintf("%s: failed to create symlink: %v", file.FilePath, err))
-			continue
+		// Create the library file based on strategy
+		if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+			// Create the symlink
+			if err := os.Symlink(actualPath, libraryPath); err != nil {
+				errorCount++
+				errors = append(errors, fmt.Sprintf("%s: failed to create symlink: %v", file.FilePath, err))
+				continue
+			}
+		} else {
+			// Create the STRM file using the post-processor
+			// We need a dummy ImportQueueItem for the coordinator
+			item := &database.ImportQueueItem{
+				ID: 0,
+			}
+			// Use the existing coordinator logic to generate the STRM file
+			if err := s.importerService.GetPostProcessor().CreateStrmFiles(ctx, item, file.FilePath); err != nil {
+				errorCount++
+				errors = append(errors, fmt.Sprintf("%s: failed to create STRM file: %v", file.FilePath, err))
+				continue
+			}
 		}
 
 		// Update the library path in the database
-		if err := s.healthRepo.UpdateLibraryPath(ctx, file.FilePath, symlinkPath); err != nil {
+		if err := s.healthRepo.UpdateLibraryPath(ctx, file.FilePath, libraryPath); err != nil {
 			slog.ErrorContext(ctx, "Failed to update library path in database",
 				"file_path", file.FilePath,
-				"symlink_path", symlinkPath,
+				"library_path", libraryPath,
 				"error", err)
-			// Don't count as error since symlink was created successfully
+			// Don't count as error since file was created successfully
 		}
 
 		successCount++
 	}
 
 	response := fiber.Map{
-		"message":          fmt.Sprintf("Regenerated symlinks for %d files", successCount),
+		"message":          fmt.Sprintf("Regenerated library files for %d files", successCount),
 		"files_processed":  len(files),
 		"symlinks_created": successCount,
 		"errors":           errors,
@@ -1347,7 +1368,7 @@ func (s *Server) handleRegenerateSymlinks(c *fiber.Ctx) error {
 	}
 
 	if errorCount > 0 {
-		response["warning"] = fmt.Sprintf("%d file(s) failed to regenerate symlinks", errorCount)
+		response["warning"] = fmt.Sprintf("%d file(s) failed to regenerate library files", errorCount)
 	}
 
 	return RespondSuccess(c, response)

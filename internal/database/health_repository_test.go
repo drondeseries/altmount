@@ -251,3 +251,67 @@ func TestUpdateFileHealthScheduled_UpdatesExistingRecord(t *testing.T) {
 	assert.LessOrEqual(t, diff, time.Second,
 		"scheduled_check_at should be updated to %v, got %v", future, got)
 }
+
+func TestGetFilesWithoutLibraryPath(t *testing.T) {
+	repo := setupTestDB(t)
+	ctx := context.Background()
+	mountPath := "/mnt/mount"
+
+	// 1. File with NULL library_path (should be picked up)
+	_, err := repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, library_path, status)
+		VALUES (?, NULL, ?)
+	`, "null_path.mkv", "healthy")
+	require.NoError(t, err)
+
+	// 2. File with library_path in mount (should be picked up)
+	_, err = repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, library_path, status)
+		VALUES (?, ?, ?)
+	`, "mount_path.mkv", mountPath+"/some/file.mkv", "healthy")
+	require.NoError(t, err)
+
+	// 3. File with library_path in library dir (should NOT be picked up)
+	_, err = repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, library_path, status)
+		VALUES (?, ?, ?)
+	`, "lib_path.mkv", "/mnt/library/some/file.mkv", "healthy")
+	require.NoError(t, err)
+
+	// 4. File with library_path that looks like mount path but is actually slightly different (should NOT be picked up)
+	_, err = repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, library_path, status)
+		VALUES (?, ?, ?)
+	`, "almost_mount.mkv", "/mnt/mount-other/some/file.mkv", "healthy")
+	require.NoError(t, err)
+
+	files, err := repo.GetFilesWithoutLibraryPath(ctx, mountPath)
+	require.NoError(t, err)
+
+	assert.Equal(t, 2, len(files))
+
+	foundNull := false
+	foundMount := false
+	foundLib := false
+	foundAlmost := false
+
+	for _, f := range files {
+		if f.FilePath == "null_path.mkv" {
+			foundNull = true
+		}
+		if f.FilePath == "mount_path.mkv" {
+			foundMount = true
+		}
+		if f.FilePath == "lib_path.mkv" {
+			foundLib = true
+		}
+		if f.FilePath == "almost_mount.mkv" {
+			foundAlmost = true
+		}
+	}
+
+	assert.True(t, foundNull)
+	assert.True(t, foundMount)
+	assert.False(t, foundLib)
+	assert.False(t, foundAlmost)
+}

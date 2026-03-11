@@ -415,7 +415,7 @@ export class APIClient {
 		});
 	}
 
-	async regenerateSymlinks() {
+	async regenerateLibraryFiles() {
 		return this.request<{
 			message: string;
 			files_processed: number;

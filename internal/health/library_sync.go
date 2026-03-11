@@ -571,9 +571,28 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 
 	// Helper to normalize keys to mount relative paths
 	normalizeKeys := func(m map[string]string) {
+		completeDir := ""
+		if cfg.SABnzbd.CompleteDir != "" {
+			completeDir = filepath.ToSlash(cfg.SABnzbd.CompleteDir)
+			if !strings.HasPrefix(completeDir, "/") {
+				completeDir = "/" + completeDir
+			}
+		}
+
 		for target, libPath := range m {
 			// Extract relative path within the mount
 			rel := strings.TrimPrefix(filepath.ToSlash(target), filepath.ToSlash(cfg.MountPath))
+			if !strings.HasPrefix(rel, "/") {
+				rel = "/" + rel
+			}
+
+			// Strip CompleteDir from relative path if present
+			if completeDir != "" && strings.HasPrefix(rel, completeDir) {
+				if len(rel) == len(completeDir) || rel[len(completeDir)] == '/' {
+					rel = strings.TrimPrefix(rel, completeDir)
+				}
+			}
+
 			rel = strings.TrimPrefix(rel, "/")
 			filesInUse[rel] = libPath
 		}
@@ -929,6 +948,27 @@ func (lsw *LibrarySyncWorker) metaPathToMountRelativePath(metaPath string) strin
 	relativePath := strings.TrimPrefix(metaPath, rootPath)
 	relativePath = strings.TrimPrefix(relativePath, string(filepath.Separator))
 	mountRelativePath := strings.TrimSuffix(relativePath, ".meta")
+
+	// Strip CompleteDir if present
+	if cfg.SABnzbd.CompleteDir != "" {
+		completeDir := filepath.ToSlash(cfg.SABnzbd.CompleteDir)
+		if !strings.HasPrefix(completeDir, "/") {
+			completeDir = "/" + completeDir
+		}
+
+		mPath := mountRelativePath
+		if !strings.HasPrefix(mPath, "/") {
+			mPath = "/" + mPath
+		}
+
+		if strings.HasPrefix(mPath, completeDir) {
+			if len(mPath) == len(completeDir) || mPath[len(completeDir)] == '/' {
+				mountRelativePath = strings.TrimPrefix(mPath, completeDir)
+			}
+		}
+	}
+
+	mountRelativePath = strings.TrimPrefix(filepath.ToSlash(mountRelativePath), "/")
 
 	return mountRelativePath
 }
