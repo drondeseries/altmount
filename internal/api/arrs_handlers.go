@@ -733,18 +733,40 @@ func (s *Server) handleRegisterArrsDownloadClients(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get configured host/port or use defaults from WebDAV config
+	// Get configured host/port or use defaults
 	cfg := s.configManager.GetConfig()
-	host := cfg.WebDAV.Host
-	if host == "" {
-		host = "altmount"
+	host := "altmount"
+	port := 8080
+
+	// 1. Try to use WebDAV config as default
+	if cfg.WebDAV.Host != "" {
+		host = cfg.WebDAV.Host
 	}
-	port := cfg.WebDAV.Port
-	if port == 0 {
-		port = 8080
+	if cfg.WebDAV.Port != 0 {
+		port = cfg.WebDAV.Port
 	}
+
+	// 2. Try to use WebhookBaseURL as it's the most likely 'reachable' address
+	if cfg.Arrs.WebhookBaseURL != "" {
+		if u, err := url.Parse(cfg.Arrs.WebhookBaseURL); err == nil {
+			if h := u.Hostname(); h != "" {
+				host = h
+			}
+			if p := u.Port(); p != "" {
+				if portVal, err := strconv.Atoi(p); err == nil {
+					port = portVal
+				}
+			} else if u.Scheme == "https" {
+				port = 443
+			} else if u.Scheme == "http" {
+				port = 80
+			}
+		}
+	}
+
 	urlBase := "sabnzbd"
 
+	// 3. Explicit DownloadClientBaseURL always wins if set
 	if cfg.SABnzbd.DownloadClientBaseURL != "" {
 		rawURL := cfg.SABnzbd.DownloadClientBaseURL
 		if !strings.Contains(rawURL, "://") {
@@ -806,18 +828,40 @@ func (s *Server) handleTestArrsDownloadClients(c *fiber.Ctx) error {
 		})
 	}
 
-	// Get configured host/port or use defaults from WebDAV config
+	// Get configured host/port or use defaults
 	cfg := s.configManager.GetConfig()
-	host := cfg.WebDAV.Host
-	if host == "" {
-		host = "altmount"
+	host := "altmount"
+	port := 8080
+
+	// 1. Try to use WebDAV config as default
+	if cfg.WebDAV.Host != "" {
+		host = cfg.WebDAV.Host
 	}
-	port := cfg.WebDAV.Port
-	if port == 0 {
-		port = 8080
+	if cfg.WebDAV.Port != 0 {
+		port = cfg.WebDAV.Port
 	}
+
+	// 2. Try to use WebhookBaseURL as it's the most likely 'reachable' address
+	if cfg.Arrs.WebhookBaseURL != "" {
+		if u, err := url.Parse(cfg.Arrs.WebhookBaseURL); err == nil {
+			if h := u.Hostname(); h != "" {
+				host = h
+			}
+			if p := u.Port(); p != "" {
+				if portVal, err := strconv.Atoi(p); err == nil {
+					port = portVal
+				}
+			} else if u.Scheme == "https" {
+				port = 443
+			} else if u.Scheme == "http" {
+				port = 80
+			}
+		}
+	}
+
 	urlBase := "sabnzbd"
 
+	// 3. Explicit DownloadClientBaseURL always wins if set
 	if cfg.SABnzbd.DownloadClientBaseURL != "" {
 		rawURL := cfg.SABnzbd.DownloadClientBaseURL
 		if !strings.Contains(rawURL, "://") {

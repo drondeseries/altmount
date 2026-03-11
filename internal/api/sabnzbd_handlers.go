@@ -500,6 +500,8 @@ func (s *Server) handleSABnzbdQueue(c *fiber.Ctx) error {
 	}
 
 	// Get category filter from query parameter
+	// Sonarr/Radarr often poll for the global queue/history without a category filter.
+	// Empty string correctly returns all items from the repository.
 	categoryFilter := s.normalizeCategoryFilter(c)
 
 	// Get pagination parameters
@@ -631,6 +633,8 @@ func (s *Server) handleSABnzbdHistory(c *fiber.Ctx) error {
 	}
 
 	// Get category filter from query parameter
+	// Sonarr/Radarr often poll for the global queue/history without a category filter.
+	// Empty string correctly returns all items from the repository.
 	categoryFilter := s.normalizeCategoryFilter(c)
 
 	// Get pagination parameters
