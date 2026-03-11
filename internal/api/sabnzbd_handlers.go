@@ -790,7 +790,10 @@ func (s *Server) handleSABnzbdHistory(c *fiber.Ctx) error {
 	return s.writeSABnzbdResponseFiber(c, response)
 }
 
-// handleSABnzbdHistoryDelete handles deleting items from history
+// handleSABnzbdHistoryDelete handles deleting items from history.
+// Note: This operation ALWAYS acts as "Remove from history only".
+// Even if Sonarr/Radarr send delete_files=1, AltMount will only remove the record
+// from the queue/history database. It will NEVER delete the virtual metadata or links.
 func (s *Server) handleSABnzbdHistoryDelete(c *fiber.Ctx) error {
 	nzoID := c.Query("value")
 
