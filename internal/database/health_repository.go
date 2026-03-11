@@ -1455,27 +1455,19 @@ func (r *HealthRepository) ResolvePendingRepairsInDirectory(ctx context.Context,
 	return result.RowsAffected()
 }
 
-// GetFilesWithoutLibraryPath returns all health records where library_path is NULL or starts with the mount path
-func (r *HealthRepository) GetFilesWithoutLibraryPath(ctx context.Context, mountPathPrefix string) ([]*FileHealth, error) {
+// GetFilesForLibrarySync returns all health records to verify their physical presence in the library
+func (r *HealthRepository) GetFilesForLibrarySync(ctx context.Context) ([]*FileHealth, error) {
 	query := `
 		SELECT id, file_path, library_path, status, last_checked, last_error, retry_count, max_retries,
 		       repair_retry_count, max_repair_retries, source_nzb_path,
 		       error_details, created_at, updated_at, release_date, priority
 		FROM file_health
-		WHERE library_path IS NULL OR library_path LIKE ?
 		ORDER BY file_path ASC
 	`
 
-	// Match paths starting with the mount path followed by a slash
-	likePattern := mountPathPrefix
-	if !strings.HasSuffix(likePattern, "/") {
-		likePattern += "/"
-	}
-	likePattern += "%"
-
-	rows, err := r.db.QueryContext(ctx, query, likePattern)
+	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query files without library path: %w", err)
+		return nil, fmt.Errorf("failed to query files for library sync: %w", err)
 	}
 	defer rows.Close()
 
@@ -1496,7 +1488,7 @@ func (r *HealthRepository) GetFilesWithoutLibraryPath(ctx context.Context, mount
 	}
 
 	if err = rows.Err(); err != nil {
-		return nil, fmt.Errorf("failed to iterate files without library path: %w", err)
+		return nil, fmt.Errorf("failed to iterate files for library sync: %w", err)
 	}
 
 	return files, nil

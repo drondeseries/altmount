@@ -1274,15 +1274,15 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 		return RespondBadRequest(c, "Import directory is not configured", "")
 	}
 
-	// Get all files without library path or with library path pointing to the mount
-	files, err := s.healthRepo.GetFilesWithoutLibraryPath(ctx, cfg.MountPath)
+	// Get all files to verify their physical presence in the library
+	files, err := s.healthRepo.GetFilesForLibrarySync(ctx)
 	if err != nil {
 		return RespondInternalError(c, "Failed to retrieve files for library file regeneration", err.Error())
 	}
 
 	if len(files) == 0 {
 		return RespondSuccess(c, fiber.Map{
-			"message":          "No files needing library file regeneration found",
+			"message":          "No files found in database",
 			"files_processed":  0,
 			"symlinks_created": 0,
 			"errors":           []string{},
@@ -1295,9 +1295,6 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 	errors := make([]string, 0)
 
 	for _, file := range files {
-		// Build the actual file path in the mount
-		actualPath := pathutil.JoinAbsPath(cfg.MountPath, file.FilePath)
-
 		// Build the library file path in the import directory
 		var libraryPath string
 		if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
@@ -1306,6 +1303,28 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 			// STRM files have the .strm extension
 			libraryPath = pathutil.JoinAbsPath(*cfg.Import.ImportDir, file.FilePath+".strm")
 		}
+
+		// Logic: Regenerate if:
+		// 1. LibraryPath is NULL
+		// 2. LibraryPath points to the mount instead of the library
+		// 3. The file is missing physically from the disk
+		needsRegeneration := file.LibraryPath == nil ||
+			strings.HasPrefix(*file.LibraryPath, cfg.MountPath) ||
+			strings.HasPrefix(*file.LibraryPath, "/mnt/altmount-rclone") // Hardcoded safety for your specific mount
+
+		if !needsRegeneration {
+			// Check physical existence
+			if _, err := os.Stat(libraryPath); os.IsNotExist(err) {
+				needsRegeneration = true
+			}
+		}
+
+		if !needsRegeneration {
+			continue
+		}
+
+		// Build the actual file path in the mount
+		actualPath := pathutil.JoinAbsPath(cfg.MountPath, file.FilePath)
 
 		// Create directory if needed
 		baseDir := filepath.Dir(libraryPath)
