@@ -718,15 +718,26 @@ func (s *Server) handleSABnzbdHistory(c *fiber.Ctx) error {
 	index := 0
 	var totalBytes int64
 
+	// Combining items
+	cfg := s.configManager.GetConfig()
+
 	// Track seen NzoIDs to prevent duplicates between queue and history
 	seenIDs := make(map[string]bool)
 
 	for _, item := range completed {
-		// Verify metadata exists on disk before reporting as completed
+		// Verify metadata or strm exists on disk before reporting as completed
 		if item.StoragePath != nil {
-			if meta, err := s.metadataService.ReadFileMetadata(*item.StoragePath); err != nil || meta == nil {
+			meta, err := s.metadataService.ReadFileMetadata(*item.StoragePath)
+			strmExists := false
+			if cfg.Import.ImportStrategy == config.ImportStrategySTRM {
+				if _, err := os.Stat(*item.StoragePath + ".strm"); err == nil {
+					strmExists = true
+				}
+			}
+
+			if (err != nil || meta == nil) && !strmExists {
 				// Metadata missing or unreadable — hide from Sonarr history
-				slog.DebugContext(c.Context(), "Hiding completed item from SABnzbd history: metadata missing",
+				slog.DebugContext(c.Context(), "Hiding completed item from SABnzbd history: metadata/strm missing",
 					"path", *item.StoragePath)
 				continue
 			}
@@ -749,10 +760,18 @@ func (s *Server) handleSABnzbdHistory(c *fiber.Ctx) error {
 	}
 
 	for _, item := range persistentHistory {
-		// Verify metadata exists on disk before reporting as completed
-		if meta, err := s.metadataService.ReadFileMetadata(item.VirtualPath); err != nil || meta == nil {
+		// Verify metadata or strm exists on disk before reporting as completed
+		meta, err := s.metadataService.ReadFileMetadata(item.VirtualPath)
+		strmExists := false
+		if cfg.Import.ImportStrategy == config.ImportStrategySTRM {
+			if _, err := os.Stat(item.VirtualPath + ".strm"); err == nil {
+				strmExists = true
+			}
+		}
+
+		if (err != nil || meta == nil) && !strmExists {
 			// Metadata missing or unreadable — hide from Sonarr history
-			slog.DebugContext(c.Context(), "Hiding persistent item from SABnzbd history: metadata missing",
+			slog.DebugContext(c.Context(), "Hiding persistent item from SABnzbd history: metadata/strm missing",
 				"path", item.VirtualPath)
 			continue
 		}
@@ -824,6 +843,8 @@ func (s *Server) handleSABnzbdHistoryDelete(c *fiber.Ctx) error {
 	if nzoID == "" {
 		return s.writeSABnzbdErrorFiber(c, "Missing nzo_id parameter")
 	}
+
+	slog.InfoContext(c.Context(), "Received SABnzbd history delete request from ARR", "nzo_id", nzoID)
 
 	if s.importerService == nil {
 		return s.writeSABnzbdErrorFiber(c, "Importer service not available")
