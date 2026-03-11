@@ -90,8 +90,13 @@ func (s *Service) RegisterInstance(ctx context.Context, arrURL, apiKey string) e
 
 			key := s.GetFirstAdminAPIKey(bgCtx)
 			if key != "" {
-				// Use default internal URL
-				_ = s.registrar.EnsureWebhookRegistration(bgCtx, "http://altmount:8080", key)
+				// Use configured webhook base URL or default
+				baseURL := "http://altmount:8080"
+				cfg := s.configGetter()
+				if cfg.Arrs.WebhookBaseURL != "" {
+					baseURL = cfg.Arrs.WebhookBaseURL
+				}
+				_ = s.registrar.EnsureWebhookRegistration(bgCtx, baseURL, cfg.API.Prefix, key)
 			}
 		}()
 	}
@@ -188,7 +193,8 @@ func (s *Service) TriggerDownloadScan(ctx context.Context, instanceType string) 
 
 // EnsureWebhookRegistration ensures that the AltMount webhook is registered in all enabled ARR instances
 func (s *Service) EnsureWebhookRegistration(ctx context.Context, altmountURL string, apiKey string) error {
-	return s.registrar.EnsureWebhookRegistration(ctx, altmountURL, apiKey)
+	cfg := s.configGetter()
+	return s.registrar.EnsureWebhookRegistration(ctx, altmountURL, cfg.API.Prefix, apiKey)
 }
 
 // EnsureDownloadClientRegistration ensures that AltMount is registered as a SABnzbd download client in all enabled ARR instances

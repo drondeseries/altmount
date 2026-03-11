@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/javi11/altmount/internal/arrs/clients"
 	"github.com/javi11/altmount/internal/arrs/instances"
@@ -25,10 +26,14 @@ func NewManager(instances *instances.Manager, clients *clients.Manager) *Manager
 }
 
 // EnsureWebhookRegistration ensures that the AltMount webhook is registered in all enabled ARR instances
-func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL string, apiKey string) error {
+func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL string, apiPrefix string, apiKey string) error {
 	allInstances := m.instances.GetAllInstances()
 	webhookName := "AltMount Webhook"
-	webhookURL := fmt.Sprintf("%s/api/arrs/webhook?apikey=%s", altmountURL, apiKey)
+
+	// Construct webhook URL safely
+	baseURL := strings.TrimSuffix(altmountURL, "/")
+	prefix := strings.Trim(apiPrefix, "/")
+	webhookURL := fmt.Sprintf("%s/%s/arrs/webhook?apikey=%s", baseURL, prefix, apiKey)
 
 	slog.InfoContext(ctx, "Ensuring webhook registration in ARR instances", "webhook_url", webhookURL)
 
