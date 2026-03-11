@@ -826,7 +826,20 @@ func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, bas
 	}
 	virtualDir = filepath.ToSlash(virtualDir)
 
-	return virtualDir
+	cfg := s.configGetter()
+	// Prepend CompleteDir if configured and not already present
+	if cfg != nil && cfg.SABnzbd.CompleteDir != "" {
+		completeDir := strings.TrimRight(filepath.ToSlash(cfg.SABnzbd.CompleteDir), "/")
+		if !strings.HasPrefix(completeDir, "/") {
+			completeDir = "/" + completeDir
+		}
+
+		if completeDir != "/" && !strings.HasPrefix(virtualDir, completeDir+"/") && virtualDir != completeDir {
+			virtualDir = filepath.Join(completeDir, virtualDir)
+		}
+	}
+
+	return filepath.ToSlash(virtualDir)
 }
 
 // ensurePersistentNzb moves the NZB file to a persistent location in the metadata directory
