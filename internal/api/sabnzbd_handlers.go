@@ -542,7 +542,7 @@ func (s *Server) handleSABnzbdQueue(c *fiber.Ctx) error {
 			continue
 		}
 
-		slot := ToSABnzbdQueueSlot(item, start+i, s.progressBroadcaster)
+		slot := ToSABnzbdQueueSlot(item, i, s.progressBroadcaster)
 		slots = append(slots, slot)
 
 		if mb, err := strconv.ParseFloat(slot.Mb, 64); err == nil {
@@ -550,6 +550,30 @@ func (s *Server) handleSABnzbdQueue(c *fiber.Ctx) error {
 		}
 		if mbLeft, err := strconv.ParseFloat(slot.Mbleft, 64); err == nil {
 			totalMbLeft += mbLeft
+		}
+	}
+
+	// NEW: Include recently completed items from persistent history in the queue
+	// This helps Sonarr/Radarr see completed items if they poll at the wrong time
+	recentHistory, err := s.queueRepo.ListImportHistory(c.Context(), 10, 0, "", categoryFilter)
+	if err == nil {
+		for i, h := range recentHistory {
+			// Convert history item to a dummy queue item for ToSABnzbdQueueSlot
+			completedStatus := database.QueueStatusCompleted
+			priority := database.QueuePriorityNormal
+			historyAsQueue := &database.ImportQueueItem{
+				ID:          h.ID,
+				NzbPath:     h.NzbName,
+				Category:    h.Category,
+				Status:      completedStatus,
+				Priority:    priority,
+				CompletedAt: &h.CompletedAt,
+				FileSize:    &h.FileSize,
+				StoragePath: &h.VirtualPath,
+			}
+
+			slot := ToSABnzbdQueueSlot(historyAsQueue, len(slots)+i, nil)
+			slots = append(slots, slot)
 		}
 	}
 
