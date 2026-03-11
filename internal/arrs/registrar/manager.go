@@ -33,6 +33,9 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 	// Construct webhook URL safely
 	baseURL := strings.TrimSuffix(altmountURL, "/")
 	prefix := strings.Trim(apiPrefix, "/")
+	if prefix == "" {
+		prefix = "api"
+	}
 	webhookURL := fmt.Sprintf("%s/%s/arrs/webhook?apikey=%s", baseURL, prefix, apiKey)
 
 	slog.InfoContext(ctx, "Ensuring webhook registration in ARR instances", "webhook_url", webhookURL)

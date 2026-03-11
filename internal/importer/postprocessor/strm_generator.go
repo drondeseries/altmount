@@ -223,6 +223,9 @@ func (c *Coordinator) createSingleStrmFile(ctx context.Context, strmResultingPat
 	// Generate streaming URL with download_key using the ORIGINAL virtual path
 	encodedPath := strings.ReplaceAll(originalVirtualPath, " ", "%20")
 	prefix := strings.Trim(cfg.API.Prefix, "/")
+	if prefix == "" {
+		prefix = "api"
+	}
 	streamURL := fmt.Sprintf("%s/%s/files/stream?path=%s&download_key=%s",
 		baseURL, prefix, encodedPath, hashedKey)
 
