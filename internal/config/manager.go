@@ -1159,6 +1159,7 @@ func DefaultConfig(configDir ...string) *Config {
 	failureMaskingEnabled := true
 	repairEnabled := true
 	repairExponentialBackoff := true
+	segmentCacheEnabled := false
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
@@ -1364,6 +1365,12 @@ func DefaultConfig(configDir ...string) *Config {
 			EntryTimeoutSeconds: 1,
 			MaxCacheSizeMB:      128,
 			MaxReadAheadMB:      128,
+		},
+		SegmentCache: SegmentCacheConfig{
+			Enabled:     &segmentCacheEnabled,
+			CachePath:   filepath.Join(cachePath, "segments"),
+			MaxSizeGB:   10,
+			ExpiryHours: 24,
 		},
 		MountPath: "",            // Empty by default - required when ARRs is enabled
 		MountType: MountTypeNone, // No mount system active by default
