@@ -547,6 +547,42 @@ func (mfi *MetadataFileInfo) ModTime() time.Time { return mfi.modTime }
 func (mfi *MetadataFileInfo) IsDir() bool        { return mfi.isDir }
 func (mfi *MetadataFileInfo) Sys() any           { return nil }
 
+// getMirrorPath returns the alternative path for a category root directory.
+// For example, if path is "movies", it returns "complete/movies".
+// If path is "complete/movies", it returns "movies".
+func (mvd *MetadataVirtualDirectory) getMirrorPath() string {
+	cfg := mvd.configGetter()
+	completeDir := ""
+	if cfg.SABnzbd.Enabled != nil && *cfg.SABnzbd.Enabled && cfg.SABnzbd.CompleteDir != "" {
+		completeDir = strings.Trim(filepath.ToSlash(cfg.SABnzbd.CompleteDir), "/")
+	}
+
+	if completeDir == "" {
+		return ""
+	}
+
+	normalized := strings.Trim(mvd.normalizedPath, "/")
+
+	// Case 1: We are in a category root (e.g. "movies") -> check "complete/movies"
+	for _, cat := range cfg.SABnzbd.Categories {
+		if strings.EqualFold(normalized, cat.Name) {
+			return completeDir + "/" + cat.Name
+		}
+	}
+
+	// Case 2: We are in a staging category root (e.g. "complete/movies") -> check "movies"
+	if strings.HasPrefix(normalized, completeDir+"/") {
+		catName := strings.TrimPrefix(normalized, completeDir+"/")
+		for _, cat := range cfg.SABnzbd.Categories {
+			if strings.EqualFold(catName, cat.Name) {
+				return cat.Name
+			}
+		}
+	}
+
+	return ""
+}
+
 // MetadataSegmentLoader adapts metadata segments to the usenet.SegmentLoader interface
 type MetadataSegmentLoader struct {
 	segments []*metapb.SegmentData
@@ -612,75 +648,90 @@ func (mvd *MetadataVirtualDirectory) Name() string {
 
 // Readdir implements afero.File.Readdir
 func (mvd *MetadataVirtualDirectory) Readdir(count int) ([]fs.FileInfo, error) {
-	// Create metadata reader for directory operations
-	reader := metadata.NewMetadataReader(mvd.metadataService)
-
-	// Get directory contents - we only need the directory infos, not the file metadata
-	dirInfos, _, err := reader.ListDirectoryContents(mvd.normalizedPath)
-	if err != nil {
-		return nil, err
+	pathsToScan := []string{mvd.normalizedPath}
+	if mirror := mvd.getMirrorPath(); mirror != "" {
+		pathsToScan = append(pathsToScan, mirror)
 	}
 
 	var infos []fs.FileInfo
-
-	// Add directories first
-	for _, dirInfo := range dirInfos {
-		infos = append(infos, dirInfo)
-		if count > 0 && len(infos) >= count {
-			return infos, nil
-		}
-	}
-
-	// Add files - we need to get the virtual filename from the metadata path
-	// Since ListDirectoryContents already reads the metadata files, we need to get the filenames differently
-	// Let's use the metadata service directly to list files in the directory
-	fileNames, err := mvd.metadataService.ListDirectory(mvd.normalizedPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if failure masking is enabled
+	seenNames := make(map[string]bool)
+	ctx := context.Background()
 	cfg := mvd.configGetter()
 	maskingEnabled := cfg.Streaming.FailureMasking.Enabled == nil || *cfg.Streaming.FailureMasking.Enabled
+	reader := metadata.NewMetadataReader(mvd.metadataService)
 
-	ctx := context.Background()
-
-	for _, fileName := range fileNames {
-		virtualFilePath := filepath.Join(mvd.normalizedPath, fileName)
-		fileMeta, err := mvd.metadataService.ReadFileMetadata(virtualFilePath)
-		if err != nil || fileMeta == nil {
-			continue
-		}
-
-		// Skip corrupted files unless showCorrupted flag is set
-		if !mvd.showCorrupted && fileMeta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED {
-			continue
-		}
-
-		// Skip masked files if masking is enabled
-		if maskingEnabled && !mvd.showCorrupted {
-			health, err := mvd.healthRepository.GetFileHealth(ctx, virtualFilePath)
-			if err == nil && health != nil && health.IsMasked {
-				continue
+	for _, scanPath := range pathsToScan {
+		// 1. Add directories
+		dirInfos, _, err := reader.ListDirectoryContents(scanPath)
+		if err == nil {
+			for _, dirInfo := range dirInfos {
+				name := dirInfo.Name()
+				if !seenNames[name] {
+					seenNames[name] = true
+					infos = append(infos, dirInfo)
+					if count > 0 && len(infos) >= count {
+						return infos, nil
+					}
+				}
 			}
 		}
 
-		info := &MetadataFileInfo{
-			name:    fileName, // Use the actual virtual filename from the metadata filesystem
-			size:    fileMeta.FileSize,
-			mode:    0644,
-			modTime: time.Unix(fileMeta.ModifiedAt, 0),
-			isDir:   false,
+		// 2. Add files
+		fileNames, err := mvd.metadataService.ListDirectory(scanPath)
+		if err != nil {
+			continue
 		}
-		infos = append(infos, info)
-		if count > 0 && len(infos) >= count {
-			return infos, nil
+
+		for _, fileName := range fileNames {
+			if seenNames[fileName] {
+				continue
+			}
+
+			virtualFilePath := filepath.Join(scanPath, fileName)
+			fileMeta, err := mvd.metadataService.ReadFileMetadata(virtualFilePath)
+			if err != nil || fileMeta == nil {
+				continue
+			}
+
+			// Skip corrupted files unless showCorrupted flag is set
+			if !mvd.showCorrupted && fileMeta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED {
+				continue
+			}
+
+			// Skip masked files if masking is enabled
+			if maskingEnabled && !mvd.showCorrupted {
+				health, err := mrf_getHealthRecordSafe(ctx, mvd.healthRepository, virtualFilePath)
+				if err == nil && health != nil && health.IsMasked {
+					continue
+				}
+			}
+
+			info := &MetadataFileInfo{
+				name:    fileName,
+				size:    fileMeta.FileSize,
+				mode:    0644,
+				modTime: time.Unix(fileMeta.ModifiedAt, 0),
+				isDir:   false,
+			}
+
+			seenNames[fileName] = true
+			infos = append(infos, info)
+			if count > 0 && len(infos) >= count {
+				return infos, nil
+			}
 		}
 	}
 
 	return infos, nil
 }
 
+// Helper to avoid nil pointer during health check in Readdir
+func mrf_getHealthRecordSafe(ctx context.Context, repo *database.HealthRepository, path string) (*database.FileHealth, error) {
+	if repo == nil {
+		return nil, nil
+	}
+	return repo.GetFileHealth(ctx, path)
+}
 // Readdirnames implements afero.File.Readdirnames
 func (mvd *MetadataVirtualDirectory) Readdirnames(n int) ([]string, error) {
 	infos, err := mvd.Readdir(n)
