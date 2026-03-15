@@ -1717,3 +1717,41 @@ func (r *HealthRepository) GetFilesForLibrarySync(ctx context.Context) ([]*FileH
 
 	return files, nil
 }
+
+// SearchFiles searches for files across the entire library by their path or name
+func (r *HealthRepository) SearchFiles(ctx context.Context, searchTerm string, limit int) ([]*FileHealth, error) {
+	query := `
+		SELECT id, file_path, status, last_checked, last_error, retry_count, max_retries,
+		       repair_retry_count, max_repair_retries, source_nzb_path,
+		       error_details, created_at, updated_at, release_date, scheduled_check_at,
+			   library_path, priority, streaming_failure_count, is_masked
+		FROM file_health
+		WHERE file_path LIKE ? OR library_path LIKE ?
+		ORDER BY created_at DESC
+		LIMIT ?
+	`
+
+	searchPattern := "%" + searchTerm + "%"
+	rows, err := r.db.QueryContext(ctx, query, searchPattern, searchPattern, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to search files: %w", err)
+	}
+	defer rows.Close()
+
+	var files []*FileHealth
+	for rows.Next() {
+		var f FileHealth
+		err := rows.Scan(
+			&f.ID, &f.FilePath, &f.Status, &f.LastChecked, &f.LastError, &f.RetryCount, &f.MaxRetries,
+			&f.RepairRetryCount, &f.MaxRepairRetries, &f.SourceNzbPath,
+			&f.ErrorDetails, &f.CreatedAt, &f.UpdatedAt, &f.ReleaseDate, &f.ScheduledCheckAt,
+			&f.LibraryPath, &f.Priority, &f.StreamingFailureCount, &f.IsMasked,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan file health: %w", err)
+		}
+		files = append(files, &f)
+	}
+
+	return files, nil
+}

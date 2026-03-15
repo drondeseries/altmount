@@ -68,6 +68,56 @@ func (s *Server) handleGetFileMetadata(c *fiber.Ctx) error {
 	})
 }
 
+// handleSearchFiles handles GET /files/search requests
+//
+//	@Summary		Search files deep
+//	@Description	Searches for files across the entire library (recursive) by their path or name.
+//	@Tags			Files
+//	@Produce		json
+//	@Param			q		query		string	true	"Search term"
+//	@Param			limit	query		int		false	"Result limit (default: 50)"
+//	@Success		200		{object}	APIResponse
+//	@Failure		400		{object}	APIResponse
+//	@Failure		500		{object}	APIResponse
+//	@Security		BearerAuth
+//	@Security		ApiKeyAuth
+//	@Router			/files/search [get]
+func (s *Server) handleSearchFiles(c *fiber.Ctx) error {
+	searchTerm := c.Query("q")
+	if searchTerm == "" {
+		return RespondBadRequest(c, "Search term is required", "MISSING_QUERY")
+	}
+
+	limitStr := c.Query("limit", "50")
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		limit = 50
+	}
+
+	files, err := s.healthRepo.SearchFiles(c.Context(), searchTerm, limit)
+	if err != nil {
+		return RespondInternalError(c, "Failed to search files", err.Error())
+	}
+
+	// Convert to WebDAV-compatible format for the frontend explorer
+	results := make([]fiber.Map, len(files))
+	for i, f := range files {
+		basename := filepath.Base(f.FilePath)
+		
+		results[i] = fiber.Map{
+			"basename":     basename,
+			"filename":     f.FilePath,
+			"size":         0, // Metadata size not directly available here
+			"lastmod":      f.LastChecked,
+			"type":         "file",
+			"library_path": f.LibraryPath,
+			"status":       f.Status,
+		}
+	}
+
+	return RespondSuccess(c, results)
+}
+
 // convertToFileMetadataResponse converts protobuf FileMetadata to API response
 func (s *Server) convertToFileMetadataResponse(metadata *metapb.FileMetadata) *FileMetadataResponse {
 	// Convert status enum to string

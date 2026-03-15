@@ -338,6 +338,15 @@ export const useActiveStreams = () => {
 	});
 };
 
+export const useFileSearch = (query: string, limit = 100) => {
+	return useQuery({
+		queryKey: ["files", "search", query, limit],
+		queryFn: () => apiClient.searchFiles(query, limit),
+		enabled: !!query && query.length >= 2, // Only search if query is at least 2 chars
+		staleTime: 60000, // 1 minute
+	});
+};
+
 export const useDirectHealthCheck = () => {
 	const queryClient = useQueryClient();
 

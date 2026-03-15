@@ -537,6 +537,10 @@ export class APIClient {
 		return this.request<ActiveStream[]>("/files/active-streams");
 	}
 
+	async searchFiles(query: string, limit = 100) {
+		return this.request<any[]>(`/files/search?q=${encodeURIComponent(query)}&limit=${limit}`);
+	}
+
 	async exportMetadataToNZB(path: string): Promise<Blob> {
 		const url = `${this.baseURL}/files/export-nzb?path=${encodeURIComponent(path)}`;
 

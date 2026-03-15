@@ -277,6 +277,7 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Post("/health/library-sync/dry-run", s.handleDryRunLibrarySync)
 
 	api.Get("/files/info", s.handleGetFileMetadata)
+	api.Get("/files/search", s.handleSearchFiles)
 	api.Get("/files/active-streams", s.handleGetActiveStreams)
 	api.Delete("/files/active-streams/:id", s.handleKillStream)
 	api.Get("/files/streams/history", s.handleGetStreamHistory)

@@ -10,7 +10,7 @@ import {
 	X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
-import { useImportHistory } from "../../hooks/useApi";
+import { useImportHistory, useFileSearch } from "../../hooks/useApi";
 import { useFilePreview } from "../../hooks/useFilePreview";
 import { useWebDAVDirectory, useWebDAVFileOperations, useWebDAVMergedDirectory } from "../../hooks/useWebDAV";
 import type { WebDAVFile } from "../../types/webdav";
@@ -44,10 +44,20 @@ export function FileExplorer({
 }: FileExplorerProps) {
 	const [currentPath, setCurrentPath] = useState(initialPath);
 	const [searchTerm, setSearchTerm] = useState("");
+	const [debouncedSearchTerm, setDebouncedSearchTerm] = useState("");
 	const [showCorrupted, setShowCorrupted] = useState(false);
 
 	const isRecentView = activeView === "recent";
-	
+	const isSearching = debouncedSearchTerm.length >= 2;
+
+	// Debounce search term to avoid excessive API calls
+	useEffect(() => {
+		const timer = setTimeout(() => {
+			setDebouncedSearchTerm(searchTerm);
+		}, 300);
+		return () => clearTimeout(timer);
+	}, [searchTerm]);
+
 	// Determine if we are in a merged view (only if we are at the root of that view)
 	const isAtMergedRoot = useMemo(() => {
 		if (!mergedPaths || mergedPaths.length === 0) return false;
@@ -60,10 +70,18 @@ export function FileExplorer({
 	}, [initialPath]);
 
 	// Single directory query
-	const singleDir = useWebDAVDirectory(currentPath, isConnected && !isAtMergedRoot, hasConnectionFailed, showCorrupted);
+	const singleDir = useWebDAVDirectory(currentPath, isConnected && !isAtMergedRoot && !isSearching, hasConnectionFailed, showCorrupted);
 
 	// Merged directory query (for category roots)
-	const mergedDir = useWebDAVMergedDirectory(mergedPaths || [], isConnected && isAtMergedRoot, hasConnectionFailed, showCorrupted);
+	const mergedDir = useWebDAVMergedDirectory(mergedPaths || [], isConnected && isAtMergedRoot && !isSearching, hasConnectionFailed, showCorrupted);
+
+	// Deep search query
+	const {
+		data: searchResults,
+		isLoading: isSearchLoading,
+		error: searchError,
+		refetch: refetchSearch,
+	} = useFileSearch(debouncedSearchTerm);
 
 	const {
 		data: history,
@@ -71,17 +89,23 @@ export function FileExplorer({
 		refetch: refetchHistory,
 	} = useImportHistory(50);
 
-	const isLoading = isRecentView 
-		? isHistoryLoading 
-		: (isAtMergedRoot ? mergedDir.isLoading : singleDir.isLoading);
+	const isLoading = isSearching 
+		? isSearchLoading
+		: (isRecentView 
+			? isHistoryLoading 
+			: (isAtMergedRoot ? mergedDir.isLoading : singleDir.isLoading));
 	
-	const error = isRecentView 
-		? null 
-		: (isAtMergedRoot ? mergedDir.error : singleDir.error);
+	const error = isSearching
+		? searchError
+		: (isRecentView 
+			? null 
+			: (isAtMergedRoot ? mergedDir.error : singleDir.error));
 	
-	const refetch = isRecentView 
-		? refetchHistory 
-		: (isAtMergedRoot ? mergedDir.refetch : singleDir.refetch);
+	const refetch = isSearching
+		? refetchSearch
+		: (isRecentView 
+			? refetchHistory 
+			: (isAtMergedRoot ? mergedDir.refetch : singleDir.refetch));
 
 	const directory = isRecentView ? null : (isAtMergedRoot ? mergedDir.data : singleDir.data);
 
@@ -133,13 +157,21 @@ export function FileExplorer({
 
 	// Filter files based on search term
 	const filteredFiles = useMemo(() => {
-		const files = isRecentView ? historyFiles : directory?.files || [];
-		if (!searchTerm.trim()) {
-			return files;
+		if (isSearching) {
+			return (searchResults || []).map(f => ({
+				basename: f.basename,
+				filename: f.filename,
+				size: f.size,
+				lastmod: f.lastmod,
+				type: f.type as "file" | "directory",
+				library_path: f.library_path,
+				status: f.status
+			}));
 		}
 
-		return files.filter((file) => file.basename.toLowerCase().includes(searchTerm.toLowerCase()));
-	}, [isRecentView, historyFiles, directory?.files, searchTerm]);
+		const files = isRecentView ? historyFiles : directory?.files || [];
+		return files;
+	}, [isSearching, searchResults, isRecentView, historyFiles, directory?.files]);
 
 	// File info modal state
 	const [fileInfoModal, setFileInfoModal] = useState<{
