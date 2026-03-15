@@ -159,10 +159,7 @@ export function FileList({
 
 	const handleItemClick = (file: WebDAVFile) => {
 		if (file.type === "directory") {
-			const newPath = currentPath
-				? `${currentPath}/${file.basename}`.replace(/\/+/g, "/")
-				: file.filename;
-			onNavigate(newPath);
+			onNavigate(file.filename);
 		}
 	};
 

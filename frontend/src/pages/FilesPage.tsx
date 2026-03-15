@@ -26,26 +26,13 @@ export function FilesPage() {
 
 	const [activeView, setActiveView] = useState<FileView>("all");
 	const [initialPath, setInitialPath] = useState("/");
+	const [mergedPaths, setMergedPaths] = useState<string[] | undefined>(undefined);
 
 	const fileShortcuts = useMemo(() => {
 		const shortcuts = [{ id: "all", title: "All Files", path: "/", icon: Folder }];
 
 		if (config?.sabnzbd?.categories) {
-			const strategy = config.import?.import_strategy || "NONE";
-			let basePath = "/";
-
-			if (strategy !== "NONE") {
-				// With SYMLINK/STRM strategies, the virtual files remain in complete_dir
-				basePath = config.sabnzbd?.complete_dir || "/";
-			}
-
-			// Ensure valid base path slashes
-			if (basePath && !basePath.startsWith("/")) {
-				basePath = `/${basePath}`;
-			}
-			if (basePath?.endsWith("/") && basePath !== "/") {
-				basePath = basePath.slice(0, -1);
-			}
+			const completeDir = config.sabnzbd?.complete_dir || "";
 
 			config.sabnzbd.categories.forEach((cat) => {
 				if (cat.name.toLowerCase() === "default") return;
@@ -67,17 +54,32 @@ export function FilesPage() {
 				else if (lowerName.includes("book") || lowerName.includes("audiobook")) icon = Book;
 				else if (lowerName.includes("game")) icon = Gamepad2;
 
-				let catPath = basePath === "/" ? `/${cat.name}` : `${basePath}/${cat.name}`;
-				catPath = catPath.replace(/\/\//g, "/");
-
+				// 1. Standard Library Shortcut (e.g. /movies)
 				shortcuts.push({
 					id: cat.name,
 					title: cat.name.charAt(0).toUpperCase() + cat.name.slice(1),
-					path: catPath,
+					path: `/${cat.name}`.replace(/\/\//g, "/"),
+					mergedPaths: completeDir 
+						? [`/${cat.name}`.replace(/\/\//g, "/"), `/${completeDir}/${cat.name}`.replace(/\/\//g, "/")]
+						: undefined,
 					icon: icon,
 				});
+
+				// 2. Staging Shortcut if complete_dir is configured (e.g. /complete/movies)
+				if (completeDir) {
+					let catStagingPath = `/${completeDir}/${cat.name}`;
+					catStagingPath = catStagingPath.replace(/\/\//g, "/");
+
+					shortcuts.push({
+						id: `${cat.name}_staging`,
+						title: `${cat.name.charAt(0).toUpperCase() + cat.name.slice(1)} (Staging)`,
+						path: catStagingPath,
+						icon: icon,
+					});
+				}
 			});
-		} else {
+		}
+ else {
 			// Fallback while loading
 			shortcuts.push({ id: "movies", title: "Movies", path: "/movies", icon: Film });
 			shortcuts.push({ id: "tv", title: "TV Shows", path: "/tv", icon: Tv });
@@ -114,11 +116,12 @@ export function FilesPage() {
 		connect();
 	}, [connect]);
 
-	const handleViewChange = (viewId: FileView, path?: string) => {
+	const handleViewChange = (viewId: FileView, path?: string, merged?: string[]) => {
 		setActiveView(viewId);
 		if (path) {
 			setInitialPath(path);
 		}
+		setMergedPaths(merged);
 	};
 
 	return (
@@ -181,7 +184,7 @@ export function FilesPage() {
 																? "bg-primary font-semibold text-primary-content shadow-md shadow-primary/20"
 																: "hover:bg-base-200"
 														}`}
-														onClick={() => handleViewChange(item.id as FileView, item.path)}
+														onClick={() => handleViewChange(item.id as FileView, item.path, (item as any).mergedPaths)}
 													>
 														<Icon className={`h-5 w-5 ${isActive ? "" : "text-base-content/60"}`} />
 														<span className="text-sm">{item.title}</span>
@@ -237,6 +240,7 @@ export function FilesPage() {
 									connectionError={connectionError}
 									onRetryConnection={handleRetryConnection}
 									initialPath={initialPath}
+									mergedPaths={mergedPaths}
 									activeView={activeView}
 								/>
 							</div>

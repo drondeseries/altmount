@@ -81,7 +81,8 @@ export function useWebDAVDirectory(
 				errorMessage.includes("500") ||
 				errorMessage.includes("502") ||
 				errorMessage.includes("503") ||
-				errorMessage.includes("504")
+				errorMessage.includes("504") ||
+				errorMessage.includes("method not allowed")
 			) {
 				return false;
 			}
@@ -92,6 +93,59 @@ export function useWebDAVDirectory(
 		// Disable background refetching on error to prevent bombardment
 		refetchOnWindowFocus: false,
 		refetchOnReconnect: false,
+	});
+}
+
+/**
+ * useWebDAVMergedDirectory fetches multiple directories in parallel and merges their contents.
+ * Useful for category views that combine main library and staging folders.
+ */
+export function useWebDAVMergedDirectory(
+	paths: string[],
+	isConnected = true,
+	hasConnectionFailed = false,
+	showCorrupted = false,
+) {
+	return useQuery<WebDAVDirectory>({
+		queryKey: ["webdav", "merged", paths, showCorrupted],
+		queryFn: async () => {
+			// Fetch all directories in parallel
+			const results = await Promise.allSettled(
+				paths.map((path) => webdavClient.listDirectory(path, showCorrupted)),
+			);
+
+			const allFiles: any[] = [];
+			const seenBasenames = new Set<string>();
+
+			for (const result of results) {
+				if (result.status === "fulfilled" && result.value.files) {
+					for (const file of result.value.files) {
+						// Simple deduplication based on basename
+						// If a file exists in both library and staging, we show the one we encountered first
+						// (usually the library one based on paths array order)
+						if (!seenBasenames.has(file.basename)) {
+							seenBasenames.add(file.basename);
+							allFiles.push(file);
+						}
+					}
+				}
+			}
+
+			// Sort alphabetically (directories first)
+			allFiles.sort((a, b) => {
+				if (a.type !== b.type) {
+					return a.type === "directory" ? -1 : 1;
+				}
+				return a.basename.localeCompare(b.basename);
+			});
+
+			return {
+				path: paths[0] || "/",
+				files: allFiles,
+			};
+		},
+		enabled: isConnected && !hasConnectionFailed && paths.length > 0,
+		staleTime: 30000,
 	});
 }
 

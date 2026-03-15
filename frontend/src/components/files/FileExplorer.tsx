@@ -12,7 +12,7 @@ import {
 import { useEffect, useMemo, useState } from "react";
 import { useImportHistory } from "../../hooks/useApi";
 import { useFilePreview } from "../../hooks/useFilePreview";
-import { useWebDAVDirectory, useWebDAVFileOperations } from "../../hooks/useWebDAV";
+import { useWebDAVDirectory, useWebDAVFileOperations, useWebDAVMergedDirectory } from "../../hooks/useWebDAV";
 import type { WebDAVFile } from "../../types/webdav";
 import { ErrorAlert } from "../ui/ErrorAlert";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
@@ -28,6 +28,7 @@ interface FileExplorerProps {
 	connectionError: Error | null;
 	onRetryConnection: () => void;
 	initialPath?: string;
+	mergedPaths?: string[];
 	activeView?: string;
 }
 
@@ -38,6 +39,7 @@ export function FileExplorer({
 	connectionError,
 	onRetryConnection,
 	initialPath = "/",
+	mergedPaths,
 	activeView = "all",
 }: FileExplorerProps) {
 	const [currentPath, setCurrentPath] = useState(initialPath);
@@ -45,18 +47,23 @@ export function FileExplorer({
 	const [showCorrupted, setShowCorrupted] = useState(false);
 
 	const isRecentView = activeView === "recent";
+	
+	// Determine if we are in a merged view (only if we are at the root of that view)
+	const isAtMergedRoot = useMemo(() => {
+		if (!mergedPaths || mergedPaths.length === 0) return false;
+		return mergedPaths.includes(currentPath);
+	}, [mergedPaths, currentPath]);
 
 	// Sync currentPath if initialPath changes (from sidebar)
 	useEffect(() => {
 		setCurrentPath(initialPath);
 	}, [initialPath]);
 
-	const {
-		data: directory,
-		isLoading: isDirectoryLoading,
-		error: directoryError,
-		refetch: refetchDirectory,
-	} = useWebDAVDirectory(currentPath, isConnected, hasConnectionFailed, showCorrupted);
+	// Single directory query
+	const singleDir = useWebDAVDirectory(currentPath, isConnected && !isAtMergedRoot, hasConnectionFailed, showCorrupted);
+
+	// Merged directory query (for category roots)
+	const mergedDir = useWebDAVMergedDirectory(mergedPaths || [], isConnected && isAtMergedRoot, hasConnectionFailed, showCorrupted);
 
 	const {
 		data: history,
@@ -64,9 +71,19 @@ export function FileExplorer({
 		refetch: refetchHistory,
 	} = useImportHistory(50);
 
-	const isLoading = isRecentView ? isHistoryLoading : isDirectoryLoading;
-	const error = isRecentView ? null : directoryError;
-	const refetch = isRecentView ? refetchHistory : refetchDirectory;
+	const isLoading = isRecentView 
+		? isHistoryLoading 
+		: (isAtMergedRoot ? mergedDir.isLoading : singleDir.isLoading);
+	
+	const error = isRecentView 
+		? null 
+		: (isAtMergedRoot ? mergedDir.error : singleDir.error);
+	
+	const refetch = isRecentView 
+		? refetchHistory 
+		: (isAtMergedRoot ? mergedDir.refetch : singleDir.refetch);
+
+	const directory = isRecentView ? null : (isAtMergedRoot ? mergedDir.data : singleDir.data);
 
 	const historyFiles = useMemo(() => {
 		if (!history) return [];
