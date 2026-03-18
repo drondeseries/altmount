@@ -213,8 +213,14 @@ export function SABnzbdConfigSection({
 
 							<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
 										Virtual Root (Complete Dir)
+										<div
+											className="tooltip tooltip-right"
+											data-tip="The directory Sonarr/Radarr expect to find 'complete' downloads in. This should match the 'Download Client' path in their settings."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
 									</legend>
 									<input
 										type="text"
@@ -230,7 +236,15 @@ export function SABnzbdConfigSection({
 								</fieldset>
 
 								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Public Callback URL</legend>
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+										Public Callback URL
+										<div
+											className="tooltip tooltip-right"
+											data-tip="The full URL used by Sonarr/Radarr to reach the SABnzbd emulation API. Usually http://your-ip:8080/sabnzbd."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</legend>
 									<input
 										type="url"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -317,9 +331,17 @@ export function SABnzbdConfigSection({
 						{/* Categories */}
 						<div className="fade-in slide-in-from-top-6 animate-in space-y-6 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 							<div className="flex items-center justify-between gap-4">
-								<h4 className="font-bold text-base-content/40 text-xs uppercase tracking-widest">
-									Category Mapping
-								</h4>
+								<div className="flex items-center gap-2">
+									<h4 className="font-bold text-base-content/40 text-xs uppercase tracking-widest">
+										Category Mapping
+									</h4>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Define categories used by Sonarr/Radarr. Each category can map to a specific subdirectory in your virtual library."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/30" />
+									</div>
+								</div>
 								{!isReadOnly && (
 									<button
 										type="button"

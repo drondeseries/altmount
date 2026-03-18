@@ -1,4 +1,4 @@
-import { AlertTriangle, Plus, Save, Trash2, Webhook } from "lucide-react";
+import { AlertTriangle, Info, Plus, Save, Trash2, Webhook } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useRegisterArrsWebhooks } from "../../hooks/useApi";
 import type { ArrsConfig, ArrsInstanceConfig, ArrsType, ConfigResponse } from "../../types/config";
@@ -242,7 +242,15 @@ export function ArrsConfigSection({
 				<div className="rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 					<div className="flex items-start justify-between gap-4">
 						<div className="min-w-0 flex-1">
-							<h4 className="break-words font-bold text-base-content text-sm">Service Engine</h4>
+							<div className="flex items-center gap-2">
+								<h4 className="break-words font-bold text-base-content text-sm">Service Engine</h4>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Enable communication with Sonarr/Radarr for automatic library scanning and repair triggers."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Allows AltMount to talk to Radarr/Sonarr for repairs and updates.
 							</p>
@@ -278,7 +286,15 @@ export function ArrsConfigSection({
 
 							<div className="flex flex-col gap-4 sm:flex-row sm:items-end">
 								<fieldset className="fieldset flex-1">
-									<legend className="fieldset-legend font-semibold">AltMount Callback URL</legend>
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+										AltMount Callback URL
+										<div
+											className="tooltip tooltip-right"
+											data-tip="The URL your Sonarr/Radarr instances should use to reach this AltMount server. Must be accessible from their network."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</legend>
 									<input
 										type="url"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -331,9 +347,17 @@ export function ArrsConfigSection({
 
 						<div className="flex items-start justify-between gap-4">
 							<div className="min-w-0 flex-1">
-								<h5 className="break-words font-bold text-base-content text-sm">
-									Queue Auto-Cleanup
-								</h5>
+								<div className="flex items-center gap-2">
+									<h5 className="break-words font-bold text-base-content text-sm">
+										Queue Auto-Cleanup
+									</h5>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Automatically remove 'stuck' or failed items from the Sonarr/Radarr download queues to keep them clean."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</div>
 								<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 									Automatically remove empty import folders from ARR queues.
 								</p>
@@ -374,8 +398,14 @@ export function ArrsConfigSection({
 
 								<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 									<fieldset className="fieldset">
-										<legend className="fieldset-legend whitespace-normal font-semibold md:whitespace-nowrap">
+										<legend className="fieldset-legend flex items-center gap-2 whitespace-normal font-semibold md:whitespace-nowrap">
 											Cleanup Grace Period
+											<div
+												className="tooltip tooltip-right"
+												data-tip="Number of minutes to wait after a failure before considering an item eligible for cleanup."
+											>
+												<Info className="h-3.5 w-3.5 text-base-content/40" />
+											</div>
 										</legend>
 										<div className="join w-full">
 											<input
@@ -401,8 +431,14 @@ export function ArrsConfigSection({
 									</fieldset>
 
 									<fieldset className="fieldset">
-										<legend className="fieldset-legend whitespace-normal font-semibold md:whitespace-nowrap">
+										<legend className="fieldset-legend flex items-center gap-2 whitespace-normal font-semibold md:whitespace-nowrap">
 											Import Failure Cleanup
+											<div
+												className="tooltip tooltip-right"
+												data-tip="Force removal of items specifically reporting 'Automatic Import' failures in ARR apps."
+											>
+												<Info className="h-3.5 w-3.5 text-base-content/40" />
+											</div>
 										</legend>
 										<label className="label h-12 cursor-pointer items-center justify-start gap-4">
 											<input
@@ -426,9 +462,17 @@ export function ArrsConfigSection({
 								</div>
 
 								<div className="space-y-4">
-									<h5 className="font-bold text-base-content/60 text-xs uppercase">
-										Allowlist (Ignore Errors)
-									</h5>
+									<div className="flex items-center gap-2">
+										<h5 className="font-bold text-base-content/60 text-xs uppercase">
+											Allowlist (Ignore Errors)
+										</h5>
+										<div
+											className="tooltip tooltip-right"
+											data-tip="If an item fails with any of these error messages, AltMount will NOT clean it up automatically."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/30" />
+										</div>
+									</div>
 									<div className="custom-scrollbar max-h-48 space-y-2 overflow-y-auto pr-2">
 										{(formData.queue_cleanup_allowlist || []).map((msg, index) => (
 											<div

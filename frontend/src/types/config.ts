@@ -95,7 +95,6 @@ export interface HealthConfig {
 	library_sync_concurrency?: number;
 	check_all_segments?: boolean; // Whether to check all segments or use sampling
 	resolve_repair_on_import?: boolean; // Automatically resolve pending repairs in the same directory when a new file is imported
-	verify_data?: boolean; // Verify 1 byte of data for each segment
 	read_timeout_seconds?: number; // Timeout for data verification
 	acceptable_missing_segments_percentage?: number;
 	repair: RepairConfig;
@@ -221,7 +220,6 @@ export interface ImportConfig {
 	read_timeout_seconds: number;
 	import_strategy: ImportStrategy;
 	import_dir?: string | null;
-	skip_health_check?: boolean;
 	watch_dir?: string | null;
 	watch_interval_seconds?: number | null;
 	allow_nested_rar_extraction?: boolean;
@@ -347,7 +345,6 @@ export interface HealthUpdateRequest {
 	library_sync_concurrency?: number;
 	check_all_segments?: boolean; // Whether to check all segments or use sampling
 	resolve_repair_on_import?: boolean;
-	verify_data?: boolean;
 	acceptable_missing_segments_percentage?: number;
 	repair?: Partial<RepairConfig>;
 }
@@ -411,7 +408,6 @@ export interface ImportUpdateRequest {
 	allowed_file_extensions?: string[];
 	import_strategy?: ImportStrategy;
 	import_dir?: string | null;
-	skip_health_check?: boolean;
 	watch_dir?: string | null;
 	watch_interval_seconds?: number | null;
 	allow_nested_rar_extraction?: boolean;

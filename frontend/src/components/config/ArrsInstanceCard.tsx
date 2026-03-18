@@ -1,4 +1,4 @@
-import { Activity, Eye, EyeOff, Globe, Key, Tag, Trash2 } from "lucide-react";
+import { Activity, Eye, EyeOff, Globe, Info, Key, Tag, Trash2 } from "lucide-react";
 import { useCallback, useState } from "react";
 import type { ArrsInstanceConfig, ArrsType, SABnzbdCategory } from "../../types/config";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
@@ -151,6 +151,12 @@ export function ArrsInstanceCard({
 					<fieldset className="fieldset">
 						<legend className="fieldset-legend flex items-center gap-2 font-semibold">
 							<Tag className="h-3 w-3 text-base-content/60" /> Category
+							<div
+								className="tooltip tooltip-right"
+								data-tip="The SABnzbd category this instance uses. (movies for Radarr, tv for Sonarr usually)"
+							>
+								<Info className="h-3 w-3 text-base-content/30" />
+							</div>
 						</legend>
 						<select
 							className="select select-sm select-bordered w-full bg-base-100 font-bold text-xs"

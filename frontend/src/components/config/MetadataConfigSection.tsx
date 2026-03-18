@@ -1,4 +1,4 @@
-import { Download, HardDrive, History, Save, ShieldAlert, Trash2 } from "lucide-react";
+import { Download, HardDrive, History, Info, Save, ShieldAlert, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useBatchExportNZB } from "../../hooks/useConfig";
 import type { ConfigResponse, MetadataBackupConfig, MetadataConfig } from "../../types/config";
@@ -82,8 +82,14 @@ export function MetadataConfigSection({
 					</div>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend whitespace-normal font-semibold md:whitespace-nowrap">
+						<legend className="fieldset-legend flex items-center gap-2 whitespace-normal font-semibold md:whitespace-nowrap">
 							Metadata Root Directory
+							<div
+								className="tooltip tooltip-right"
+								data-tip="The absolute path where AltMount stores the metadata (.meta files) for your library. This directory must be persistent."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
 						</legend>
 						<div className="flex flex-col gap-3">
 							<input
@@ -115,7 +121,15 @@ export function MetadataConfigSection({
 					<div className="space-y-6">
 						<div className="flex items-center justify-between gap-4">
 							<div className="min-w-0 flex-1">
-								<h5 className="font-bold text-sm">Automatic Backups</h5>
+								<div className="flex items-center gap-2">
+									<h5 className="font-bold text-sm">Automatic Backups</h5>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Regularly copy all metadata files to a secondary location to prevent data loss."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</div>
 								<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 									Mirrors all metadata files to an external directory for disaster recovery.
 								</p>
@@ -204,9 +218,17 @@ export function MetadataConfigSection({
 								}
 							/>
 							<div className="min-w-0 flex-1">
-								<span className="block whitespace-normal break-words font-bold text-xs">
-									Purge Source NZB
-								</span>
+								<div className="flex items-center gap-2">
+									<span className="block whitespace-normal break-words font-bold text-xs">
+										Purge Source NZB
+									</span>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="If enabled, deleting a file's metadata from AltMount will also attempt to delete the original .nzb file from your storage."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</div>
 								<span className="mt-1 block whitespace-normal break-words text-base-content/50 text-xs leading-relaxed">
 									Delete original NZB file when metadata is manually removed from AltMount.
 								</span>

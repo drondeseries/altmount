@@ -512,8 +512,6 @@ export function ConfigurationPage() {
 								{activeSection === "providers" && (
 									<ProvidersConfigSection
 										config={config}
-										onUpdate={handleConfigUpdate}
-										isUpdating={updateConfigSection.isPending}
 									/>
 								)}
 								{activeSection === "mount" && (

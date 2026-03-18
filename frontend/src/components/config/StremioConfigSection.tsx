@@ -208,7 +208,15 @@ export function StremioConfigSection({
 					</div>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend">Public Base URL</legend>
+						<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+							Public Base URL
+							<div
+								className="tooltip tooltip-right"
+								data-tip="The external URL where AltMount is reachable. Required for Stremio to find your stream links."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
+						</legend>
 						<input
 							type="url"
 							className="input w-full"
@@ -277,7 +285,15 @@ export function StremioConfigSection({
 					</div>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend">NZB File Cache TTL (hours)</legend>
+						<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+							NZB File Cache TTL (hours)
+							<div
+								className="tooltip tooltip-right"
+								data-tip="How long to keep temporary NZB/metadata files created by Stremio/Prowlarr searches."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
+						</legend>
 						<input
 							type="number"
 							className="input w-32"
@@ -345,7 +361,15 @@ export function StremioConfigSection({
 					</fieldset>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend">Categories</legend>
+						<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+							Categories
+							<div
+								className="tooltip tooltip-right"
+								data-tip="Newznab category IDs to search in Prowlarr. Separate with commas."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
+						</legend>
 						<TagInput
 							tags={(formData.prowlarr?.categories ?? []).map(String)}
 							onChange={(tags) =>

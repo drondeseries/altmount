@@ -293,7 +293,6 @@ type HealthConfig struct {
 	LibrarySyncIntervalMinutes    int          `yaml:"library_sync_interval_minutes" mapstructure:"library_sync_interval_minutes" json:"library_sync_interval_minutes,omitempty"`
 	LibrarySyncConcurrency        int          `yaml:"library_sync_concurrency" mapstructure:"library_sync_concurrency" json:"library_sync_concurrency,omitempty"`
 	ResolveRepairOnImport         *bool        `yaml:"resolve_repair_on_import" mapstructure:"resolve_repair_on_import" json:"resolve_repair_on_import,omitempty"`
-	VerifyData                    *bool        `yaml:"verify_data" mapstructure:"verify_data" json:"verify_data,omitempty"`
 	CheckAllSegments              *bool        `yaml:"check_all_segments" mapstructure:"check_all_segments" json:"check_all_segments,omitempty"`
 	ReadTimeoutSeconds            int          `yaml:"read_timeout_seconds" mapstructure:"read_timeout_seconds" json:"read_timeout_seconds,omitempty"`
 	AcceptableMissingSegmentsPercentage float64 `yaml:"acceptable_missing_segments_percentage" mapstructure:"acceptable_missing_segments_percentage" json:"acceptable_missing_segments_percentage,omitempty"`
@@ -1158,6 +1157,7 @@ func DefaultConfig(configDir ...string) *Config {
 	failureMaskingEnabled := true
 	repairEnabled := true
 	repairExponentialBackoff := true
+	segmentCacheEnabled := false
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
@@ -1305,7 +1305,6 @@ func DefaultConfig(configDir ...string) *Config {
 			SegmentSamplePercentage:       5,                      // Default: 5% segment sampling
 			LibrarySyncIntervalMinutes:    360,                    // Default: sync every 6 hours
 			ResolveRepairOnImport:         &resolveRepairOnImport, // Enabled by default
-			AcceptableMissingSegmentsPercentage: 0,                // Default: no missing segments allowed
 			Repair: RepairConfig{
 				Enabled:            &repairEnabled,
 				IntervalMinutes:    60,
@@ -1361,6 +1360,12 @@ func DefaultConfig(configDir ...string) *Config {
 			EntryTimeoutSeconds: 1,
 			MaxCacheSizeMB:      128,
 			MaxReadAheadMB:      128,
+		},
+		SegmentCache: SegmentCacheConfig{
+			Enabled:     &segmentCacheEnabled,
+			CachePath:   filepath.Join(cachePath, "segments"),
+			MaxSizeGB:   10,
+			ExpiryHours: 24,
 		},
 		MountPath: "",            // Empty by default - required when ARRs is enabled
 		MountType: MountTypeNone, // No mount system active by default

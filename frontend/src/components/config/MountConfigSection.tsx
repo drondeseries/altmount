@@ -3,6 +3,7 @@ import {
 	Eye,
 	EyeOff,
 	HardDrive,
+	Info,
 	Play,
 	Save,
 	Square,
@@ -403,7 +404,15 @@ export function MountConfigSection({ config, onUpdate, isUpdating }: MountConfig
 
 					<div className="rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Local Mount Path</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Local Mount Path
+								<div
+									className="tooltip tooltip-right"
+									data-tip="The absolute path on your host where AltMount will expose the virtual filesystem. Ensure this directory exists and is empty."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<div className="flex flex-col gap-3">
 								<input
 									type="text"
@@ -722,7 +731,15 @@ function RCloneMountSubSection({ config, onFormDataChange }: RCloneSubSectionPro
 					</fieldset>
 					<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend">Cache Mode</legend>
+							<legend className="fieldset-legend flex items-center gap-2">
+								Cache Mode
+								<div
+									className="tooltip tooltip-right"
+									data-tip="'full' is recommended for streaming. It caches read and write operations to disk for better performance and compatibility."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<select
 								className="select select-bordered w-full bg-base-100 text-sm"
 								value={mountFormData.vfs_cache_mode}
@@ -775,7 +792,15 @@ function RCloneMountSubSection({ config, onFormDataChange }: RCloneSubSectionPro
 						/>
 					</fieldset>
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend">VFS Read Ahead</legend>
+						<legend className="fieldset-legend flex items-center gap-2">
+							VFS Read Ahead
+							<div
+								className="tooltip tooltip-right"
+								data-tip="Amount of data to buffer ahead of the current read position. Larger values can improve streaming smoothness but use more bandwidth/disk space."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
+						</legend>
 						<input
 							type="text"
 							className="input input-bordered w-full bg-base-100 font-mono text-sm"

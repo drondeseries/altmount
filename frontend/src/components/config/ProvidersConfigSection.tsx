@@ -1,12 +1,10 @@
 import {
-	AlertTriangle,
 	Edit,
 	Gauge,
 	GripVertical,
 	Plus,
 	Power,
 	PowerOff,
-	Save,
 	Trash2,
 	Wifi,
 } from "lucide-react";
@@ -15,19 +13,14 @@ import { useConfirm } from "../../contexts/ModalContext";
 import { useToast } from "../../contexts/ToastContext";
 import { useProviders } from "../../hooks/useProviders";
 import type { ConfigResponse, ProviderConfig } from "../../types/config";
-import { LoadingSpinner } from "../ui/LoadingSpinner";
 import { ProviderModal } from "./ProviderModal";
 
 interface ProvidersConfigSectionProps {
 	config: ConfigResponse;
-	onUpdate?: (section: string, data: ProviderConfig[]) => Promise<void>;
-	isUpdating?: boolean;
 }
 
 export function ProvidersConfigSection({
 	config,
-	onUpdate,
-	isUpdating = false,
 }: ProvidersConfigSectionProps) {
 	const [isModalOpen, setIsModalOpen] = useState(false);
 	const [editingProvider, setEditingProvider] = useState<ProviderConfig | null>(null);
@@ -38,16 +31,14 @@ export function ProvidersConfigSection({
 	const [testingSpeedProviderId, setTestingSpeedProviderId] = useState<string | null>(null);
 
 	const [formData, setFormData] = useState<ProviderConfig[]>(config.providers);
-	const [hasChanges, setHasChanges] = useState(false);
 
-	const { deleteProvider, testProviderSpeed } = useProviders();
+	const { deleteProvider, testProviderSpeed, updateProvider, reorderProviders } = useProviders();
 	const { confirmDelete } = useConfirm();
 	const { showToast } = useToast();
 
 	// Sync with config when it changes
 	useEffect(() => {
 		setFormData(config.providers);
-		setHasChanges(false);
 	}, [config.providers]);
 
 	const handleCreate = () => {
@@ -97,6 +88,11 @@ export function ProvidersConfigSection({
 			setDeletingProviderId(providerId);
 			try {
 				await deleteProvider.mutateAsync(providerId);
+				showToast({
+					type: "success",
+					title: "Provider Deleted",
+					message: "The provider has been removed successfully.",
+				});
 			} catch (error) {
 				console.error("Failed to delete provider:", error);
 				showToast({
@@ -110,44 +106,40 @@ export function ProvidersConfigSection({
 		}
 	};
 
-	const handleToggleEnabled = (provider: ProviderConfig) => {
-		handleFieldChange(provider.id, "enabled", !provider.enabled);
+	const handleToggleEnabled = async (provider: ProviderConfig) => {
+		try {
+			await updateProvider.mutateAsync({
+				id: provider.id,
+				data: { enabled: !provider.enabled },
+			});
+		} catch (error) {
+			console.error("Failed to toggle provider status:", error);
+			showToast({
+				type: "error",
+				title: "Update Failed",
+				message: "Failed to update provider status. Please try again.",
+			});
+		}
 	};
 
-	const handleFieldChange = (
+	const handleFieldChange = async (
 		providerId: string,
-		field: keyof ProviderConfig,
+		field: string,
 		// biome-ignore lint/suspicious/noExplicitAny: accepts various field types
 		value: any,
 	) => {
-		const newFormData = formData.map((p) => {
-			if (p.id === providerId) {
-				return { ...p, [field]: value };
-			}
-			return p;
-		});
-		setFormData(newFormData);
-		setHasChanges(JSON.stringify(newFormData) !== JSON.stringify(config.providers));
-	};
-
-	const handleSave = async () => {
-		if (onUpdate && hasChanges) {
-			try {
-				await onUpdate("providers", formData);
-				setHasChanges(false);
-				showToast({
-					type: "success",
-					title: "Configuration Saved",
-					message: "NNTP providers updated successfully.",
-				});
-			} catch (error) {
-				console.error("Failed to save providers:", error);
-				showToast({
-					type: "error",
-					title: "Save Failed",
-					message: "Failed to save NNTP providers. Please try again.",
-				});
-			}
+		try {
+			await updateProvider.mutateAsync({
+				id: providerId,
+				data: { [field]: value },
+			});
+		} catch (error) {
+			console.error(`Failed to update ${field}:`, error);
+			showToast({
+				type: "error",
+				title: "Update Failed",
+				message: `Failed to update ${field}. Please try again.`,
+			});
 		}
 	};
 
@@ -177,20 +169,40 @@ export function ProvidersConfigSection({
 		}
 	};
 
-	const handleDrop = (e: React.DragEvent, targetProviderId: string) => {
+	const handleDrop = async (e: React.DragEvent, targetProviderId: string) => {
 		e.preventDefault();
 		const draggedProviderId = e.dataTransfer.getData("text/plain");
 		setDraggedProvider(null);
 		setDragOverProvider(null);
+
 		if (!draggedProviderId || draggedProviderId === targetProviderId) return;
+
 		const draggedIndex = formData.findIndex((p) => p.id === draggedProviderId);
 		const targetIndex = formData.findIndex((p) => p.id === targetProviderId);
+
 		if (draggedIndex === -1 || targetIndex === -1) return;
+
 		const reorderedProviders = [...formData];
 		const [draggedProviderObj] = reorderedProviders.splice(draggedIndex, 1);
 		reorderedProviders.splice(targetIndex, 0, draggedProviderObj);
-		setFormData(reorderedProviders);
-		setHasChanges(JSON.stringify(reorderedProviders) !== JSON.stringify(config.providers));
+
+		try {
+			await reorderProviders.mutateAsync({
+				provider_ids: reorderedProviders.map((p) => p.id),
+			});
+			showToast({
+				type: "success",
+				title: "Order Updated",
+				message: "Provider priority updated successfully.",
+			});
+		} catch (error) {
+			console.error("Failed to reorder providers:", error);
+			showToast({
+				type: "error",
+				title: "Reorder Failed",
+				message: "Failed to reorder providers. Please try again.",
+			});
+		}
 	};
 
 	const handleDragEnd = () => {
@@ -230,7 +242,7 @@ export function ProvidersConfigSection({
 				</div>
 			) : (
 				<div className="relative">
-					<div className="grid gap-4">
+					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
 						{formData.map((provider, index) => (
 							<section
 								key={provider.id}
@@ -241,7 +253,7 @@ export function ProvidersConfigSection({
 								onDragLeave={handleDragLeave}
 								onDrop={(e) => handleDrop(e, provider.id)}
 								onDragEnd={handleDragEnd}
-								className={`group relative cursor-move overflow-hidden rounded-2xl border-2 bg-base-100/50 transition-all duration-300 hover:shadow-md ${
+								className={`group relative cursor-move rounded-2xl border-2 bg-base-100/50 transition-all duration-300 hover:shadow-md ${
 									provider.enabled
 										? provider.is_backup_provider
 											? "border-warning/20"
@@ -253,9 +265,9 @@ export function ProvidersConfigSection({
 										: ""
 								}`}
 							>
-								{/* Priority Indicator Line */}
+								{/* Priority Indicator Line - Rounded to match card */}
 								<div
-									className={`absolute top-0 bottom-0 left-0 w-1.5 ${provider.enabled ? (provider.is_backup_provider ? "bg-warning" : "bg-success") : "bg-base-300"}`}
+									className={`absolute bottom-0 left-0 top-0 w-1.5 rounded-l-[14px] ${provider.enabled ? (provider.is_backup_provider ? "bg-warning" : "bg-success") : "bg-base-300"}`}
 								/>
 
 								<div className="p-5 pl-7">
@@ -292,7 +304,7 @@ export function ProvidersConfigSection({
 											)}
 
 											<div className="join rounded-xl bg-base-200/50 p-0.5">
-												<div className="tooltip" data-tip="Enable/Disable provider">
+												<div className="tooltip tooltip-right" data-tip="Enable/Disable provider">
 													<button
 														type="button"
 														className={`btn btn-sm sm:btn-sm join-item border-none ${
@@ -309,7 +321,7 @@ export function ProvidersConfigSection({
 														)}
 													</button>
 												</div>
-												<div className="tooltip" data-tip="Run speed test">
+												<div className="tooltip tooltip-right" data-tip="Run speed test">
 													<button
 														type="button"
 														className="btn btn-sm sm:btn-sm join-item border-none bg-info/10 text-info hover:bg-info/20"
@@ -323,7 +335,7 @@ export function ProvidersConfigSection({
 														)}
 													</button>
 												</div>
-												<div className="tooltip" data-tip="Edit provider">
+												<div className="tooltip tooltip-right" data-tip="Edit provider">
 													<button
 														type="button"
 														className="btn btn-sm sm:btn-sm join-item border-none bg-base-content/5 text-base-content hover:bg-base-content/10"
@@ -332,7 +344,7 @@ export function ProvidersConfigSection({
 														<Edit className="h-3.5 w-3.5" />
 													</button>
 												</div>
-												<div className="tooltip" data-tip="Remove provider">
+												<div className="tooltip tooltip-right" data-tip="Remove provider">
 													<button
 														type="button"
 														className="btn btn-sm sm:btn-sm join-item border-none bg-error/10 text-error hover:bg-error/20"
@@ -351,17 +363,32 @@ export function ProvidersConfigSection({
 									</div>
 
 									{/* Quick Details Grid */}
-									<div className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 rounded-xl bg-base-200/30 p-4 text-xs md:grid-cols-5">
+									<div className="mt-5 grid grid-cols-2 gap-x-6 gap-y-4 rounded-xl bg-base-200/30 p-4 text-xs md:grid-cols-3 lg:grid-cols-5">
 										<div className="min-w-0">
-											<span className="mb-1 block font-black text-base-content/50 text-xs uppercase tracking-widest">
-												Max Conn
-											</span>
+											<div className="mb-1 flex items-center gap-1">
+												<span className="block font-black text-base-content/50 text-[10px] uppercase tracking-widest">
+													Max Conn
+												</span>
+												<div
+													className="tooltip tooltip-right"
+													data-tip="Maximum simultaneous NNTP connections for this provider."
+												>
+													<Wifi className="h-3 w-3 text-base-content/30" />
+												</div>
+											</div>
 											<div className="flex items-center gap-2">
 												<input
 													type="number"
 													className="input input-xs input-bordered w-full max-w-[70px] bg-base-100 font-bold font-mono"
 													value={provider.max_connections}
-													onChange={(e) =>
+													onChange={(e) => {
+														const value = Number.parseInt(e.target.value, 10) || 1;
+														const newFormData = formData.map((p) =>
+															p.id === provider.id ? { ...p, max_connections: value } : p,
+														);
+														setFormData(newFormData);
+													}}
+													onBlur={(e) =>
 														handleFieldChange(
 															provider.id,
 															"max_connections",
@@ -374,15 +401,30 @@ export function ProvidersConfigSection({
 											</div>
 										</div>
 										<div className="min-w-0">
-											<span className="mb-1 block font-black text-base-content/50 text-xs uppercase tracking-widest">
-												Pipeline
-											</span>
+											<div className="mb-1 flex items-center gap-1">
+												<span className="block font-black text-base-content/50 text-[10px] uppercase tracking-widest">
+													Pipeline
+												</span>
+												<div
+													className="tooltip tooltip-top"
+													data-tip="Number of articles to request in a single batch per connection (1-50). Higher values improve speed but may cause timeouts on some providers."
+												>
+													<Gauge className="h-3 w-3 text-base-content/30" />
+												</div>
+											</div>
 											<div className="flex items-center gap-2">
 												<input
 													type="number"
 													className="input input-xs input-bordered w-full max-w-[70px] bg-base-100 font-bold font-mono"
 													value={provider.inflight_requests || 10}
-													onChange={(e) =>
+													onChange={(e) => {
+														const value = Number.parseInt(e.target.value, 10) || 1;
+														const newFormData = formData.map((p) =>
+															p.id === provider.id ? { ...p, inflight_requests: value } : p,
+														);
+														setFormData(newFormData);
+													}}
+													onBlur={(e) =>
 														handleFieldChange(
 															provider.id,
 															"inflight_requests",
@@ -429,26 +471,6 @@ export function ProvidersConfigSection({
 					</div>
 				</div>
 			)}
-
-			{/* Save & Validation */}
-			<div className="space-y-4 border-base-200 border-t pt-6">
-				{hasChanges && (
-					<div className="fade-in slide-in-from-bottom-2 flex animate-in items-center justify-end gap-4">
-						<div className="flex items-center gap-2 font-bold text-warning text-xs">
-							<AlertTriangle className="h-4 w-4" /> Unsaved Changes
-						</div>
-						<button
-							type="button"
-							className="btn btn-primary px-10 shadow-lg shadow-primary/20"
-							onClick={handleSave}
-							disabled={isUpdating}
-						>
-							{isUpdating ? <LoadingSpinner size="sm" /> : <Save className="h-4 w-4" />}
-							{isUpdating ? "Saving..." : "Save Changes"}
-						</button>
-					</div>
-				)}
-			</div>
 
 			{/* Provider Modal */}
 			{isModalOpen && (

@@ -1,4 +1,4 @@
-import { Plus, Save, X } from "lucide-react";
+import { Info, Plus, Save, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { ConfigResponse, ImportConfig } from "../../types/config";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
@@ -91,7 +91,15 @@ export function ImportConfigSection({
 
 					<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Active Workers</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Active Workers
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Number of NZB files that can be processed and extracted simultaneously."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -112,7 +120,15 @@ export function ImportConfigSection({
 						</fieldset>
 
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend">Max Connections (per Worker)</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Max Connections (per Worker)
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Maximum number of simultaneous NNTP connections each worker can use for extraction or validation."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -134,7 +150,15 @@ export function ImportConfigSection({
 
 					<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Max Download Prefetch</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Max Download Prefetch
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Number of segments to pre-download into memory to speed up archive scanning and extraction."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -154,7 +178,15 @@ export function ImportConfigSection({
 						</fieldset>
 
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Read Timeout (Seconds)</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Read Timeout (Seconds)
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Max time to wait for data from a Usenet provider before considering a segment download as failed."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -187,7 +219,15 @@ export function ImportConfigSection({
 					<div className="space-y-6">
 						<div className="flex items-center justify-between">
 							<div className="min-w-0">
-								<h5 className="font-bold text-sm">Segment Verification</h5>
+								<div className="flex items-center gap-2">
+									<h5 className="font-bold text-sm">Segment Verification</h5>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="The percentage of random segments to verify for each file during import. Higher values increase accuracy but slow down imports."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</div>
 								<p className="mt-1 break-words text-[11px] text-base-content/50">
 									Percentage of Usenet segments to validate before import.
 								</p>
@@ -254,7 +294,15 @@ export function ImportConfigSection({
 
 					<div className="grid grid-cols-1 gap-8 md:grid-cols-2">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Strategy Type</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Strategy Type
+								<div
+									className="tooltip tooltip-right"
+									data-tip="NONE: Virtual access only. SYMLINK: Real files that link to the virtual mount. STRM: URL files for media players."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<select
 								className="select select-bordered w-full bg-base-100"
 								value={formData.import_strategy}
@@ -299,7 +347,15 @@ export function ImportConfigSection({
 
 					<div className="space-y-6">
 						<div>
-							<h5 className="font-bold text-sm">NZB Watch Directory</h5>
+							<div className="flex items-center gap-2">
+								<h5 className="font-bold text-sm">NZB Watch Directory</h5>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="A directory on your system where you can drop NZB files to have them automatically imported by AltMount."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Monitor a specific folder for new NZB files and import them automatically.
 							</p>
@@ -356,7 +412,15 @@ export function ImportConfigSection({
 					</div>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend font-semibold">Allowed File Extensions</legend>
+						<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+							Allowed File Extensions
+							<div
+								className="tooltip tooltip-right"
+								data-tip="Only files matching these extensions will be imported into the virtual library. Leave empty to allow all files."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
+						</legend>
 
 						<div className="mb-4 flex min-h-[4rem] flex-wrap gap-2 rounded-xl border border-base-300 bg-base-100/50 p-3">
 							{formData.allowed_file_extensions.length === 0 ? (

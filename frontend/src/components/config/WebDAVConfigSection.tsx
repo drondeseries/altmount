@@ -83,7 +83,15 @@ export function WebDAVConfigSection({
 
 					<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">External Hostname</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								External Hostname
+								<div
+									className="tooltip tooltip-right"
+									data-tip="The address used to access this server from other players (e.g. 192.168.1.10). Used for STRM file links."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="text"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -98,7 +106,15 @@ export function WebDAVConfigSection({
 						</fieldset>
 
 						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Port</legend>
+							<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+								Port
+								<div
+									className="tooltip tooltip-right"
+									data-tip="The network port the WebDAV server will listen on."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</legend>
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -160,8 +176,14 @@ export function WebDAVConfigSection({
 					</div>
 
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend whitespace-normal break-words font-semibold md:whitespace-nowrap">
+						<legend className="fieldset-legend flex items-center gap-2 whitespace-normal break-words font-semibold md:whitespace-nowrap">
 							WebDAV Mount Path
+							<div
+								className="tooltip tooltip-right"
+								data-tip="The absolute path on this machine where you manually mount this WebDAV server. Required for mapping Sonarr/Radarr files back to AltMount."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
 						</legend>
 						<div className="flex flex-col gap-3">
 							<input

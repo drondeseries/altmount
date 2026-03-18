@@ -41,6 +41,8 @@ type Config struct {
 	// Application settings
 	Issuer   string // JWT issuer
 	Audience string // JWT audience
+	Host     string // Application host
+	Port     int    // Application port
 }
 
 // DefaultConfig returns default authentication configuration
@@ -113,6 +115,16 @@ func NewService(config *Config, userRepo *database.UserRepository) (*Service, er
 		urlDomain = "localhost"
 	}
 
+	// Use configured host if available
+	if config.Host != "" {
+		urlDomain = config.Host
+	}
+
+	scheme := "http"
+	if config.CookieSecure {
+		scheme = "https"
+	}
+
 	// When auto-detect is enabled, the actual Secure flag is resolved per-request
 	// in setJWTCookie/clearJWTCookie. The go-pkgz/auth library option is set to false
 	// so it does not reject token reads on HTTP connections.
@@ -130,7 +142,7 @@ func NewService(config *Config, userRepo *database.UserRepository) (*Service, er
 		JWTCookieDomain: config.CookieDomain,
 		SameSiteCookie:  config.CookieSameSite,
 		Issuer:          config.Issuer,
-		URL:             "http://" + urlDomain + ":8080",
+		URL:             fmt.Sprintf("%s://%s:%d", scheme, urlDomain, config.Port),
 		AvatarStore:     avatar.NewNoOp(), // No avatar storage for now
 		ClaimsUpd: token.ClaimsUpdFunc(func(claims token.Claims) token.Claims {
 			// Add audience

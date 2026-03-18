@@ -123,7 +123,15 @@ export function HealthConfigSection({
 				<div className="rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 					<div className="flex items-start justify-between gap-4">
 						<div className="min-w-0 flex-1">
-							<h4 className="break-words font-bold text-base-content text-sm">Master Engine</h4>
+							<div className="flex items-center gap-2">
+								<h4 className="break-words font-bold text-base-content text-sm">Master Engine</h4>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Enable or disable the entire background health monitoring system."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Activate background monitoring and automatic re-downloads.
 							</p>
@@ -181,7 +189,15 @@ export function HealthConfigSection({
 				<div className="rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 					<div className="flex items-start justify-between gap-4">
 						<div className="min-w-0 flex-1">
-							<h4 className="break-words font-bold text-base-content text-sm">Repair Engine</h4>
+							<div className="flex items-center gap-2">
+								<h4 className="break-words font-bold text-base-content text-sm">Repair Engine</h4>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Automatically trigger searches for corrupted files in Sonarr/Radarr."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Automatically trigger redownloads in Radarr/Sonarr for corrupted files.
 							</p>
@@ -199,7 +215,15 @@ export function HealthConfigSection({
 						<div className="fade-in slide-in-from-top-2 mt-6 animate-in border-base-300/50 border-t pt-6">
 							<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
 								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Base Interval (Minutes)</legend>
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+										Base Interval (Minutes)
+										<div
+											className="tooltip tooltip-right"
+											data-tip="How long to wait before sending the first repair notification to Sonarr/Radarr."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -219,7 +243,15 @@ export function HealthConfigSection({
 								</fieldset>
 
 								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Max Cooldown (Hours)</legend>
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+										Max Cooldown (Hours)
+										<div
+											className="tooltip tooltip-right"
+											data-tip="The maximum amount of time to wait between repair attempts when exponential backoff is enabled."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -238,7 +270,15 @@ export function HealthConfigSection({
 									</p>
 								</fieldset>
 								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Max Repair Retries</legend>
+									<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+										Max Repair Retries
+										<div
+											className="tooltip tooltip-right"
+											data-tip="Number of times to try repairing a file before giving up and marking it as permanently corrupted."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -256,6 +296,7 @@ export function HealthConfigSection({
 										Number of repair notification attempts before giving up.
 									</p>
 								</fieldset>
+
 							</div>
 
 							<div className="mt-6 flex items-start justify-between gap-4 rounded-xl bg-base-100/50 p-4">
@@ -281,8 +322,14 @@ export function HealthConfigSection({
 				{/* Directory Configuration */}
 				<div className="space-y-6 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
 					<fieldset className="fieldset">
-						<legend className="fieldset-legend whitespace-normal break-words font-semibold md:whitespace-nowrap">
+						<legend className="fieldset-legend flex items-center gap-2 whitespace-normal break-words font-semibold md:whitespace-nowrap">
 							Library Parent Directory
+							<div
+								className="tooltip tooltip-right"
+								data-tip="The root directory where your ARR library is mounted (e.g. /media). Used to map virtual files to physical library paths."
+							>
+								<Info className="h-3.5 w-3.5 text-base-content/40" />
+							</div>
 						</legend>
 						<div className="flex flex-col gap-3">
 							<input
@@ -304,7 +351,15 @@ export function HealthConfigSection({
 
 					<div className="flex items-start justify-between gap-4">
 						<div className="min-w-0 flex-1">
-							<h4 className="break-words font-bold text-base-content text-sm">Orphan Cleanup</h4>
+							<div className="flex items-center gap-2">
+								<h4 className="break-words font-bold text-base-content text-sm">Orphan Cleanup</h4>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="Automatically remove database entries and metadata for files that no longer exist on your storage."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Purge database records and metadata for files missing from storage.
 							</p>
@@ -378,8 +433,14 @@ export function HealthConfigSection({
 					<div className="collapse-content space-y-8">
 						<div className="grid grid-cols-1 gap-8 pt-4 sm:grid-cols-2">
 							<fieldset className="fieldset">
-								<legend className="fieldset-legend break-words font-semibold">
+								<legend className="fieldset-legend flex items-center gap-2 break-words font-semibold">
 									Validation Intensity
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Force a check of every single segment for every file. Extremely thorough but very slow."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
 								</legend>
 								<label className="label cursor-pointer items-start justify-start gap-3">
 									<input
@@ -399,38 +460,21 @@ export function HealthConfigSection({
 									</div>
 								</label>
 							</fieldset>
-
-							{!formData.check_all_segments && (
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend break-words font-semibold">
-										Ghost File Detection
-									</legend>
-									<label className="label cursor-pointer items-start justify-start gap-3">
-										<input
-											type="checkbox"
-											className="checkbox checkbox-sm checkbox-primary mt-1 shrink-0"
-											checked={formData.verify_data ?? false}
-											disabled={isReadOnly}
-											onChange={(e) => handleInputChange("verify_data", e.target.checked)}
-										/>
-										<div className="min-w-0 flex-1">
-											<span className="label-text break-words font-medium text-xs">
-												Hybrid Data Verification
-											</span>
-											<p className="label mt-1 break-words text-base-content/70 text-xs leading-relaxed">
-												Reads 1 byte from each checked segment to confirm Usenet data exists.
-											</p>
-										</div>
-									</label>
-								</fieldset>
-							)}
 						</div>
 
 						{/* Sample Percentage Slider */}
 						{!formData.check_all_segments && formData.segment_sample_percentage !== undefined && (
 							<div className="space-y-6">
 								<div className="flex items-center justify-between">
-									<h5 className="font-bold text-xs">Sampling Percentage</h5>
+									<div className="flex items-center gap-2">
+										<h5 className="font-bold text-xs">Sampling Percentage</h5>
+										<div
+											className="tooltip tooltip-right"
+											data-tip="Percentage of segments to check per file. 5-10% is usually enough to detect corruption."
+										>
+											<Info className="h-3.5 w-3.5 text-base-content/40" />
+										</div>
+									</div>
 									<div className="font-black font-mono text-lg text-primary">
 										{formData.segment_sample_percentage}%
 									</div>
@@ -462,53 +506,17 @@ export function HealthConfigSection({
 							</div>
 						)}
 
-						{/* Acceptable Missing Percentage Slider */}
-						{formData.acceptable_missing_segments_percentage !== undefined && (
-							<div className="space-y-6">
-								<div className="flex items-center justify-between">
-									<div className="flex items-center gap-2">
-										<h5 className="font-bold text-xs">Acceptable Missing Threshold</h5>
-										<div
-											className="tooltip tooltip-right"
-											data-tip="Tolerance for missing data. Files with missing segments below this percentage will be marked as healthy instead of corrupted. Useful for ignoring tiny losses in credits or non-critical parts."
-										>
-											<Info className="h-3.5 w-3.5 text-base-content/60" />
-										</div>
-									</div>
-									<div className="font-black font-mono text-lg text-primary">
-										{formData.acceptable_missing_segments_percentage}%
-									</div>
-								</div>
-								<div className="space-y-4">
-									<input
-										type="range"
-										min="0"
-										max="10"
-										value={formData.acceptable_missing_segments_percentage}
-										className="range range-primary range-sm w-full"
-										step="0.1"
-										disabled={isReadOnly}
-										onChange={(e) =>
-											handleInputChange(
-												"acceptable_missing_segments_percentage",
-												Number.parseFloat(e.target.value),
-											)
-										}
-									/>
-									<div className="flex justify-between px-2 font-black text-base-content/50 text-xs">
-										<span>0% (STRICT)</span>
-										<span>2.5%</span>
-										<span>5%</span>
-										<span>7.5%</span>
-										<span>10% (RELAXED)</span>
-									</div>
-								</div>
-							</div>
-						)}
-
 						<div className="grid grid-cols-1 gap-6 pb-4 sm:grid-cols-2">
 							<fieldset className="fieldset">
-								<legend className="fieldset-legend font-semibold">Max Health Retries</legend>
+								<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+									Max Health Retries
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Number of times to re-check a failing file before officially marking it as corrupted."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</legend>
 								<input
 									type="number"
 									className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -546,7 +554,15 @@ export function HealthConfigSection({
 
 						<div className="grid grid-cols-1 gap-6 pb-4 sm:grid-cols-2">
 							<fieldset className="fieldset">
-								<legend className="fieldset-legend font-semibold">Parallel Processing</legend>
+								<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+									Parallel Processing
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Number of files to check simultaneously. Increase if your Usenet providers can handle the load."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</legend>
 								<input
 									type="number"
 									className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -566,7 +582,15 @@ export function HealthConfigSection({
 								</p>
 							</fieldset>
 							<fieldset className="fieldset">
-								<legend className="fieldset-legend font-semibold">Sync Interval (Minutes)</legend>
+								<legend className="fieldset-legend flex items-center gap-2 font-semibold">
+									Sync Interval (Minutes)
+									<div
+										className="tooltip tooltip-right"
+										data-tip="How often to scan your library directory for new files to add to the health check queue."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/40" />
+									</div>
+								</legend>
 								<input
 									type="number"
 									className="input input-bordered w-full bg-base-100 font-mono text-sm"

@@ -55,14 +55,6 @@ func (c *Config) GetLibrarySyncConcurrency() int {
 	return c.Health.LibrarySyncConcurrency
 }
 
-// GetVerifyData returns whether to verify data during health checks.
-func (c *Config) GetVerifyData() bool {
-	if c.Health.VerifyData == nil {
-		return false // Default: false
-	}
-	return *c.Health.VerifyData
-}
-
 // GetCheckAllSegments returns whether to check all segments during health checks.
 func (c *Config) GetCheckAllSegments() bool {
 	if c.Health.CheckAllSegments == nil {

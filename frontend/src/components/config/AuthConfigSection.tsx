@@ -1,4 +1,4 @@
-import { AlertTriangle, Save, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Info, Save, ShieldCheck } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { AuthConfig, ConfigResponse } from "../../types/config";
 import { LoadingSpinner } from "../ui/LoadingSpinner";
@@ -65,7 +65,15 @@ export function AuthConfigSection({
 
 					<div className="flex items-start items-center justify-between gap-4">
 						<div className="min-w-0 flex-1">
-							<h5 className="break-words font-bold text-sm">Require Login</h5>
+							<div className="flex items-center gap-2">
+								<h5 className="break-words font-bold text-sm">Require Login</h5>
+								<div
+									className="tooltip tooltip-right"
+									data-tip="If enabled, AltMount will redirect all unauthenticated requests to the login page."
+								>
+									<Info className="h-3.5 w-3.5 text-base-content/40" />
+								</div>
+							</div>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Force users to sign in before accessing the dashboard or settings.
 							</p>
