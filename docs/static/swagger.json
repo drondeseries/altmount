@@ -6868,9 +6868,6 @@
                 },
                 "segment_sample_percentage": {
                     "type": "integer"
-                },
-                "verify_data": {
-                    "type": "boolean"
                 }
             }
         },

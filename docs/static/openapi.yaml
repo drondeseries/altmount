@@ -4472,10 +4472,7 @@ components:
           type: boolean
         segment_sample_percentage:
           type: integer
-        verify_data:
-          type: boolean
-      type: object
-    config.IgnoredMessage:
+        type: object    config.IgnoredMessage:
       properties:
         enabled:
           type: boolean

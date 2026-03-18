@@ -32,7 +32,6 @@ health:
   library_sync_interval_minutes: 360 # Library sync frequency (default: 6 hours, 0 = disabled)
   library_sync_concurrency: 5 # Parallel workers during sync (default: 5)
   resolve_repair_on_import: false # Smart replacement detection on import
-  verify_data: false # Verify downloaded data integrity
   check_all_segments: false # Check all segments instead of sampling
 ```
 
@@ -48,7 +47,6 @@ health:
 - **library_sync_interval_minutes**: How often to sync with library directory (default: 360 minutes / 6 hours, 0 to disable)
 - **library_sync_concurrency**: Number of parallel workers during library sync operations (default: 5)
 - **resolve_repair_on_import**: Enable smart replacement detection when importing files (default: false)
-- **verify_data**: Verify downloaded data integrity during health checks (default: false)
 - **check_all_segments**: Check all file segments instead of sampling (default: false)
 
 ### Automatic Repair & Exponential Back-off
@@ -93,7 +91,6 @@ The `segment_sample_percentage` setting controls the trade-off between check spe
 - **Start with the default (5%)** — it's effective at catching most corruption because corrupted files tend to have many missing segments, not just one or two.
 - **Increase to 20%** if you want higher confidence without a major performance hit.
 - **Use 100%** temporarily after switching providers or if you suspect widespread availability issues. You can trigger a full re-check via the API (`POST /api/health/reset-all`) and then lower the percentage back afterward.
-- When `verify_data` is enabled, the system also checks the actual content of downloaded segments (not just availability), which catches data corruption but uses more bandwidth.
 
 ### Understanding Health Check Results
 
