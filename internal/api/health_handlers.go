@@ -356,6 +356,12 @@ func (s *Server) handleRepairHealth(c *fiber.Ctx) error {
 
 	// Determine final path for ARR rescan
 	pathForRescan := libraryPath
+	if pathForRescan == "" && cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+		pathForRescan = pathutil.JoinAbsPath(*cfg.Health.LibraryDir, item.FilePath)
+		slog.InfoContext(ctx, "Using library dir for manual repair",
+			"file_path", item.FilePath,
+			"library_path", pathForRescan)
+	}
 	if pathForRescan == "" && cfg.Import.ImportStrategy == config.ImportStrategySYMLINK && cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
 		pathForRescan = pathutil.JoinAbsPath(*cfg.Import.ImportDir, item.FilePath)
 		slog.InfoContext(ctx, "Using symlink import path for manual repair",
@@ -462,6 +468,12 @@ func (s *Server) handleRepairHealthBulk(c *fiber.Ctx) error {
 		}
 
 		pathForRescan := libraryPath
+		if pathForRescan == "" && cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+			pathForRescan = pathutil.JoinAbsPath(*cfg.Health.LibraryDir, item.FilePath)
+		}
+		if pathForRescan == "" && cfg.Import.ImportStrategy == config.ImportStrategySYMLINK && cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+			pathForRescan = pathutil.JoinAbsPath(*cfg.Import.ImportDir, item.FilePath)
+		}
 		if pathForRescan == "" {
 			pathForRescan = pathutil.JoinAbsPath(cfg.MountPath, item.FilePath)
 		}
@@ -1338,14 +1350,21 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 			}
 
 			// 3. Build the clean, isolated library path
-			importDir := cfg.MountPath
-			if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
-				importDir = *cfg.Import.ImportDir
+			var baseDir string
+			useCompleteDir := true
+
+			if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+				baseDir = *cfg.Health.LibraryDir
+				useCompleteDir = false // Omit CompleteDir if using dedicated LibraryDir
+			} else if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+				baseDir = *cfg.Import.ImportDir
+			} else {
+				baseDir = cfg.MountPath
 			}
 
-			// Construct: ImportDir + CompleteDir + Category + RelPath
-			pathParts := []string{importDir}
-			if cfg.SABnzbd.CompleteDir != "" {
+			// Construct path based on base directory
+			pathParts := []string{baseDir}
+			if useCompleteDir && cfg.SABnzbd.CompleteDir != "" {
 				pathParts = append(pathParts, strings.Trim(cfg.SABnzbd.CompleteDir, "/"))
 			}
 			pathParts = append(pathParts, category)

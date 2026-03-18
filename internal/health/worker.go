@@ -865,12 +865,15 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 }
 
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
-// It checks LibraryPath first, then ImportDir, and falls back to MountPath.
+// It checks LibraryPath first, then LibraryDir, then ImportDir, and falls back to MountPath.
 func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
 	if item.LibraryPath != nil && *item.LibraryPath != "" {
 		return *item.LibraryPath
 	}
 	cfg := hw.configGetter()
+	if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+		return pathutil.JoinAbsPath(*cfg.Health.LibraryDir, item.FilePath)
+	}
 	if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
 		return pathutil.JoinAbsPath(*cfg.Import.ImportDir, item.FilePath)
 	}

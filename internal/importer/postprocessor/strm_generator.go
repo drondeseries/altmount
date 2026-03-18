@@ -220,16 +220,39 @@ func (c *Coordinator) CreateSingleStrmFile(ctx context.Context, strmResultingPat
 	// Hash the API key with SHA256
 	hashedKey := hashAPIKey(adminAPIKey)
 
-	// Determine host to use
-	host := cfg.WebDAV.Host
-	if host == "" {
-		host = "localhost"
+	// Determine base URL to use
+	var baseURL string
+	if cfg.SABnzbd.DownloadClientBaseURL != "" {
+		baseURL = strings.TrimSuffix(cfg.SABnzbd.DownloadClientBaseURL, "/")
+		// If the base URL includes /sabnzbd, remove it for the generic API stream path
+		baseURL = strings.TrimSuffix(baseURL, "/sabnzbd")
+	} else {
+		host := cfg.WebDAV.Host
+		if host == "" {
+			host = "localhost"
+		}
+		scheme := "http"
+		if port == 443 {
+			scheme = "https"
+		}
+		baseURL = fmt.Sprintf("%s://%s:%d", scheme, host, port)
 	}
 
 	// Generate streaming URL with download_key using the ORIGINAL virtual path
 	encodedPath := strings.ReplaceAll(originalVirtualPath, " ", "%20")
-	streamURL := fmt.Sprintf("http://%s:%d/api/files/stream?path=%s&download_key=%s",
-		host, port, encodedPath, hashedKey)
+	prefix := strings.Trim(cfg.API.Prefix, "/")
+	if prefix == "" {
+		prefix = "api"
+	}
+
+	// Ensure baseURL doesn't already contain the prefix
+	cleanBaseURL := strings.TrimSuffix(baseURL, "/")
+	if !strings.HasSuffix(cleanBaseURL, "/"+prefix) {
+		cleanBaseURL = fmt.Sprintf("%s/%s", cleanBaseURL, prefix)
+	}
+
+	streamURL := fmt.Sprintf("%s/files/stream?path=%s&download_key=%s",
+		cleanBaseURL, encodedPath, hashedKey)
 
 	// Check if STRM file already exists with the same content
 	if existingContent, err := os.ReadFile(strmPath); err == nil {
