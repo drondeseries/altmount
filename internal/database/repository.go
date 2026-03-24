@@ -410,6 +410,27 @@ func (r *Repository) RemoveFromQueueByDownloadID(ctx context.Context, downloadID
 	return nil
 }
 
+// RemoveFromQueue removes an item from the queue
+func (r *Repository) RemoveFromQueue(ctx context.Context, id int64) error {
+	query := `DELETE FROM import_queue WHERE id = ?`
+
+	result, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return fmt.Errorf("failed to remove from queue: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 0 {
+		return sql.ErrNoRows
+	}
+
+	return nil
+}
+
 // RemoveFromHistoryByDownloadID removes a record from import_history by its DownloadID
 func (r *Repository) RemoveFromHistoryByDownloadID(ctx context.Context, downloadID string) (int64, error) {
 	query := `DELETE FROM import_history WHERE download_id = ?`
@@ -1065,6 +1086,28 @@ func (r *Repository) GetImportHistoryByDownloadID(ctx context.Context, downloadI
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to get import history by download_id: %w", err)
+	}
+
+	return &h, nil
+}
+
+// GetImportHistoryByPath retrieves an import history item by its virtual path
+func (r *Repository) GetImportHistoryByPath(ctx context.Context, virtualPath string) (*ImportHistory, error) {
+	query := `
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.completed_at
+		FROM import_history h
+		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
+		WHERE TRIM(h.virtual_path, '/') = TRIM(?, '/')
+		LIMIT 1
+	`
+
+	var h ImportHistory
+	err := r.db.QueryRowContext(ctx, query, virtualPath).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.CompletedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get import history by path: %w", err)
 	}
 
 	return &h, nil
