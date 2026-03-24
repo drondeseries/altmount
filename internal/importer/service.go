@@ -504,8 +504,8 @@ func (s *Service) CancelScan() error {
 }
 
 // StartNzbdavImport starts an asynchronous import from an NZBDav database
-func (s *Service) StartNzbdavImport(dbPath string, rootFolder string, cleanupFile bool) error {
-	return s.nzbdavImporter.Start(dbPath, rootFolder, cleanupFile)
+func (s *Service) StartNzbdavImport(dbPath string, blobsPath string, rootFolder string, cleanupFile bool) error {
+	return s.nzbdavImporter.Start(dbPath, blobsPath, rootFolder, cleanupFile)
 }
 
 // GetImportStatus returns the current import status
