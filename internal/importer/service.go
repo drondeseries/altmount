@@ -69,6 +69,7 @@ func (a *queueAdapterForScanner) AddToQueue(ctx context.Context, filePath string
 	}
 
 	item := &database.ImportQueueItem{
+		DownloadID:   nil, // Generated later in service if needed
 		NzbPath:      filePath,
 		RelativePath: relativePath,
 		Priority:     database.QueuePriorityNormal,
@@ -614,7 +615,7 @@ func sanitizeFilename(name string) string {
 }
 
 // AddToQueue adds a new NZB file to the import queue with optional category and priority
-func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string) (*database.ImportQueueItem, error) {
+func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string, downloadID *string) (*database.ImportQueueItem, error) {
 	// Check context before proceeding
 	select {
 	case <-ctx.Done():
@@ -639,6 +640,7 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 	}
 
 	item := &database.ImportQueueItem{
+		DownloadID:   downloadID,
 		NzbPath:      filePath,
 		RelativePath: relativePath,
 		Category:     category,
