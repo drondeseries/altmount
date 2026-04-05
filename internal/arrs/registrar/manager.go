@@ -608,7 +608,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					slog.InfoContext(ctx, "Updating Lidarr download client API key/Host", "instance", instance.Name)
 					category := instance.Category
 					if category == "" {
-						category = "music"
+						category = ""
 					}
 					dc := &lidarr.DownloadClientInput{
 						ID:                       existing.ID,
@@ -637,7 +637,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 			} else {
 				category := instance.Category
 				if category == "" {
-					category = "music"
+					category = ""
 				}
 				dc := &lidarr.DownloadClientInput{
 					Name:                     clientName,
@@ -703,7 +703,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					slog.InfoContext(ctx, "Updating Readarr download client API key/Host", "instance", instance.Name)
 					category := instance.Category
 					if category == "" {
-						category = "books"
+						category = ""
 					}
 					dc := &readarr.DownloadClientInput{
 						ID:                       existing.ID,
@@ -730,7 +730,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 			} else {
 				category := instance.Category
 				if category == "" {
-					category = "books"
+					category = ""
 				}
 				dc := &readarr.DownloadClientInput{
 					Name:                     clientName,
@@ -841,7 +841,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 
 			category := instance.Category
 			if category == "" {
-				category = "music"
+				category = ""
 			}
 
 			dc := &lidarr.DownloadClientInput{
@@ -871,7 +871,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 
 			category := instance.Category
 			if category == "" {
-				category = "books"
+				category = ""
 			}
 
 			dc := &readarr.DownloadClientInput{
