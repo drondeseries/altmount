@@ -655,7 +655,7 @@ export interface SABnzbdFormData {
 }
 
 // Arrs configuration types
-export type ArrsType = "radarr" | "sonarr";
+export type ArrsType = "radarr" | "sonarr" | "lidarr" | "readarr" | "whisparr";
 
 // Sync status types
 export type SyncStatus = "idle" | "running" | "cancelling" | "completed" | "failed";
@@ -886,9 +886,9 @@ export const CONFIG_SECTIONS: Record<ConfigSection | "system", ConfigSectionInfo
 		canEdit: true,
 	},
 	arrs: {
-		title: "Radarr/Sonarr Management",
+		title: "ARR Management",
 		description:
-			"Configure Radarr and Sonarr instances for movie and TV show file synchronization. This will allow to repair broken files by notifying the appropriate service.",
+			"Configure Radarr, Sonarr, Lidarr, Readarr, and Whisparr instances for media file synchronization and automatic repair.",
 		icon: "Cog",
 		canEdit: true,
 	},
