@@ -112,7 +112,7 @@ rclone:
 import:
   max_processor_workers: 2 # Number of NZB processor workers
   queue_processing_interval_seconds: 5 # Queue processing interval in seconds
-  # Allowed file extensions for import (video formats)
+  # Allowed file extensions for import (video, audio, and book formats)
   allowed_file_extensions:
     - '.mp4'
     - '.mkv'
@@ -146,6 +146,12 @@ import:
     - '.wtv'
     - '.mk3d'
     - '.dvr-ms'
+    - '.mp3'
+    - '.flac'
+    - '.m4a'
+    - '.epub'
+    - '.pdf'
+    - '.cbz'
   max_import_connections: 5 # Number of concurrent NNTP connections for validation and archive processing
   import_cache_size_mb: 64 # Cache size in MB for archive analysis
   segment_sample_percentage: 1 # Percentage of segments to sample for validation (1-100)
@@ -190,6 +196,18 @@ sabnzbd:
       order: 2
       priority: 0
       dir: 'tv'
+    - name: 'music'
+      order: 3
+      priority: 0
+      dir: 'music'
+    - name: 'books'
+      order: 4
+      priority: 0
+      dir: 'books'
+    - name: 'adult'
+      order: 5
+      priority: 0
+      dir: 'adult'
   # Fallback configuration for sending failed imports to external SABnzbd
   fallback_host: '' # External SABnzbd URL (e.g., "http://localhost:8080")
   fallback_api_key: '' # External SABnzbd API key

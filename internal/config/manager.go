@@ -1320,9 +1320,10 @@ func DefaultConfig(configDir ...string) *Config {
 		Import: ImportConfig{
 			MaxProcessorWorkers:            2, // Default: 2 processor workers
 			QueueProcessingIntervalSeconds: 5, // Default: check for work every 5 seconds
-			AllowedFileExtensions: []string{ // Default: common video extensions
+			AllowedFileExtensions: []string{ // Default: common media extensions
 				".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv", ".mpg", ".mpeg",
 				".xvid", ".rm", ".rmvb", ".asf", ".asx", ".wtv", ".mk3d", ".dvr-ms",
+				".mp3", ".flac", ".m4a", ".epub", ".pdf", ".cbz",
 			},
 			MaxImportConnections:    5,                  // Default: 5 concurrent NNTP connections for validation and archive processing
 			MaxDownloadPrefetch:     10,                 // Default: 10 segments prefetched ahead for archive analysis
@@ -1372,6 +1373,21 @@ func DefaultConfig(configDir ...string) *Config {
 					Name:     "TV",
 					Order:    1,
 					Priority: 1,
+				},
+				{
+					Name:     "Music",
+					Order:    1,
+					Priority: 2,
+				},
+				{
+					Name:     "Books",
+					Order:    1,
+					Priority: 3,
+				},
+				{
+					Name:     "Adult",
+					Order:    1,
+					Priority: 4,
 				},
 			},
 			FallbackHost:   "",
