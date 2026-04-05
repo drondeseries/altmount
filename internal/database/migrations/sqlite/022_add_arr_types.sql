@@ -10,7 +10,8 @@ CREATE TABLE media_files_new (
     file_path TEXT NOT NULL,
     file_size INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    file_id INTEGER
 );
 
 INSERT INTO media_files_new SELECT * FROM media_files;
@@ -32,7 +33,8 @@ CREATE TABLE media_files_old (
     file_path TEXT NOT NULL,
     file_size INTEGER,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    file_id INTEGER
 );
 
 INSERT INTO media_files_old SELECT * FROM media_files WHERE instance_type IN ('radarr', 'sonarr');
