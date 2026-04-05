@@ -373,6 +373,9 @@ type ArrsConfig struct {
 	WebhookBaseURL                 string               `yaml:"webhook_base_url" mapstructure:"webhook_base_url" json:"webhook_base_url,omitempty"`
 	RadarrInstances                []ArrsInstanceConfig `yaml:"radarr_instances" mapstructure:"radarr_instances" json:"radarr_instances"`
 	SonarrInstances                []ArrsInstanceConfig `yaml:"sonarr_instances" mapstructure:"sonarr_instances" json:"sonarr_instances"`
+	LidarrInstances                []ArrsInstanceConfig `yaml:"lidarr_instances" mapstructure:"lidarr_instances" json:"lidarr_instances"`
+	ReadarrInstances               []ArrsInstanceConfig `yaml:"readarr_instances" mapstructure:"readarr_instances" json:"readarr_instances"`
+	WhisparrInstances              []ArrsInstanceConfig `yaml:"whisparr_instances" mapstructure:"whisparr_instances" json:"whisparr_instances"`
 	QueueCleanupEnabled            *bool                `yaml:"queue_cleanup_enabled" mapstructure:"queue_cleanup_enabled" json:"queue_cleanup_enabled,omitempty"`
 	QueueCleanupIntervalSeconds    int                  `yaml:"queue_cleanup_interval_seconds" mapstructure:"queue_cleanup_interval_seconds" json:"queue_cleanup_interval_seconds,omitempty"`
 	CleanupAutomaticImportFailure  *bool                `yaml:"cleanup_automatic_import_failure" mapstructure:"cleanup_automatic_import_failure" json:"cleanup_automatic_import_failure,omitempty"`
@@ -1381,6 +1384,9 @@ func DefaultConfig(configDir ...string) *Config {
 			WebhookBaseURL:                 "",
 			RadarrInstances:                []ArrsInstanceConfig{},
 			SonarrInstances:                []ArrsInstanceConfig{},
+			LidarrInstances:                []ArrsInstanceConfig{},
+			ReadarrInstances:               []ArrsInstanceConfig{},
+			WhisparrInstances:              []ArrsInstanceConfig{},
 			CleanupAutomaticImportFailure:  &cleanupAutomaticImportFailure,
 			QueueCleanupGracePeriodMinutes: 10, // Default to 10 minutes
 			QueueCleanupAllowlist: []IgnoredMessage{
