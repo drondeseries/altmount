@@ -718,7 +718,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 							{Name: "port", Value: altmountPort},
 							{Name: "urlBase", Value: urlBase},
 							{Name: "apiKey", Value: apiKey},
-							{Name: "bookCategory", Value: category},
+							{Name: "musicCategory", Value: category},
 							{Name: "useSsl", Value: false},
 						},
 					}
@@ -744,7 +744,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						{Name: "port", Value: altmountPort},
 						{Name: "urlBase", Value: urlBase},
 						{Name: "apiKey", Value: apiKey},
-						{Name: "bookCategory", Value: category},
+						{Name: "musicCategory", Value: category},
 						{Name: "useSsl", Value: false},
 					},
 				}
@@ -886,7 +886,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 					{Name: "port", Value: altmountPort},
 					{Name: "urlBase", Value: urlBase},
 					{Name: "apiKey", Value: apiKey},
-					{Name: "bookCategory", Value: category},
+					{Name: "musicCategory", Value: category},
 					{Name: "useSsl", Value: false},
 				},
 			}
