@@ -8,10 +8,10 @@ import (
 	"github.com/javi11/altmount/internal/arrs/clients"
 	"github.com/javi11/altmount/internal/arrs/instances"
 	"golift.io/starr"
-	"golift.io/starr/radarr"
-	"golift.io/starr/sonarr"
 	"golift.io/starr/lidarr"
+	"golift.io/starr/radarr"
 	"golift.io/starr/readarr"
+	"golift.io/starr/sonarr"
 )
 
 type Manager struct {
@@ -201,8 +201,8 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					slog.InfoContext(ctx, "Added AltMount webhook to Sonarr", "instance", instance.Name)
 				}
 			}
+
 		case "lidarr":
-			// ...
 			client, err := m.clients.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
 			if err != nil {
 				slog.ErrorContext(ctx, "Failed to create Lidarr client for webhook check", "instance", instance.Name, "error", err)
@@ -236,14 +236,14 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 				if currentURL != webhookURL {
 					slog.InfoContext(ctx, "Updating Lidarr webhook API key/URL", "instance", instance.Name)
 					notif := &lidarr.NotificationInput{
-						ID:                          existing.ID,
-						Name:                        webhookName,
-						Implementation:              "Webhook",
-						ConfigContract:              "WebhookSettings",
-						OnGrab:                      false,
-						OnReleaseImport:             true,
-						OnUpgrade:                   true,
-						OnRename:                    true,
+						ID:              existing.ID,
+						Name:            webhookName,
+						Implementation:  "Webhook",
+						ConfigContract:  "WebhookSettings",
+						OnGrab:          false,
+						OnReleaseImport: true,
+						OnUpgrade:       true,
+						OnRename:        true,
 						Fields: []*starr.FieldInput{
 							{Name: "url", Value: webhookURL},
 							{Name: "method", Value: "1"}, // 1 = POST
@@ -256,13 +256,13 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 				}
 			} else {
 				notif := &lidarr.NotificationInput{
-					Name:                        webhookName,
-					Implementation:              "Webhook",
-					ConfigContract:              "WebhookSettings",
-					OnGrab:                      false,
-					OnReleaseImport:             true,
-					OnUpgrade:                   true,
-					OnRename:                    true,
+					Name:            webhookName,
+					Implementation:  "Webhook",
+					ConfigContract:  "WebhookSettings",
+					OnGrab:          false,
+					OnReleaseImport: true,
+					OnUpgrade:       true,
+					OnRename:        true,
 					Fields: []*starr.FieldInput{
 						{Name: "url", Value: webhookURL},
 						{Name: "method", Value: "1"}, // 1 = POST
@@ -310,18 +310,18 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 				if currentURL != webhookURL {
 					slog.InfoContext(ctx, "Updating Readarr webhook API key/URL", "instance", instance.Name)
 					notif := &readarr.NotificationInput{
-						ID:                            existing.ID,
-						Name:                          webhookName,
-						Implementation:                "Webhook",
-						ConfigContract:                "WebhookSettings",
-						OnGrab:                        false,
-						OnReleaseImport:               true,
-						OnUpgrade:                     true,
-						OnRename:                      true,
-						OnAuthorDelete:                true,
-						OnBookDelete:                  true,
-						OnBookFileDelete:              true,
-						OnBookFileDeleteForUpgrade:    true,
+						ID:                         existing.ID,
+						Name:                       webhookName,
+						Implementation:             "Webhook",
+						ConfigContract:             "WebhookSettings",
+						OnGrab:                     false,
+						OnReleaseImport:            true,
+						OnUpgrade:                  true,
+						OnRename:                   true,
+						OnAuthorDelete:             true,
+						OnBookDelete:               true,
+						OnBookFileDelete:           true,
+						OnBookFileDeleteForUpgrade: true,
 						Fields: []*starr.FieldInput{
 							{Name: "url", Value: webhookURL},
 							{Name: "method", Value: "1"}, // 1 = POST
@@ -334,17 +334,17 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 				}
 			} else {
 				notif := &readarr.NotificationInput{
-					Name:                          webhookName,
-					Implementation:                "Webhook",
-					ConfigContract:                "WebhookSettings",
-					OnGrab:                        false,
-					OnReleaseImport:               true,
-					OnUpgrade:                     true,
-					OnRename:                      true,
-					OnAuthorDelete:                true,
-					OnBookDelete:                  true,
-					OnBookFileDelete:              true,
-					OnBookFileDeleteForUpgrade:    true,
+					Name:                       webhookName,
+					Implementation:             "Webhook",
+					ConfigContract:             "WebhookSettings",
+					OnGrab:                     false,
+					OnReleaseImport:            true,
+					OnUpgrade:                  true,
+					OnRename:                   true,
+					OnAuthorDelete:             true,
+					OnBookDelete:               true,
+					OnBookFileDelete:           true,
+					OnBookFileDeleteForUpgrade: true,
 					Fields: []*starr.FieldInput{
 						{Name: "url", Value: webhookURL},
 						{Name: "method", Value: "1"}, // 1 = POST
@@ -570,6 +570,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					slog.InfoContext(ctx, "Added AltMount download client to Sonarr", "instance", instance.Name)
 				}
 			}
+
 		case "lidarr":
 			client, err := m.clients.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
 			if err != nil {
@@ -706,37 +707,20 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						category = ""
 					}
 					dc := &readarr.DownloadClientInput{
-						ID:                       existing.ID,
-						Name:                     clientName,
-						Implementation:           "SABnzbd",
-						ConfigContract:           "SABnzbdSettings",
-						Enable:                   true,
-						Priority:                 1,
-						Protocol:                 "Usenet",
+						ID:             existing.ID,
+						Name:           clientName,
+						Implementation: "SABnzbd",
+						ConfigContract: "SABnzbdSettings",
+						Enable:         true,
+						Priority:       1,
+						Protocol:       "Usenet",
 						Fields: []*starr.FieldInput{
-					{Name: "host", Value: altmountHost},
-					{Name: "port", Value: altmountPort},
-					{Name: "urlBase", Value: urlBase},
-					{Name: "apiKey", Value: apiKey},
-					{Name: "musicCategory", Value: category},
-					{Name: "bookCategory", Value: category},
-					{Name: "useSsl", Value: false},},
-						{Name: "port", Value: altmountPort},
-						{Name: "urlBase", Value: urlBase},
-						{Name: "apiKey", Value: apiKey},
-						{Name: "musicCategory", Value: category},
-						{Name: "bookCategory", Value: category},
-						{Name: "useSsl", Value: false},},
+							{Name: "host", Value: altmountHost},
 							{Name: "port", Value: altmountPort},
 							{Name: "urlBase", Value: urlBase},
 							{Name: "apiKey", Value: apiKey},
 							{Name: "musicCategory", Value: category},
 							{Name: "bookCategory", Value: category},
-							{Name: "useSsl", Value: false},},
-							{Name: "port", Value: altmountPort},
-							{Name: "urlBase", Value: urlBase},
-							{Name: "apiKey", Value: apiKey},
-							{Name: "musicCategory", Value: category},
 							{Name: "useSsl", Value: false},
 						},
 					}
@@ -751,18 +735,19 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					category = ""
 				}
 				dc := &readarr.DownloadClientInput{
-					Name:                     clientName,
-					Implementation:           "SABnzbd",
-					ConfigContract:           "SABnzbdSettings",
-					Enable:                   true,
-					Priority:                 1,
-					Protocol:                 "Usenet",
+					Name:           clientName,
+					Implementation: "SABnzbd",
+					ConfigContract: "SABnzbdSettings",
+					Enable:         true,
+					Priority:       1,
+					Protocol:       "Usenet",
 					Fields: []*starr.FieldInput{
 						{Name: "host", Value: altmountHost},
 						{Name: "port", Value: altmountPort},
 						{Name: "urlBase", Value: urlBase},
 						{Name: "apiKey", Value: apiKey},
 						{Name: "musicCategory", Value: category},
+						{Name: "bookCategory", Value: category},
 						{Name: "useSsl", Value: false},
 					},
 				}
@@ -804,12 +789,14 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 			}
 
 			dc := &radarr.DownloadClientInput{
-				Name:           "AltMount Test",
-				Implementation: "SABnzbd",
-				ConfigContract: "SABnzbdSettings",
-				Enable:         true,
-				Priority:       1,
-				Protocol:       "Usenet",
+				Name:                     "AltMount Test",
+				Implementation:           "SABnzbd",
+				ConfigContract:           "SABnzbdSettings",
+				Enable:                   true,
+				RemoveCompletedDownloads: true,
+				RemoveFailedDownloads:    true,
+				Priority:                 1,
+				Protocol:                 "Usenet",
 				Fields: []*starr.FieldInput{
 					{Name: "host", Value: altmountHost},
 					{Name: "port", Value: altmountPort},
@@ -834,12 +821,14 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 			}
 
 			dc := &sonarr.DownloadClientInput{
-				Name:           "AltMount Test",
-				Implementation: "SABnzbd",
-				ConfigContract: "SABnzbdSettings",
-				Enable:         true,
-				Priority:       1,
-				Protocol:       "Usenet",
+				Name:                     "AltMount Test",
+				Implementation:           "SABnzbd",
+				ConfigContract:           "SABnzbdSettings",
+				Enable:                   true,
+				RemoveCompletedDownloads: true,
+				RemoveFailedDownloads:    true,
+				Priority:                 1,
+				Protocol:                 "Usenet",
 				Fields: []*starr.FieldInput{
 					{Name: "host", Value: altmountHost},
 					{Name: "port", Value: altmountPort},
@@ -850,6 +839,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 				},
 			}
 			testErr = client.TestDownloadClientContext(ctx, dc)
+
 		case "lidarr":
 			client, err := m.clients.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
 			if err != nil {
@@ -863,12 +853,14 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 			}
 
 			dc := &lidarr.DownloadClientInput{
-				Name:           "AltMount Test",
-				Implementation: "SABnzbd",
-				ConfigContract: "SABnzbdSettings",
-				Enable:         true,
-				Priority:       1,
-				Protocol:       "Usenet",
+				Name:                     "AltMount Test",
+				Implementation:           "SABnzbd",
+				ConfigContract:           "SABnzbdSettings",
+				Enable:                   true,
+				RemoveCompletedDownloads: true,
+				RemoveFailedDownloads:    true,
+				Priority:                 1,
+				Protocol:                 "Usenet",
 				Fields: []*starr.FieldInput{
 					{Name: "host", Value: altmountHost},
 					{Name: "port", Value: altmountPort},
@@ -906,11 +898,6 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 					{Name: "apiKey", Value: apiKey},
 					{Name: "musicCategory", Value: category},
 					{Name: "bookCategory", Value: category},
-					{Name: "useSsl", Value: false},},
-					{Name: "port", Value: altmountPort},
-					{Name: "urlBase", Value: urlBase},
-					{Name: "apiKey", Value: apiKey},
-					{Name: "musicCategory", Value: category},
 					{Name: "useSsl", Value: false},
 				},
 			}
