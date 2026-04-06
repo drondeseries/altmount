@@ -170,7 +170,7 @@ func (w *Watcher) getCategoryFromPath(relPath string) (*string, string) {
 
 		// Check if the relative path starts with the category directory
 		// We need to check for exact prefix match at directory boundaries
-		if strings.HasPrefix(normalizedRelPath, catDir) {
+		if strings.HasPrefix(strings.ToLower(normalizedRelPath), strings.ToLower(catDir)) {
 			// Verify it's a proper prefix (either exact match or followed by "/")
 			remainder := normalizedRelPath[len(catDir):]
 			if remainder == "" || strings.HasPrefix(remainder, "/") {
@@ -186,7 +186,7 @@ func (w *Watcher) getCategoryFromPath(relPath string) (*string, string) {
 		// Also check with CompleteDir prefix if configured
 		if completeDir != "" {
 			catDirWithComplete := completeDir + "/" + catDir
-			if strings.HasPrefix(normalizedRelPath, catDirWithComplete) {
+			if strings.HasPrefix(strings.ToLower(normalizedRelPath), strings.ToLower(catDirWithComplete)) {
 				remainder := normalizedRelPath[len(catDirWithComplete):]
 				if remainder == "" || strings.HasPrefix(remainder, "/") {
 					if len(catDirWithComplete) > bestMatchLen {
@@ -264,28 +264,21 @@ func (w *Watcher) processNzb(ctx context.Context, watchRoot, filePath string) er
 		// CalculateVirtualDirectory handles it correctly after the NZB move.
 		relativePath = &relPath
 	} else if relPath != "." && relPath != "" {
-		// No configured category matched - don't set a category
-		// Just use the watch root as the relative path
-		// We use the absolute path to avoid issues with CWD changes or relative path calculations
-		absWatchRoot, err := filepath.Abs(watchRoot)
-		if err == nil {
-			relativePath = &absWatchRoot
-		} else {
-			relativePath = &watchRoot
-		}
+		// No configured category matched - use the first directory component as the category
+		// This restores the automatic category detection logic.
+		parts := strings.Split(filepath.ToSlash(relPath), "/")
+		if len(parts) > 0 {
+			cat := parts[0]
+			category = &cat
 
-		w.log.DebugContext(ctx, "No category matched for path",
-			"file", filePath,
-			"relPath", relPath)
+			// Use the relPath as the relative path
+			// This ensures subfolders inside the category are preserved.
+			relativePath = &relPath
+		}
 	} else {
 		// relPath is "." (root of watch dir)
-		// Use absolute watchRoot as base path
-		absWatchRoot, err := filepath.Abs(watchRoot)
-		if err == nil {
-			relativePath = &absWatchRoot
-		} else {
-			relativePath = &watchRoot
-		}
+		// Leave relativePath as nil to use the root virtual directory
+		relativePath = nil
 	}
 
 	// Add to queue
