@@ -47,7 +47,7 @@ func NewService(configGetter config.ConfigGetter, configManager model.ConfigMana
 	instManager := instances.NewManager(configGetter, configManager)
 	clientManager := clients.NewManager()
 	dataManager := data.NewManager()
-	scannerManager := scanner.NewManager(configGetter, instManager, clientManager, dataManager)
+	scannerManager := scanner.NewManager(configGetter, instManager, clientManager, dataManager, queueRepo)
 	workerManager := worker.NewWorker(configGetter, instManager, clientManager, queueRepo)
 	registrarManager := registrar.NewManager(instManager, clientManager)
 
@@ -185,6 +185,11 @@ func (s *Service) TriggerScanForFile(ctx context.Context, filePath string) error
 // TriggerDownloadScan triggers the "Check For Finished Downloads" task in ARR instances
 func (s *Service) TriggerDownloadScan(ctx context.Context, instanceType string) {
 	s.scanner.TriggerDownloadScan(ctx, instanceType)
+}
+
+// TriggerRepairByDownloadID attempts to mark a download as failed in ARR instances using its GUID
+func (s *Service) TriggerRepairByDownloadID(ctx context.Context, downloadID string, reason string) error {
+	return s.scanner.TriggerRepairByDownloadID(ctx, downloadID, reason)
 }
 
 // EnsureWebhookRegistration ensures that the AltMount webhook is registered in all enabled ARR instances

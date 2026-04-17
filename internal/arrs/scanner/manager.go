@@ -15,6 +15,7 @@ import (
 	"github.com/javi11/altmount/internal/arrs/instances"
 	"github.com/javi11/altmount/internal/arrs/model"
 	"github.com/javi11/altmount/internal/config"
+	"github.com/javi11/altmount/internal/database"
 	"golift.io/starr"
 	"golift.io/starr/lidarr"
 	"golift.io/starr/radarr"
@@ -27,15 +28,17 @@ type Manager struct {
 	instances    *instances.Manager
 	clients      *clients.Manager
 	data         *data.Manager
+	queueRepo    *database.Repository
 	sf           singleflight.Group
 }
 
-func NewManager(configGetter config.ConfigGetter, instances *instances.Manager, clients *clients.Manager, data *data.Manager) *Manager {
+func NewManager(configGetter config.ConfigGetter, instances *instances.Manager, clients *clients.Manager, data *data.Manager, queueRepo *database.Repository) *Manager {
 	return &Manager{
 		configGetter: configGetter,
 		instances:    instances,
 		clients:      clients,
 		data:         data,
+		queueRepo:    queueRepo,
 	}
 }
 
@@ -784,6 +787,180 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 		"command_id", response.ID)
 
 	return nil
+}
+
+// TriggerRepairByDownloadID attempts to mark a download as failed in ARR instances using its GUID
+func (m *Manager) TriggerRepairByDownloadID(ctx context.Context, downloadID string, reason string) error {
+	if downloadID == "" {
+		return fmt.Errorf("downloadID is empty")
+	}
+
+	res, err, _ := m.sf.Do(fmt.Sprintf("repair_id:%s", downloadID), func() (interface{}, error) {
+		slog.InfoContext(ctx, "Triggering ARR repair by download ID", "download_id", downloadID, "reason", reason)
+
+		// Record the specific reason in the import queue so ARR apps see it via SABnzbd API
+		if m.queueRepo != nil {
+			enhancedReason := fmt.Sprintf("AltMount Health: %s", reason)
+			_ = m.queueRepo.UpdateQueueItemErrorMessageByDownloadID(ctx, downloadID, enhancedReason)
+		}
+
+		allInstances := m.instances.GetAllInstances()
+		found := false
+
+		for _, instance := range allInstances {
+			if !instance.Enabled {
+				continue
+			}
+
+			var failErr error
+			switch instance.Type {
+			case "radarr", "whisparr":
+				client, err := m.clients.GetOrCreateRadarrClient(instance.Name, instance.URL, instance.APIKey)
+				if err == nil {
+					failErr = m.failRadarrQueueItemByDownloadID(ctx, client, downloadID)
+				}
+			case "sonarr":
+				client, err := m.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+				if err == nil {
+					failErr = m.failSonarrQueueItemByDownloadID(ctx, client, downloadID)
+				}
+			case "lidarr":
+				client, err := m.clients.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
+				if err == nil {
+					failErr = m.failLidarrQueueItemByDownloadID(ctx, client, downloadID)
+				}
+			case "readarr":
+				client, err := m.clients.GetOrCreateReadarrClient(instance.Name, instance.URL, instance.APIKey)
+				if err == nil {
+					failErr = m.failReadarrQueueItemByDownloadID(ctx, client, downloadID)
+				}
+			}
+
+			if failErr == nil {
+				slog.InfoContext(ctx, "Successfully triggered repair by download ID in ARR instance",
+					"instance", instance.Name, "download_id", downloadID)
+				found = true
+				break
+			} else {
+				slog.DebugContext(ctx, "Download ID not found in ARR instance queue",
+					"instance", instance.Name, "download_id", downloadID, "error", failErr)
+			}
+		}
+
+		if !found {
+			return nil, fmt.Errorf("download ID %s not found in any active ARR queue: %w", downloadID, model.ErrPathMatchFailed)
+		}
+
+		return nil, nil
+	})
+
+	if err != nil {
+		return err
+	}
+	if res != nil {
+		return res.(error)
+	}
+	return nil
+}
+
+// failRadarrQueueItemByDownloadID searches for an item in the active Radarr queue by download ID and marks it as failed
+func (m *Manager) failRadarrQueueItemByDownloadID(ctx context.Context, client *radarr.Radarr, downloadID string) error {
+	queue, err := client.GetQueueContext(ctx, 0, 500)
+	if err != nil {
+		return fmt.Errorf("failed to get Radarr queue: %w", err)
+	}
+
+	for _, q := range queue.Records {
+		if q.DownloadID == downloadID {
+			slog.InfoContext(ctx, "Found matching item in Radarr download queue by GUID, marking as failed",
+				"queue_id", q.ID, "download_id", downloadID)
+
+			removeFromClient := true
+			opts := &starr.QueueDeleteOpts{
+				RemoveFromClient: &removeFromClient,
+				BlockList:        true,
+				SkipRedownload:   false,
+			}
+			return client.DeleteQueueContext(ctx, q.ID, opts)
+		}
+	}
+
+	return fmt.Errorf("no matching item found in Radarr queue for download ID: %s", downloadID)
+}
+
+// failSonarrQueueItemByDownloadID searches for an item in the active Sonarr queue by download ID and marks it as failed
+func (m *Manager) failSonarrQueueItemByDownloadID(ctx context.Context, client *sonarr.Sonarr, downloadID string) error {
+	queue, err := client.GetQueueContext(ctx, 0, 500)
+	if err != nil {
+		return fmt.Errorf("failed to get Sonarr queue: %w", err)
+	}
+
+	for _, q := range queue.Records {
+		if q.DownloadID == downloadID {
+			slog.InfoContext(ctx, "Found matching item in Sonarr download queue by GUID, marking as failed",
+				"queue_id", q.ID, "download_id", downloadID)
+
+			removeFromClient := true
+			opts := &starr.QueueDeleteOpts{
+				RemoveFromClient: &removeFromClient,
+				BlockList:        true,
+				SkipRedownload:   false,
+			}
+			return client.DeleteQueueContext(ctx, q.ID, opts)
+		}
+	}
+
+	return fmt.Errorf("no matching item found in Sonarr queue for download ID: %s", downloadID)
+}
+
+// failLidarrQueueItemByDownloadID searches for an item in the active Lidarr queue by download ID and marks it as failed
+func (m *Manager) failLidarrQueueItemByDownloadID(ctx context.Context, client *lidarr.Lidarr, downloadID string) error {
+	queue, err := client.GetQueueContext(ctx, 0, 500)
+	if err != nil {
+		return fmt.Errorf("failed to get Lidarr queue: %w", err)
+	}
+
+	for _, q := range queue.Records {
+		if q.DownloadID == downloadID {
+			slog.InfoContext(ctx, "Found matching item in Lidarr download queue by GUID, marking as failed",
+				"queue_id", q.ID, "download_id", downloadID)
+
+			removeFromClient := true
+			opts := &starr.QueueDeleteOpts{
+				RemoveFromClient: &removeFromClient,
+				BlockList:        true,
+				SkipRedownload:   false,
+			}
+			return client.DeleteQueueContext(ctx, q.ID, opts)
+		}
+	}
+
+	return fmt.Errorf("no matching item found in Lidarr queue for download ID: %s", downloadID)
+}
+
+// failReadarrQueueItemByDownloadID searches for an item in the active Readarr queue by download ID and marks it as failed
+func (m *Manager) failReadarrQueueItemByDownloadID(ctx context.Context, client *readarr.Readarr, downloadID string) error {
+	queue, err := client.GetQueueContext(ctx, 0, 500)
+	if err != nil {
+		return fmt.Errorf("failed to get Readarr queue: %w", err)
+	}
+
+	for _, q := range queue.Records {
+		if q.DownloadID == downloadID {
+			slog.InfoContext(ctx, "Found matching item in Readarr download queue by GUID, marking as failed",
+				"queue_id", q.ID, "download_id", downloadID)
+
+			removeFromClient := true
+			opts := &starr.QueueDeleteOpts{
+				RemoveFromClient: &removeFromClient,
+				BlockList:        true,
+				SkipRedownload:   false,
+			}
+			return client.DeleteQueueContext(ctx, q.ID, opts)
+		}
+	}
+
+	return fmt.Errorf("no matching item found in Readarr queue for download ID: %s", downloadID)
 }
 
 // failRadarrQueueItemByPath searches for an item in the active Radarr queue by path and marks it as failed

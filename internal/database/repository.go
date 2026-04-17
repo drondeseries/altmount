@@ -349,6 +349,56 @@ func (r *Repository) GetQueueItemByDownloadID(ctx context.Context, downloadID st
 	return &item, nil
 }
 
+// UpdateDownloadIDByPath updates the download_id for a history record by its virtual path
+func (r *Repository) UpdateDownloadIDByPath(ctx context.Context, virtualPath string, downloadID string) error {
+	query := `UPDATE import_history SET download_id = ? WHERE virtual_path = ? AND (download_id IS NULL OR download_id = '')`
+	_, err := r.db.ExecContext(ctx, query, downloadID, virtualPath)
+	if err != nil {
+		return fmt.Errorf("failed to update history download_id: %w", err)
+	}
+	return nil
+}
+
+// GetHistoryMissingDownloadID retrieves history items that are missing a download_id
+func (r *Repository) GetHistoryMissingDownloadID(ctx context.Context, limit int) ([]*ImportHistory, error) {
+	query := `
+		SELECT id, download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at
+		FROM import_history
+		WHERE (download_id IS NULL OR download_id = '')
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query history missing download_id: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*ImportHistory
+	for rows.Next() {
+		var item ImportHistory
+		err := rows.Scan(
+			&item.ID, &item.DownloadID, &item.NzbID, &item.NzbName, &item.FileName, &item.FileSize,
+			&item.VirtualPath, &item.Category, &item.CompletedAt,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan history missing download_id: %w", err)
+		}
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+// UpdateQueueItemErrorMessageByDownloadID updates the error message for a queue item by its DownloadID
+func (r *Repository) UpdateQueueItemErrorMessageByDownloadID(ctx context.Context, downloadID string, errorMessage string) error {
+	query := `UPDATE import_queue SET error_message = ?, updated_at = datetime('now') WHERE download_id = ?`
+	_, err := r.db.ExecContext(ctx, query, errorMessage, downloadID)
+	if err != nil {
+		return fmt.Errorf("failed to update queue item error message: %w", err)
+	}
+	return nil
+}
+
 // RemoveFromQueueByDownloadID removes an item from the queue by its DownloadID
 func (r *Repository) RemoveFromQueueByDownloadID(ctx context.Context, downloadID string) error {
 	query := `DELETE FROM import_queue WHERE download_id = ?`

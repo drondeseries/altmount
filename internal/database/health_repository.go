@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -1771,6 +1772,34 @@ func (r *HealthRepository) GetFilesForLibrarySync(ctx context.Context) ([]*FileH
 	}
 
 	return files, nil
+}
+
+// GetDownloadIDForSourceNzb retrieves the download_id (GUID) associated with a source NZB path.
+// It checks both the active import_queue and the persistent import_history.
+func (r *HealthRepository) GetDownloadIDForSourceNzb(ctx context.Context, sourceNzbPath string) (string, error) {
+	if sourceNzbPath == "" {
+		return "", nil
+	}
+
+	// 1. Try active queue first (most likely for recent corruptions)
+	var downloadID sql.NullString
+	queryQueue := `SELECT download_id FROM import_queue WHERE nzb_path = ? LIMIT 1`
+	err := r.db.QueryRowContext(ctx, queryQueue, sourceNzbPath).Scan(&downloadID)
+	if err == nil && downloadID.Valid && downloadID.String != "" {
+		return downloadID.String, nil
+	}
+
+	// 2. Try persistent history
+	// We match based on the filename because virtual_path in history is the output folder,
+	// while source_nzb_path in health is the .nzb file path.
+	nzbName := filepath.Base(sourceNzbPath)
+	queryHistory := `SELECT download_id FROM import_history WHERE nzb_name = ? AND download_id IS NOT NULL AND download_id != '' LIMIT 1`
+	err = r.db.QueryRowContext(ctx, queryHistory, nzbName).Scan(&downloadID)
+	if err == nil && downloadID.Valid && downloadID.String != "" {
+		return downloadID.String, nil
+	}
+
+	return "", nil
 }
 
 // HasImportHistoryForPath checks if any import history record exists for the

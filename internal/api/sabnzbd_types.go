@@ -60,6 +60,7 @@ type SABnzbdQueueSlot struct {
 	Sizeleft   string `json:"sizeleft"`
 	Mb         string `json:"mb"`
 	Mbleft     string `json:"mbleft"`
+	Message    string `json:"message"` // Added for detailed status in ARR apps
 }
 
 // SABnzbdHistoryResponse represents the history response structure
@@ -385,6 +386,11 @@ func ToSABnzbdQueueSlot(item *database.ImportQueueItem, index int, progressBroad
 		nzoID = *item.DownloadID
 	}
 
+	message := ""
+	if item.ErrorMessage != nil {
+		message = *item.ErrorMessage
+	}
+
 	return SABnzbdQueueSlot{
 		Index:      index,
 		NzoID:      nzoID,
@@ -400,6 +406,7 @@ func ToSABnzbdQueueSlot(item *database.ImportQueueItem, index int, progressBroad
 		Sizeleft:   formatHumanSize(sizeLeftBytes),
 		Mb:         formatSizeMB(totalSizeBytes),
 		Mbleft:     formatSizeMB(sizeLeftBytes),
+		Message:    message,
 	}
 }
 

@@ -392,6 +392,8 @@ type ArrsConfig struct {
 	CleanupAutomaticImportFailure  *bool                `yaml:"cleanup_automatic_import_failure" mapstructure:"cleanup_automatic_import_failure" json:"cleanup_automatic_import_failure,omitempty"`
 	QueueCleanupGracePeriodMinutes int                  `yaml:"queue_cleanup_grace_period_minutes" mapstructure:"queue_cleanup_grace_period_minutes" json:"queue_cleanup_grace_period_minutes,omitempty"`
 	QueueCleanupAllowlist          []IgnoredMessage     `yaml:"queue_cleanup_allowlist" mapstructure:"queue_cleanup_allowlist" json:"queue_cleanup_allowlist,omitempty"`
+	HarvestDownloadIDsEnabled      *bool                `yaml:"harvest_download_ids_enabled" mapstructure:"harvest_download_ids_enabled" json:"harvest_download_ids_enabled,omitempty"`
+	HarvestDownloadIDsIntervalHours int                  `yaml:"harvest_download_ids_interval_hours" mapstructure:"harvest_download_ids_interval_hours" json:"harvest_download_ids_interval_hours,omitempty"`
 }
 
 // ArrsInstanceConfig represents a single arrs instance configuration
@@ -1221,6 +1223,7 @@ func DefaultConfig(configDir ...string) *Config {
 	watchIntervalSeconds := 10        // Default watch interval
 	failedItemRetentionHours := 24    // Default: auto-remove failed items after 24 hours
 	cleanupAutomaticImportFailure := false
+	harvestDownloadIDsEnabled := true
 	metadataBackupEnabled := false
 	failureMaskingEnabled := true
 	repairEnabled := true
@@ -1431,6 +1434,8 @@ func DefaultConfig(configDir ...string) *Config {
 			WhisparrInstances:              []ArrsInstanceConfig{},
 			CleanupAutomaticImportFailure:  &cleanupAutomaticImportFailure,
 			QueueCleanupGracePeriodMinutes: 10, // Default to 10 minutes
+			HarvestDownloadIDsEnabled:      &harvestDownloadIDsEnabled,
+			HarvestDownloadIDsIntervalHours: 24, // Default to once a day
 			QueueCleanupAllowlist: []IgnoredMessage{
 				{Message: "No files found are eligible", Enabled: true},
 				{Message: "One or more episodes expected in this release were not imported or missing", Enabled: true},

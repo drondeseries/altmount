@@ -61,6 +61,12 @@ func (m *mockARRsService) TriggerFileRescan(_ context.Context, pathForRescan str
 	return m.returnErr
 }
 
+func (m *mockARRsService) TriggerRepairByDownloadID(_ context.Context, downloadID string, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.returnErr
+}
+
 // mockImportService implements importer.ImportService for testing.
 type mockImportService struct {
 	importer.ImportService

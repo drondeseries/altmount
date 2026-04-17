@@ -35,6 +35,9 @@ type Worker struct {
 	// key: instanceName|queueID
 	firstSeen   map[string]time.Time
 	firstSeenMu sync.RWMutex
+
+	// Harvester state
+	lastHarvest   time.Time
 }
 
 func NewWorker(configGetter config.ConfigGetter, instances *instances.Manager, clients *clients.Manager, repo *database.Repository) *Worker {
@@ -47,7 +50,7 @@ func NewWorker(configGetter config.ConfigGetter, instances *instances.Manager, c
 	}
 }
 
-// Start starts the queue cleanup worker
+// Start starts the queue cleanup and harvesting workers
 func (w *Worker) Start(ctx context.Context) error {
 	w.workerMu.Lock()
 	defer w.workerMu.Unlock()
@@ -60,29 +63,49 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// ARRs must be enabled
 	if cfg.Arrs.Enabled == nil || !*cfg.Arrs.Enabled {
-		slog.InfoContext(ctx, "ARR queue cleanup disabled (ARRs disabled)")
-		return nil
-	}
-
-	// Queue cleanup is enabled by default (when nil or true)
-	if cfg.Arrs.QueueCleanupEnabled != nil && !*cfg.Arrs.QueueCleanupEnabled {
-		slog.InfoContext(ctx, "ARR queue cleanup disabled")
+		slog.InfoContext(ctx, "ARR workers disabled (ARRs disabled)")
 		return nil
 	}
 
 	w.workerCtx, w.workerCancel = context.WithCancel(ctx)
 	w.workerRunning = true
 
-	interval := time.Duration(cfg.Arrs.QueueCleanupIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 10 * time.Second
+	// 1. Start Queue Cleanup Worker
+	cleanupEnabled := true
+	if cfg.Arrs.QueueCleanupEnabled != nil {
+		cleanupEnabled = *cfg.Arrs.QueueCleanupEnabled
 	}
 
-	w.workerWg.Add(1)
-	go w.runWorker(interval)
+	if cleanupEnabled {
+		interval := time.Duration(cfg.Arrs.QueueCleanupIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
 
-	slog.InfoContext(ctx, "ARR queue cleanup worker started",
-		"interval_seconds", cfg.Arrs.QueueCleanupIntervalSeconds)
+		w.workerWg.Add(1)
+		go w.runWorker(interval)
+		slog.InfoContext(ctx, "ARR queue cleanup worker started",
+			"interval_seconds", cfg.Arrs.QueueCleanupIntervalSeconds)
+	}
+
+	// 2. Start DownloadID Harvester Worker
+	harvestEnabled := true
+	if cfg.Arrs.HarvestDownloadIDsEnabled != nil {
+		harvestEnabled = *cfg.Arrs.HarvestDownloadIDsEnabled
+	}
+
+	if harvestEnabled {
+		interval := time.Duration(cfg.Arrs.HarvestDownloadIDsIntervalHours) * time.Hour
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+
+		w.workerWg.Add(1)
+		go w.runHarvester(interval)
+		slog.InfoContext(ctx, "ARR download ID harvester worker started",
+			"interval_hours", cfg.Arrs.HarvestDownloadIDsIntervalHours)
+	}
+
 	return nil
 }
 
@@ -136,6 +159,165 @@ func (w *Worker) safeCleanup() {
 	if err := w.CleanupQueue(w.workerCtx); err != nil {
 		slog.Error("Queue cleanup failed", "error", err)
 	}
+}
+
+func (w *Worker) runHarvester(interval time.Duration) {
+	defer w.workerWg.Done()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Initial run after a short delay
+	select {
+	case <-time.After(1 * time.Minute):
+		w.safeHarvest()
+	case <-w.workerCtx.Done():
+		return
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			w.safeHarvest()
+		case <-w.workerCtx.Done():
+			return
+		}
+	}
+}
+
+func (w *Worker) safeHarvest() {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Panic in DownloadID harvester", "panic", r)
+		}
+	}()
+	if err := w.HarvestDownloadIDs(w.workerCtx); err != nil {
+		slog.Error("DownloadID harvesting failed", "error", err)
+	}
+}
+
+// HarvestDownloadIDs scans library items in AltMount's history that are missing GUIDs
+// and attempts to "harvest" them from ARR history for proactive tracking.
+func (w *Worker) HarvestDownloadIDs(ctx context.Context) error {
+	slog.InfoContext(ctx, "Starting proactive DownloadID harvesting cycle for legacy library items")
+
+	// 1. Get history items missing download_id
+	items, err := w.repo.GetHistoryMissingDownloadID(ctx, 100) // Process in chunks of 100
+	if err != nil {
+		return fmt.Errorf("failed to get history items for harvesting: %w", err)
+	}
+
+	if len(items) == 0 {
+		slog.InfoContext(ctx, "No legacy items found missing DownloadID")
+		return nil
+	}
+
+	slog.InfoContext(ctx, "Found items missing DownloadID, attempting to harvest from ARRs", "count", len(items))
+
+	instances := w.instances.GetAllInstances()
+	harvestedCount := 0
+
+	for _, item := range items {
+		found := false
+		for _, instance := range instances {
+			if !instance.Enabled {
+				continue
+			}
+
+			var downloadID string
+			switch instance.Type {
+			case "radarr", "whisparr":
+				downloadID = w.harvestRadarrDownloadID(ctx, instance, item)
+			case "sonarr":
+				downloadID = w.harvestSonarrDownloadID(ctx, instance, item)
+			}
+
+			if downloadID != "" {
+				slog.InfoContext(ctx, "Harvested DownloadID for legacy item",
+					"path", item.VirtualPath, "download_id", downloadID, "instance", instance.Name)
+				if err := w.repo.UpdateDownloadIDByPath(ctx, item.VirtualPath, downloadID); err == nil {
+					harvestedCount++
+					found = true
+				}
+				break
+			}
+		}
+
+		if !found {
+			slog.DebugContext(ctx, "Could not find DownloadID in any ARR history for item", "path", item.VirtualPath)
+		}
+	}
+
+	slog.InfoContext(ctx, "Finished DownloadID harvesting cycle", "harvested", harvestedCount, "total_processed", len(items))
+	return nil
+}
+
+func (w *Worker) harvestRadarrDownloadID(ctx context.Context, instance *model.ConfigInstance, item *database.ImportHistory) string {
+	client, err := w.clients.GetOrCreateRadarrClient(instance.Name, instance.URL, instance.APIKey)
+	if err != nil {
+		return ""
+	}
+
+	// Fetch history using filename match if possible
+	req := &starr.PageReq{PageSize: 50, SortKey: "date", SortDir: starr.SortDescend}
+	// We search history for the filename
+	history, err := client.GetHistoryPageContext(ctx, req)
+	if err != nil {
+		return ""
+	}
+
+	fileName := filepath.Base(item.VirtualPath)
+
+	for _, record := range history.Records {
+		if record.DownloadID == "" {
+			continue
+		}
+
+		// Match by path or filename
+		// Data contains either ImportedPath or DroppedPath depending on the event
+		if record.Data.ImportedPath == item.VirtualPath ||
+			record.Data.DroppedPath == item.VirtualPath ||
+			filepath.Base(record.Data.ImportedPath) == fileName ||
+			filepath.Base(record.Data.DroppedPath) == fileName ||
+			strings.Contains(record.SourceTitle, item.NzbName) {
+			return record.DownloadID
+		}
+	}
+
+	return ""
+}
+
+func (w *Worker) harvestSonarrDownloadID(ctx context.Context, instance *model.ConfigInstance, item *database.ImportHistory) string {
+	client, err := w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+	if err != nil {
+		return ""
+	}
+
+	req := &starr.PageReq{PageSize: 50, SortKey: "date", SortDir: starr.SortDescend}
+	history, err := client.GetHistoryPageContext(ctx, req)
+	if err != nil {
+		return ""
+	}
+
+	fileName := filepath.Base(item.VirtualPath)
+
+	for _, record := range history.Records {
+		if record.DownloadID == "" {
+			continue
+		}
+
+		// Match by path or filename
+		// Data contains either ImportedPath or DroppedPath depending on the event
+		if record.Data.ImportedPath == item.VirtualPath ||
+			record.Data.DroppedPath == item.VirtualPath ||
+			filepath.Base(record.Data.ImportedPath) == fileName ||
+			filepath.Base(record.Data.DroppedPath) == fileName ||
+			strings.Contains(record.SourceTitle, item.NzbName) {
+			return record.DownloadID
+		}
+	}
+
+	return ""
 }
 
 // CleanupQueue checks all ARR instances for importPending items with empty folders

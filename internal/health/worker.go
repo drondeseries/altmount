@@ -25,6 +25,7 @@ import (
 // ARRsRepairService abstracts the ARR repair operations needed by HealthWorker.
 type ARRsRepairService interface {
 	TriggerFileRescan(ctx context.Context, pathForRescan string, relativePath string) error
+	TriggerRepairByDownloadID(ctx context.Context, downloadID string, reason string) error
 }
 
 // WorkerStatus represents the current status of the health worker
@@ -957,10 +958,29 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		}
 	}
 
-	slog.InfoContext(ctx, "Triggering file repair using direct ARR API approach", "file_path", filePath)
+	slog.InfoContext(ctx, "Triggering file repair", "file_path", filePath)
 
+	// STRATEGY 1: Repair by Download ID (GUID)
+	// This is the most reliable method as it avoids path mapping issues.
+	if item.SourceNzbPath != nil && *item.SourceNzbPath != "" {
+		downloadID, err := hw.healthRepo.GetDownloadIDForSourceNzb(ctx, *item.SourceNzbPath)
+		if err == nil && downloadID != "" {
+			reason := "Physical corruption"
+			if errorMsg != nil && *errorMsg != "" {
+				reason = *errorMsg
+			}
+			slog.InfoContext(ctx, "Attempting repair by download ID (GUID)", "file_path", filePath, "download_id", downloadID, "reason", reason)
+			err = hw.arrsService.TriggerRepairByDownloadID(ctx, downloadID, reason)
+			if err == nil {
+				slog.InfoContext(ctx, "Successfully triggered repair by download ID", "file_path", filePath, "download_id", downloadID)
+				return hw.handleSuccessfulRepairTrigger(ctx, item)
+			}
+			slog.DebugContext(ctx, "Repair by download ID failed or item not in ARR queue, falling back to path-based rescan", "file_path", filePath, "error", err)
+		}
+	}
+
+	// STRATEGY 2: Fallback to Path-based Rescan
 	pathForRescan := hw.resolvePathForRescan(item)
-
 	err := hw.arrsService.TriggerFileRescan(ctx, pathForRescan, filePath)
 	if err != nil {
 		if errors.Is(err, arrs.ErrEpisodeAlreadySatisfied) || errors.Is(err, arrs.ErrPathMatchFailed) {
@@ -977,10 +997,59 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		return repairOutcomeCorrupted, err
 	}
 
-	// ARR rescan was triggered successfully.
 	slog.InfoContext(ctx, "Successfully triggered ARR rescan for file repair",
 		"file_path", filePath,
 		"path_for_rescan", pathForRescan)
+
+	return hw.handleSuccessfulRepairTrigger(ctx, item)
+}
+
+// retriggerFileRepair re-triggers the ARR rescan for a file already in repair_triggered state.
+// Unlike triggerFileRepair it does NOT move metadata (already moved) and does NOT write to the DB.
+// Callers must apply the returned outcome to the HealthStatusUpdate before the bulk DB write.
+func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
+	filePath := item.FilePath
+
+	slog.InfoContext(ctx, "Re-triggering ARR rescan for file in repair", "file_path", filePath)
+
+	// STRATEGY 1: Repair by Download ID (GUID)
+	if item.SourceNzbPath != nil && *item.SourceNzbPath != "" {
+		downloadID, err := hw.healthRepo.GetDownloadIDForSourceNzb(ctx, *item.SourceNzbPath)
+		if err == nil && downloadID != "" {
+			reason := "Physical corruption"
+			if item.LastError != nil && *item.LastError != "" {
+				reason = *item.LastError
+			}
+			slog.InfoContext(ctx, "Attempting repair by download ID (GUID) during re-trigger", "file_path", filePath, "download_id", downloadID, "reason", reason)
+			err = hw.arrsService.TriggerRepairByDownloadID(ctx, downloadID, reason)
+			if err == nil {
+				slog.InfoContext(ctx, "Successfully re-triggered repair by download ID", "file_path", filePath)
+				return repairOutcomeTriggered, nil
+			}
+		}
+	}
+
+	// STRATEGY 2: Fallback to Path-based Rescan
+	pathForRescan := hw.resolvePathForRescan(item)
+	err := hw.arrsService.TriggerFileRescan(ctx, pathForRescan, filePath)
+	if err != nil {
+		if errors.Is(err, arrs.ErrEpisodeAlreadySatisfied) || errors.Is(err, arrs.ErrPathMatchFailed) {
+			slog.WarnContext(ctx, "File no longer tracked by ARR during re-trigger, removing from AltMount", "file_path", filePath)
+			hw.cleanupZombieRecord(ctx, item)
+			return repairOutcomeDeleted, nil
+		}
+
+		slog.ErrorContext(ctx, "Failed to re-trigger ARR rescan", "file_path", filePath, "error", err)
+		return repairOutcomeCorrupted, err
+	}
+
+	slog.InfoContext(ctx, "Successfully re-triggered ARR rescan", "file_path", filePath)
+	return repairOutcomeTriggered, nil
+}
+
+// handleSuccessfulRepairTrigger performs common post-trigger actions like moving metadata.
+func (hw *HealthWorker) handleSuccessfulRepairTrigger(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
+	filePath := item.FilePath
 
 	// Move the metadata file to the corrupted folder so FUSE/WebDAV stops showing it.
 	// CRITICAL: We only do this if the file has already been imported (has a LibraryPath).
@@ -998,30 +1067,5 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		slog.InfoContext(ctx, "Skipping metadata move for corrupted item - file not yet imported by ARR", "file_path", filePath)
 	}
 
-	return repairOutcomeTriggered, nil
-}
-
-// retriggerFileRepair re-triggers the ARR rescan for a file already in repair_triggered state.
-// Unlike triggerFileRepair it does NOT move metadata (already moved) and does NOT write to the DB.
-// Callers must apply the returned outcome to the HealthStatusUpdate before the bulk DB write.
-func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
-	filePath := item.FilePath
-	pathForRescan := hw.resolvePathForRescan(item)
-
-	slog.InfoContext(ctx, "Re-triggering ARR rescan for file in repair", "file_path", filePath, "path_for_rescan", pathForRescan)
-
-	err := hw.arrsService.TriggerFileRescan(ctx, pathForRescan, filePath)
-	if err != nil {
-		if errors.Is(err, arrs.ErrEpisodeAlreadySatisfied) || errors.Is(err, arrs.ErrPathMatchFailed) {
-			slog.WarnContext(ctx, "File no longer tracked by ARR during re-trigger, removing from AltMount", "file_path", filePath)
-			hw.cleanupZombieRecord(ctx, item)
-			return repairOutcomeDeleted, nil
-		}
-
-		slog.ErrorContext(ctx, "Failed to re-trigger ARR rescan", "file_path", filePath, "error", err)
-		return repairOutcomeCorrupted, err
-	}
-
-	slog.InfoContext(ctx, "Successfully re-triggered ARR rescan", "file_path", filePath)
 	return repairOutcomeTriggered, nil
 }
