@@ -479,6 +479,7 @@ type HealthCheckRequest struct {
 	LibraryPath *string                 `json:"library_path,omitempty"`
 	MaxRetries  *int                    `json:"max_retries,omitempty"`
 	SourceNzb   *string                 `json:"source_nzb_path,omitempty"`
+	DownloadID  *string                 `json:"download_id,omitempty"`
 	Priority    database.HealthPriority `json:"priority,omitempty"`
 }
 
