@@ -61,6 +61,12 @@ func (m *mockARRsService) TriggerFileRescan(_ context.Context, pathForRescan str
 	return m.returnErr
 }
 
+func (m *mockARRsService) TriggerRepairByDownloadID(_ context.Context, downloadID string, reason string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.returnErr
+}
+
 // mockImportService implements importer.ImportService for testing.
 type mockImportService struct {
 	importer.ImportService
@@ -107,7 +113,8 @@ func newRepairTestEnv(t *testing.T, tempDir string, arrsErr error) *repairTestEn
 			scheduled_check_at DATETIME,
 			priority INTEGER NOT NULL DEFAULT 0,
 			streaming_failure_count INTEGER DEFAULT 0,
-			is_masked BOOLEAN DEFAULT FALSE
+			is_masked BOOLEAN DEFAULT FALSE,
+			download_id TEXT DEFAULT ''
 		);
 
 		CREATE TABLE IF NOT EXISTS system_state (

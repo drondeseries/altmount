@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,8 @@ import (
 	"github.com/javi11/altmount/internal/config"
 	"github.com/javi11/altmount/internal/database"
 	"golift.io/starr"
+	"golift.io/starr/radarr"
+	"golift.io/starr/sonarr"
 )
 
 type Worker struct {
@@ -23,6 +26,7 @@ type Worker struct {
 	instances    *instances.Manager
 	clients      *clients.Manager
 	repo         *database.Repository
+	healthRepo   *database.HealthRepository
 
 	// Queue cleanup worker state
 	workerCtx     context.Context
@@ -35,19 +39,35 @@ type Worker struct {
 	// key: instanceName|queueID
 	firstSeen   map[string]time.Time
 	firstSeenMu sync.RWMutex
+
+	// Harvester state
+	lastHarvest   time.Time
+	seriesCache   map[string]map[string]int64 // instanceName -> seriesTitle -> ID
+	moviesCache   map[string]map[string]int64 // instanceName -> movieTitle -> ID
+	cacheMu       sync.RWMutex
 }
 
-func NewWorker(configGetter config.ConfigGetter, instances *instances.Manager, clients *clients.Manager, repo *database.Repository) *Worker {
+var (
+	// Regex for Season/Episode (e.g. S01E01, 1x01, s01.e01)
+	seasonEpisodeRegex = regexp.MustCompile(`(?i)[sS](\d+)[eE](\d+)|(\d+)x(\d+)`)
+	// Regex for Movies (Year in title)
+	movieYearRegex = regexp.MustCompile(`\((19|20)\d{2}\)`)
+)
+
+func NewWorker(configGetter config.ConfigGetter, instances *instances.Manager, clients *clients.Manager, repo *database.Repository, healthRepo *database.HealthRepository) *Worker {
 	return &Worker{
 		configGetter: configGetter,
 		instances:    instances,
 		clients:      clients,
 		repo:         repo,
+		healthRepo:   healthRepo,
 		firstSeen:    make(map[string]time.Time),
+		seriesCache:  make(map[string]map[string]int64),
+		moviesCache:  make(map[string]map[string]int64),
 	}
 }
 
-// Start starts the queue cleanup worker
+// Start starts the queue cleanup and harvesting workers
 func (w *Worker) Start(ctx context.Context) error {
 	w.workerMu.Lock()
 	defer w.workerMu.Unlock()
@@ -60,29 +80,49 @@ func (w *Worker) Start(ctx context.Context) error {
 
 	// ARRs must be enabled
 	if cfg.Arrs.Enabled == nil || !*cfg.Arrs.Enabled {
-		slog.InfoContext(ctx, "ARR queue cleanup disabled (ARRs disabled)")
-		return nil
-	}
-
-	// Queue cleanup is enabled by default (when nil or true)
-	if cfg.Arrs.QueueCleanupEnabled != nil && !*cfg.Arrs.QueueCleanupEnabled {
-		slog.InfoContext(ctx, "ARR queue cleanup disabled")
+		slog.InfoContext(ctx, "ARR workers disabled (ARRs disabled)")
 		return nil
 	}
 
 	w.workerCtx, w.workerCancel = context.WithCancel(ctx)
 	w.workerRunning = true
 
-	interval := time.Duration(cfg.Arrs.QueueCleanupIntervalSeconds) * time.Second
-	if interval <= 0 {
-		interval = 10 * time.Second
+	// 1. Start Queue Cleanup Worker
+	cleanupEnabled := true
+	if cfg.Arrs.QueueCleanupEnabled != nil {
+		cleanupEnabled = *cfg.Arrs.QueueCleanupEnabled
 	}
 
-	w.workerWg.Add(1)
-	go w.runWorker(interval)
+	if cleanupEnabled {
+		interval := time.Duration(cfg.Arrs.QueueCleanupIntervalSeconds) * time.Second
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
 
-	slog.InfoContext(ctx, "ARR queue cleanup worker started",
-		"interval_seconds", cfg.Arrs.QueueCleanupIntervalSeconds)
+		w.workerWg.Add(1)
+		go w.runWorker(interval)
+		slog.InfoContext(ctx, "ARR queue cleanup worker started",
+			"interval_seconds", cfg.Arrs.QueueCleanupIntervalSeconds)
+	}
+
+	// 2. Start DownloadID Harvester Worker
+	harvestEnabled := true
+	if cfg.Arrs.HarvestDownloadIDsEnabled != nil {
+		harvestEnabled = *cfg.Arrs.HarvestDownloadIDsEnabled
+	}
+
+	if harvestEnabled {
+		interval := time.Duration(cfg.Arrs.HarvestDownloadIDsIntervalHours) * time.Hour
+		if interval <= 0 {
+			interval = 24 * time.Hour
+		}
+
+		w.workerWg.Add(1)
+		go w.runHarvester(interval)
+		slog.InfoContext(ctx, "ARR download ID harvester worker started",
+			"interval_hours", cfg.Arrs.HarvestDownloadIDsIntervalHours)
+	}
+
 	return nil
 }
 
@@ -136,6 +176,320 @@ func (w *Worker) safeCleanup() {
 	if err := w.CleanupQueue(w.workerCtx); err != nil {
 		slog.Error("Queue cleanup failed", "error", err)
 	}
+}
+
+func (w *Worker) runHarvester(interval time.Duration) {
+	defer w.workerWg.Done()
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	// Initial run after a short delay
+	select {
+	case <-time.After(1 * time.Minute):
+		w.safeHarvest()
+	case <-w.workerCtx.Done():
+		return
+	}
+
+	for {
+		select {
+		case <-ticker.C:
+			w.safeHarvest()
+		case <-w.workerCtx.Done():
+			return
+		}
+	}
+}
+
+func (w *Worker) safeHarvest() {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Panic in DownloadID harvester", "panic", r)
+		}
+	}()
+	if err := w.HarvestDownloadIDs(w.workerCtx); err != nil {
+		slog.Error("DownloadID harvesting failed", "error", err)
+	}
+}
+
+// HarvestDownloadIDs scans library items in AltMount's history and health tables that are missing GUIDs
+// and attempts to "harvest" them from ARR history for proactive tracking.
+func (w *Worker) HarvestDownloadIDs(ctx context.Context) error {
+	slog.InfoContext(ctx, "Starting proactive DownloadID harvesting cycle for legacy library items")
+
+	instances := w.instances.GetAllInstances()
+	harvestedCount := 0
+	processedCount := 0
+
+	// 1. Process items from import_history
+	historyItems, err := w.repo.GetHistoryMissingDownloadID(ctx, 500)
+	if err == nil && len(historyItems) > 0 {
+		processedCount += len(historyItems)
+		for _, item := range historyItems {
+			if w.harvestSurgical(ctx, instances, item.VirtualPath, item.NzbName, item.ID, false) {
+				harvestedCount++
+			}
+		}
+	}
+
+	// 2. Process items from file_health
+	if w.healthRepo != nil {
+		healthItems, err := w.healthRepo.GetHealthMissingDownloadID(ctx, 1000)
+		if err == nil && len(healthItems) > 0 {
+			processedCount += len(healthItems)
+			for _, item := range healthItems {
+				nzbName := filepath.Base(item.FilePath)
+				if item.SourceNzbPath != nil {
+					nzbName = filepath.Base(*item.SourceNzbPath)
+				}
+				if w.harvestSurgical(ctx, instances, item.FilePath, nzbName, item.ID, true) {
+					harvestedCount++
+				}
+			}
+		}
+	}
+
+	slog.InfoContext(ctx, "Finished DownloadID harvesting cycle", "harvested", harvestedCount, "total_processed", processedCount)
+	return nil
+}
+
+type historyRecord struct {
+	DownloadID   string
+	SourceTitle  string
+	ImportedPath string
+	DroppedPath  string
+}
+
+func (w *Worker) harvestSurgical(ctx context.Context, instances []*model.ConfigInstance, path string, nzbName string, dbID int64, isHealth bool) bool {
+	for _, instance := range instances {
+		if !instance.Enabled {
+			continue
+		}
+
+		var downloadID string
+		switch instance.Type {
+		case "sonarr":
+			downloadID = w.harvestSonarrSurgical(ctx, instance, path, nzbName)
+		case "radarr", "whisparr":
+			downloadID = w.harvestRadarrSurgical(ctx, instance, path, nzbName)
+		}
+
+		if downloadID != "" {
+			slog.InfoContext(ctx, "Harvested DownloadID surgically",
+				"path", path, "download_id", downloadID, "instance", instance.Name)
+			
+			if isHealth {
+				if err := w.healthRepo.UpdateHealthDownloadID(ctx, dbID, downloadID); err == nil {
+					_ = w.repo.UpdateDownloadIDByPath(ctx, path, downloadID, instance.Name)
+					return true
+				}
+			} else {
+				if err := w.repo.UpdateDownloadIDByPath(ctx, path, downloadID, instance.Name); err == nil {
+					if w.healthRepo != nil {
+						_ = w.healthRepo.UpdateHealthDownloadIDByPath(ctx, path, downloadID)
+					}
+					return true
+				}
+			}
+			return false
+		}
+	}
+	return false
+}
+
+func (w *Worker) harvestSonarrSurgical(ctx context.Context, instance *model.ConfigInstance, path, nzbName string) string {
+	// 1. Identify Series
+	seriesID := w.getSeriesID(ctx, instance, path)
+	if seriesID == 0 {
+		return ""
+	}
+
+	// 2. Identify Season/Episode
+	season, episode := w.parseSeasonEpisode(path)
+	if season == 0 || episode == 0 {
+		return ""
+	}
+
+	// 3. Identify Episode ID
+	client, err := w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+	if err != nil {
+		return ""
+	}
+
+	episodes, err := client.GetSeriesEpisodesContext(ctx, &sonarr.GetEpisode{
+		SeriesID: seriesID,
+	})
+	if err != nil {
+		return ""
+	}
+
+	var episodeID int64
+	for _, ep := range episodes {
+		if int(ep.SeasonNumber) == season && int(ep.EpisodeNumber) == episode {
+			episodeID = ep.ID
+			break
+		}
+	}
+
+	if episodeID == 0 {
+		return ""
+	}
+
+	// 4. Probe History for Episode ID
+	req := &starr.PageReq{PageSize: 100}
+	req.Set("episodeId", fmt.Sprintf("%d", episodeID))
+	
+	history, err := client.GetHistoryPageContext(ctx, req)
+	if err != nil {
+		return ""
+	}
+
+	commonRecords := make([]historyRecord, len(history.Records))
+	for i, r := range history.Records {
+		commonRecords[i] = historyRecord{
+			DownloadID:   r.DownloadID,
+			SourceTitle:  r.SourceTitle,
+			ImportedPath: r.Data.ImportedPath,
+			DroppedPath:  r.Data.DroppedPath,
+		}
+	}
+
+	return w.matchReleaseInHistory(commonRecords, nzbName, path)
+}
+
+func (w *Worker) harvestRadarrSurgical(ctx context.Context, instance *model.ConfigInstance, path, nzbName string) string {
+	// 1. Identify Movie ID
+	movieID := w.getMovieID(ctx, instance, path)
+	if movieID == 0 {
+		return ""
+	}
+
+	// 2. Probe History for Movie ID
+	client, err := w.clients.GetOrCreateRadarrClient(instance.Name, instance.URL, instance.APIKey)
+	if err != nil {
+		return ""
+	}
+
+	req := &starr.PageReq{PageSize: 100}
+	req.Set("movieId", fmt.Sprintf("%d", movieID))
+	
+	history, err := client.GetHistoryPageContext(ctx, req)
+	if err != nil {
+		return ""
+	}
+
+	// Match logic is same for Radarr history records (SourceTitle)
+	commonRecords := make([]historyRecord, len(history.Records))
+	for i, r := range history.Records {
+		commonRecords[i] = historyRecord{
+			DownloadID:   r.DownloadID,
+			SourceTitle:  r.SourceTitle,
+			ImportedPath: r.Data.ImportedPath,
+			DroppedPath:  r.Data.DroppedPath,
+		}
+	}
+
+	return w.matchReleaseInHistory(commonRecords, nzbName, path)
+}
+
+func (w *Worker) matchReleaseInHistory(records []historyRecord, nzbName string, path string) string {
+	fileName := filepath.Base(path)
+	cleanNzbName := strings.TrimSuffix(nzbName, filepath.Ext(nzbName))
+
+	for _, record := range records {
+		if record.DownloadID == "" {
+			continue
+		}
+
+		// Exact matches first
+		if record.ImportedPath == path || record.DroppedPath == path ||
+			(record.ImportedPath != "" && filepath.Base(record.ImportedPath) == fileName) ||
+			(record.DroppedPath != "" && filepath.Base(record.DroppedPath) == fileName) {
+			return record.DownloadID
+		}
+
+		// Fuzzy title match
+		cleanTitle := strings.ReplaceAll(record.SourceTitle, ":", ".")
+		cleanTitle = strings.ReplaceAll(cleanTitle, " ", ".")
+		
+		if strings.Contains(cleanTitle, cleanNzbName) || strings.Contains(nzbName, record.SourceTitle) {
+			return record.DownloadID
+		}
+	}
+	return ""
+}
+
+func (w *Worker) getSeriesID(ctx context.Context, instance *model.ConfigInstance, path string) int64 {
+	w.cacheMu.Lock()
+	defer w.cacheMu.Unlock()
+
+	if w.seriesCache[instance.Name] == nil {
+		w.seriesCache[instance.Name] = make(map[string]int64)
+		client, err := w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+		if err == nil {
+			series, _ := client.GetSeriesContext(ctx, 0)
+			for _, s := range series {
+				w.seriesCache[instance.Name][strings.ToLower(s.Title)] = s.ID
+				w.seriesCache[instance.Name][strings.ToLower(filepath.Base(s.Path))] = s.ID
+			}
+		}
+	}
+
+	// Match by folder name
+	dir := filepath.Base(filepath.Dir(filepath.Dir(path))) // tv/Show/Season 1/file.mkv -> Show
+	if id, ok := w.seriesCache[instance.Name][strings.ToLower(dir)]; ok {
+		return id
+	}
+	
+	// Fallback to parent dir if nested
+	parent := filepath.Base(filepath.Dir(path))
+	if id, ok := w.seriesCache[instance.Name][strings.ToLower(parent)]; ok {
+		return id
+	}
+
+	return 0
+}
+
+func (w *Worker) getMovieID(ctx context.Context, instance *model.ConfigInstance, path string) int64 {
+	w.cacheMu.Lock()
+	defer w.cacheMu.Unlock()
+
+	if w.moviesCache[instance.Name] == nil {
+		w.moviesCache[instance.Name] = make(map[string]int64)
+		client, err := w.clients.GetOrCreateRadarrClient(instance.Name, instance.URL, instance.APIKey)
+		if err == nil {
+			movies, _ := client.GetMovieContext(ctx, &radarr.GetMovie{})
+			for _, m := range movies {
+				w.moviesCache[instance.Name][strings.ToLower(m.Title)] = m.ID
+				w.moviesCache[instance.Name][strings.ToLower(filepath.Base(m.Path))] = m.ID
+			}
+		}
+	}
+
+	dir := filepath.Base(filepath.Dir(path))
+	if id, ok := w.moviesCache[instance.Name][strings.ToLower(dir)]; ok {
+		return id
+	}
+	
+	return 0
+}
+
+func (w *Worker) parseSeasonEpisode(path string) (int, int) {
+	matches := seasonEpisodeRegex.FindStringSubmatch(filepath.Base(path))
+	if len(matches) < 3 {
+		return 0, 0
+	}
+	
+	var s, e int
+	if matches[1] != "" {
+		fmt.Sscanf(matches[1], "%d", &s)
+		fmt.Sscanf(matches[2], "%d", &e)
+	} else {
+		fmt.Sscanf(matches[3], "%d", &s)
+		fmt.Sscanf(matches[4], "%d", &e)
+	}
+	return s, e
 }
 
 // CleanupQueue checks all ARR instances for importPending items with empty folders

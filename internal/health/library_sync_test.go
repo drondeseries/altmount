@@ -59,7 +59,9 @@ func TestSyncLibrary_WorkerPool(t *testing.T) {
 			release_date DATETIME,
 			scheduled_check_at DATETIME,
 			streaming_failure_count INTEGER DEFAULT 0,
-			is_masked BOOLEAN DEFAULT FALSE
+			is_masked BOOLEAN DEFAULT FALSE,
+			download_id TEXT DEFAULT '',
+			priority INTEGER DEFAULT 0
 		);
 
 		CREATE TABLE IF NOT EXISTS system_state (
@@ -126,16 +128,19 @@ func TestFindFilesToDelete_RepairTriggered(t *testing.T) {
 
 	dbRecords := []database.AutomaticHealthCheckRecord{
 		{
-			FilePath: "movie.mkv",
-			Status:   database.HealthStatusHealthy,
+			FilePath:   "movie.mkv",
+			Status:     database.HealthStatusHealthy,
+			DownloadID: "",
 		},
 		{
-			FilePath: "repairing.mkv",
-			Status:   database.HealthStatusRepairTriggered,
+			FilePath:   "repairing.mkv",
+			Status:     database.HealthStatusRepairTriggered,
+			DownloadID: "",
 		},
 		{
-			FilePath: "deleted.mkv",
-			Status:   database.HealthStatusHealthy,
+			FilePath:   "deleted.mkv",
+			Status:     database.HealthStatusHealthy,
+			DownloadID: "",
 		},
 	}
 

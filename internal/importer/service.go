@@ -263,6 +263,11 @@ func (s *Service) AddImportHistory(ctx context.Context, history *database.Import
 	return s.database.Repository.AddImportHistory(ctx, history)
 }
 
+// UpsertImportHistory records or updates a file import in persistent history
+func (s *Service) UpsertImportHistory(ctx context.Context, history *database.ImportHistory) error {
+	return s.database.Repository.UpsertImportHistory(ctx, history)
+}
+
 // Start starts the NZB import service (queue workers only, manual scanning available via API)
 func (s *Service) Start(ctx context.Context) error {
 	s.mu.Lock()
@@ -607,7 +612,7 @@ func sanitizeFilename(name string) string {
 }
 
 // AddToQueue adds a new NZB file to the import queue with optional category and priority
-func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string, downloadID *string) (*database.ImportQueueItem, error) {
+func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string, downloadID *string, instanceName *string) (*database.ImportQueueItem, error) {
 	// Check context before proceeding
 	select {
 	case <-ctx.Done():
@@ -642,6 +647,7 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 		MaxRetries:   3,
 		FileSize:     fileSize,
 		Metadata:     metadata,
+		InstanceName: instanceName,
 		CreatedAt:    time.Now(),
 	}
 
@@ -654,6 +660,27 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 	if err := s.database.Repository.AddToQueue(ctx, item); err != nil {
 		s.log.ErrorContext(ctx, "Failed to add file to queue", "file", item.NzbPath, "error", err)
 		return nil, err
+	}
+
+	// PROACTIVE: Record initial 'grabbed' event in persistent history immediately.
+	// This ensures the DownloadID/GUID link is never lost even if the queue is cleaned up.
+	if downloadID != nil && *downloadID != "" {
+		err := s.database.Repository.UpsertImportHistory(ctx, &database.ImportHistory{
+			DownloadID:   downloadID,
+			NzbID:        &item.ID,
+			NzbName:      filepath.Base(item.NzbPath),
+			FileName:     "", // Not known yet
+			FileSize:     0,
+			VirtualPath:  "", // Not known yet
+			Category:     category,
+			Metadata:     metadata,
+			InstanceName: instanceName,
+			CompletedAt:  time.Now(),
+			Status:       database.ImportStatusGrabbed,
+		})
+		if err != nil {
+			s.log.WarnContext(ctx, "Failed to record 'grabbed' event in history", "download_id", *downloadID, "error", err)
+		}
 	}
 
 	if s.broadcaster != nil {
@@ -704,7 +731,7 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 		}
 	}
 
-	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles, item.Category, item.Metadata)
+	return s.processor.ProcessNzbFile(ctx, item.NzbPath, basePath, int(item.ID), allowedExtensionsOverride, &virtualDir, extractedFiles, item.Category, item.Metadata, item.DownloadID, item.InstanceName)
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
@@ -1385,7 +1412,7 @@ func (s *Service) RegenerateMetadata(ctx context.Context, mountRelativePath stri
 
 	// Re-process the NZB file. We use a dummy queue ID.
 	// This will overwrite the existing .meta file.
-	_, _, err = s.processor.ProcessNzbFile(ctx, foundNzbPath, "", 0, nil, &virtualDir, nil, nil, nil)
+	_, _, err = s.processor.ProcessNzbFile(ctx, foundNzbPath, "", 0, nil, &virtualDir, nil, nil, nil, nil, nil)
 	if err != nil {
 		return fmt.Errorf("failed to re-process NZB: %w", err)
 	}

@@ -102,7 +102,7 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 5. Initialize importer and filesystem
 
-	arrsService := arrs.NewService(configManager.GetConfigGetter(), configManager, repos.UserRepo, repos.MainRepo)
+	arrsService := arrs.NewService(configManager.GetConfigGetter(), configManager, repos.UserRepo, repos.MainRepo, repos.HealthRepo)
 
 	// Create progress broadcaster for WebSocket progress updates
 	progressBroadcaster := progress.NewProgressBroadcaster()

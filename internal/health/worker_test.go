@@ -42,7 +42,8 @@ func setupWorkerTestDB(t *testing.T) (*database.HealthRepository, *sql.DB) {
 			scheduled_check_at DATETIME,
 			priority INTEGER DEFAULT 0,
 			streaming_failure_count INTEGER DEFAULT 0,
-			is_masked BOOLEAN DEFAULT FALSE
+			is_masked BOOLEAN DEFAULT FALSE,
+			download_id TEXT DEFAULT ''
 		);
 	`)
 	require.NoError(t, err)
@@ -85,7 +86,7 @@ func TestAddToHealthCheck_NewFile_ScheduledWithinFiveMinutes(t *testing.T) {
 
 	before := time.Now().UTC()
 	nzbPath := "/nzbs/test.nzb"
-	err := worker.AddToHealthCheck(ctx, "movies/new_movie.mkv", &nzbPath)
+	err := worker.AddToHealthCheck(ctx, "movies/new_movie.mkv", &nzbPath, nil)
 	require.NoError(t, err)
 
 	health, err := repo.GetFileHealth(ctx, "movies/new_movie.mkv")
@@ -110,7 +111,7 @@ func TestAddToHealthCheck_NewFile_NotScheduledInDistantFuture(t *testing.T) {
 	worker := &HealthWorker{healthRepo: repo}
 	ctx := context.Background()
 
-	err := worker.AddToHealthCheck(ctx, "tv/show/ep01.mkv", nil)
+	err := worker.AddToHealthCheck(ctx, "tv/show/ep01.mkv", nil, nil)
 	require.NoError(t, err)
 
 	scheduled := queryScheduledAt(t, db, "tv/show/ep01.mkv")
@@ -130,14 +131,14 @@ func TestAddToHealthCheck_ExistingPendingFile_NoChange(t *testing.T) {
 	ctx := context.Background()
 
 	// Pre-insert a pending file
-	err := repo.UpdateFileHealth(ctx, "movies/existing.mkv", database.HealthStatusPending, nil, nil, nil, false)
+	err := repo.UpdateFileHealth(ctx, "movies/existing.mkv", database.HealthStatusPending, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	healthBefore, err := repo.GetFileHealth(ctx, "movies/existing.mkv")
 	require.NoError(t, err)
 
 	// AddToHealthCheck on already-pending file should succeed without errors
-	err = worker.AddToHealthCheck(ctx, "movies/existing.mkv", nil)
+	err = worker.AddToHealthCheck(ctx, "movies/existing.mkv", nil, nil)
 	require.NoError(t, err)
 
 	healthAfter, err := repo.GetFileHealth(ctx, "movies/existing.mkv")

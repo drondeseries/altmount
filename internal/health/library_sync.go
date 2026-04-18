@@ -1127,6 +1127,7 @@ func (lsw *LibrarySyncWorker) processMetadataForSync(
 		ReleaseDate:      &releaseDateAsTime,
 		ScheduledCheckAt: &scheduledCheckAt,
 		SourceNzbPath:    &fileMeta.SourceNzbPath,
+		DownloadID:       fileMeta.DownloadID,
 		MaxRetries:       cfg.GetMaxRetries(),
 		MaxRepairRetries: cfg.GetMaxRepairRetries(),
 	}, nil

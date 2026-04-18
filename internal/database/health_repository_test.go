@@ -35,7 +35,8 @@ func setupTestDB(t *testing.T) *HealthRepository {
 			scheduled_check_at DATETIME,
 			priority INTEGER DEFAULT 0,
 			streaming_failure_count INTEGER DEFAULT 0,
-			is_masked BOOLEAN DEFAULT FALSE
+			is_masked BOOLEAN DEFAULT FALSE,
+			download_id TEXT DEFAULT ''
 		);
 	`)
 	require.NoError(t, err)
@@ -150,7 +151,7 @@ func TestHealthRepository_DeleteHealthRecordsByPrefix(t *testing.T) {
 	}
 
 	for _, f := range files {
-		err := repo.UpdateFileHealth(ctx, f, HealthStatusHealthy, nil, nil, nil, false)
+		err := repo.UpdateFileHealth(ctx, f, HealthStatusHealthy, nil, nil, nil, nil, false)
 		require.NoError(t, err)
 	}
 
@@ -211,7 +212,7 @@ func TestUpdateFileHealthScheduled_SetsExplicitScheduledAt(t *testing.T) {
 	// Choose a time ~3 minutes in the future (representative of the new short jitter).
 	scheduledAt := time.Now().UTC().Add(3 * time.Minute).Truncate(time.Second)
 
-	err := repo.UpdateFileHealthScheduled(ctx, filePath, HealthStatusPending, nil, nil, nil, false, scheduledAt)
+	err := repo.UpdateFileHealthScheduled(ctx, filePath, HealthStatusPending, nil, nil, nil, nil, false, scheduledAt)
 	require.NoError(t, err)
 
 	got := queryScheduledCheckAt(t, repo, filePath)
@@ -234,12 +235,12 @@ func TestUpdateFileHealthScheduled_UpdatesExistingRecord(t *testing.T) {
 	filePath := "tv/show/ep01.mkv"
 
 	// Insert initial record using the standard method.
-	err := repo.UpdateFileHealth(ctx, filePath, HealthStatusPending, nil, nil, nil, false)
+	err := repo.UpdateFileHealth(ctx, filePath, HealthStatusPending, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	// Now update with a specific scheduled time.
 	future := time.Now().UTC().Add(4 * time.Minute).Truncate(time.Second)
-	err = repo.UpdateFileHealthScheduled(ctx, filePath, HealthStatusPending, nil, nil, nil, false, future)
+	err = repo.UpdateFileHealthScheduled(ctx, filePath, HealthStatusPending, nil, nil, nil, nil, false, future)
 	require.NoError(t, err)
 
 	got := queryScheduledCheckAt(t, repo, filePath)
@@ -265,7 +266,7 @@ func TestRelinkFileByFilename_UpdatesAnyStatus(t *testing.T) {
 	libPath := "/mnt/library/Movies/Inception (2010)/Inception (2010).mkv"
 
 	// 1. Insert a HEALTHY record with no library path (typical for a new download before sync)
-	err := repo.UpdateFileHealth(ctx, oldPath, HealthStatusHealthy, nil, nil, nil, false)
+	err := repo.UpdateFileHealth(ctx, oldPath, HealthStatusHealthy, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	// 2. Perform Relink
@@ -287,7 +288,7 @@ func TestRelinkFileByFilename_UpdatesAnyStatus(t *testing.T) {
 
 	// 4. Verify it ALSO works for corrupted records (classic repair flow)
 	corruptedFile := "Movies/Matrix.mkv"
-	err = repo.UpdateFileHealth(ctx, corruptedFile, HealthStatusCorrupted, nil, nil, nil, false)
+	err = repo.UpdateFileHealth(ctx, corruptedFile, HealthStatusCorrupted, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	relinked, err = repo.RelinkFileByFilename(ctx, "Matrix.mkv", corruptedFile, "/lib/Matrix.mkv")
@@ -306,7 +307,7 @@ func TestAddFileToHealthCheckWithMetadata_StoresLibraryPath(t *testing.T) {
 	sourceNzb := "Dune.nzb"
 
 	// Add the file
-	err := repo.AddFileToHealthCheckWithMetadata(ctx, filePath, &libraryPath, 3, 3, &sourceNzb, HealthPriorityNormal, nil)
+	err := repo.AddFileToHealthCheckWithMetadata(ctx, filePath, &libraryPath, 3, 3, &sourceNzb, nil, HealthPriorityNormal, nil)
 	require.NoError(t, err)
 
 	// Verify it was stored
