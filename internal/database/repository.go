@@ -103,8 +103,8 @@ func (r *Repository) withTransactionMode(ctx context.Context, mode string, fn fu
 func (r *Repository) AddToQueue(ctx context.Context, item *ImportQueueItem) error {
 	// Use UPSERT with immediate lock to prevent conflicts during concurrent inserts
 	query := `
-		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, instance_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT(nzb_path) DO UPDATE SET
 		download_id = COALESCE(excluded.download_id, import_queue.download_id),
 		priority = CASE WHEN excluded.priority < priority THEN excluded.priority ELSE priority END,
@@ -113,12 +113,13 @@ func (r *Repository) AddToQueue(ctx context.Context, item *ImportQueueItem) erro
 		metadata = excluded.metadata,
 		file_size = excluded.file_size,
 		target_path = excluded.target_path,
+		instance_name = COALESCE(excluded.instance_name, import_queue.instance_name),
 		updated_at = datetime('now')
 		WHERE status NOT IN ('processing', 'completed')
 	`
 
 	args := []any{item.DownloadID, item.NzbPath, item.RelativePath, item.Category, item.Priority, item.Status,
-		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath}
+		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath, item.InstanceName}
 
 	if r.dialect.IsPostgres() {
 		err := r.db.QueryRowContext(ctx, query+" RETURNING id", args...).Scan(&item.ID)
@@ -347,6 +348,56 @@ func (r *Repository) GetQueueItemByDownloadID(ctx context.Context, downloadID st
 	}
 
 	return &item, nil
+}
+
+// UpdateDownloadIDByPath updates the download_id and instance_name for a history record by its virtual path
+func (r *Repository) UpdateDownloadIDByPath(ctx context.Context, virtualPath string, downloadID string, instanceName string) error {
+	query := `UPDATE import_history SET download_id = ?, instance_name = ? WHERE virtual_path = ? AND (download_id IS NULL OR download_id = '')`
+	_, err := r.db.ExecContext(ctx, query, downloadID, instanceName, virtualPath)
+	if err != nil {
+		return fmt.Errorf("failed to update history download_id: %w", err)
+	}
+	return nil
+}
+
+// GetHistoryMissingDownloadID retrieves history items that are missing a download_id
+func (r *Repository) GetHistoryMissingDownloadID(ctx context.Context, limit int) ([]*ImportHistory, error) {
+	query := `
+		SELECT id, download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at, status
+		FROM import_history
+		WHERE (download_id IS NULL OR download_id = '')
+		ORDER BY completed_at DESC
+		LIMIT ?
+	`
+	rows, err := r.db.QueryContext(ctx, query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query history missing download_id: %w", err)
+	}
+	defer rows.Close()
+
+	var items []*ImportHistory
+	for rows.Next() {
+		var item ImportHistory
+		err := rows.Scan(
+			&item.ID, &item.DownloadID, &item.NzbID, &item.NzbName, &item.FileName, &item.FileSize,
+			&item.VirtualPath, &item.Category, &item.CompletedAt, &item.Status,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan history missing download_id: %w", err)
+		}
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+// UpdateQueueItemErrorMessageByDownloadID updates the error message for a queue item by its DownloadID
+func (r *Repository) UpdateQueueItemErrorMessageByDownloadID(ctx context.Context, downloadID string, errorMessage string) error {
+	query := `UPDATE import_queue SET error_message = ?, updated_at = datetime('now') WHERE download_id = ?`
+	_, err := r.db.ExecContext(ctx, query, errorMessage, downloadID)
+	if err != nil {
+		return fmt.Errorf("failed to update queue item error message: %w", err)
+	}
+	return nil
 }
 
 // RemoveFromQueueByDownloadID removes an item from the queue by its DownloadID
@@ -1030,15 +1081,58 @@ func (r *Repository) UpdateQueueItemsPriorityBulk(ctx context.Context, ids []int
 	return updated, skipped, nil
 }
 
+// UpsertImportHistory inserts a new history record or updates an existing one based on DownloadID
+func (r *Repository) UpsertImportHistory(ctx context.Context, history *ImportHistory) error {
+	if history.DownloadID == nil || *history.DownloadID == "" {
+		// Fallback to standard insert if no DownloadID is present
+		return r.AddImportHistory(ctx, history)
+	}
+
+	// Try to update existing record by DownloadID first
+	queryUpdate := `
+		UPDATE import_history 
+		SET nzb_id = COALESCE(?, nzb_id),
+		    nzb_name = ?,
+		    file_name = CASE WHEN ? != '' THEN ? ELSE file_name END,
+		    file_size = COALESCE(?, file_size),
+		    virtual_path = CASE WHEN ? != '' THEN ? ELSE virtual_path END,
+		    category = COALESCE(?, category),
+		    metadata = COALESCE(?, metadata),
+		    status = ?,
+		    instance_name = COALESCE(?, instance_name),
+		    completed_at = datetime('now')
+		WHERE download_id = ?
+	`
+	res, err := r.db.ExecContext(ctx, queryUpdate,
+		history.NzbID, history.NzbName, 
+		history.FileName, history.FileName,
+		history.FileSize, 
+		history.VirtualPath, history.VirtualPath,
+		history.Category, history.Metadata, 
+		history.Status, history.InstanceName, *history.DownloadID)
+	
+	if err != nil {
+		return fmt.Errorf("failed to update import history during upsert: %w", err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		return nil
+	}
+
+	// If no rows updated, perform initial insert
+	return r.AddImportHistory(ctx, history)
+}
+
 // AddImportHistory records a successful file import in the persistent history table
 func (r *Repository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
 	query := `
-		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, status, instance_name, metadata, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		history.DownloadID, history.NzbID, history.NzbName, history.FileName, history.FileSize,
-		history.VirtualPath, history.Category)
+		history.VirtualPath, history.Category, history.Status, history.InstanceName, history.Metadata)
 	if err != nil {
 		return fmt.Errorf("failed to add import history: %w", err)
 	}

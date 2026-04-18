@@ -62,5 +62,6 @@ message FileMetadata {
   repeated Par2FileReference par2_files = 13;  // Associated PAR2 repair files
   string nzbdav_id = 14; // ID to maintain compatibility with nzbdav
   repeated NestedSegmentSource nested_sources = 15; // Nested RAR sources (when file is inside inner RAR within outer RAR)
+  string download_id = 16; // Persistent tracking ID (GUID) from ARR applications
 }
   

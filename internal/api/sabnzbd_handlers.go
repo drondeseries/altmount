@@ -96,13 +96,36 @@ func (s *Server) handleSABnzbd(c *fiber.Ctx) error {
 		return s.writeSABnzbdErrorFiber(c, "Authentication required: provide either apikey or ma_username+ma_password")
 	}
 
+	// Identify which ARR instance is making the request
+	var instanceName *string
+	if maUsername != "" {
+		if arrURL, err := url.QueryUnescape(maUsername); err == nil {
+			if inst := s.findARRInstanceByURL(arrURL); inst != nil {
+				instanceName = &inst.Name
+			}
+		}
+	}
+
+	// If instance still not identified, try to guess by category (best effort for apikey auth)
+	if instanceName == nil && s.arrsService != nil {
+		category := c.Query("cat")
+		if category == "" {
+			category = c.FormValue("cat")
+		}
+		if category != "" {
+			if inst := s.guessInstanceByCategory(category); inst != nil {
+				instanceName = &inst.Name
+			}
+		}
+	}
+
 	// Get mode parameter to determine which API method to call
 	mode := c.Query("mode")
 	switch mode {
 	case "addfile":
-		return s.handleSABnzbdAddFile(c)
+		return s.handleSABnzbdAddFile(c, instanceName)
 	case "addurl":
-		return s.handleSABnzbdAddUrl(c)
+		return s.handleSABnzbdAddUrl(c, instanceName)
 	case "queue":
 		return s.handleSABnzbdQueue(c)
 	case "pause":
@@ -303,7 +326,7 @@ func (s *Server) validateARRCredentials(c *fiber.Ctx, maUsername, maPassword str
 }
 
 // handleSABnzbdAddFile handles file upload for NZB files
-func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
+func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx, instanceName *string) error {
 	if c.Method() != "POST" {
 		return s.writeSABnzbdErrorFiber(c, "Method not allowed")
 	}
@@ -391,7 +414,7 @@ func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
 	// Add the file to the processing queue using centralized method
 	completeDir := s.configManager.GetConfig().SABnzbd.CompleteDir
 	priority := s.parseSABnzbdPriority(c.FormValue("priority"))
-	_, err = s.importerService.AddToQueue(c.Context(), tempFile, &completeDir, &validatedCategory, &priority, metadataJSON, &downloadID)
+	_, err = s.importerService.AddToQueue(c.Context(), tempFile, &completeDir, &validatedCategory, &priority, metadataJSON, &downloadID, instanceName)
 	if err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to add to queue")
 	}
@@ -406,7 +429,7 @@ func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
 }
 
 // handleSABnzbdAddUrl handles adding NZB from URL
-func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
+func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx, instanceName *string) error {
 	nzbUrl := c.Query("name")
 
 	if nzbUrl == "" {
@@ -542,7 +565,7 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 		}
 	}
 
-	_, err = s.importerService.AddToQueue(c.Context(), tempFile, &completeDir, &validatedCategory, &priority, metadataJSON, &downloadID)
+	_, err = s.importerService.AddToQueue(c.Context(), tempFile, &completeDir, &validatedCategory, &priority, metadataJSON, &downloadID, instanceName)
 	if err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to add to queue")
 	}
@@ -672,31 +695,17 @@ func (s *Server) handleSABnzbdQueueDelete(c *fiber.Ctx) error {
 	// 1. Try numeric ID
 	id, err := strconv.ParseInt(nzoID, 10, 64)
 	if err == nil {
-		// Delete from queue
+		// Delete from queue only; history is persistent and must NOT be deleted here
 		err = s.queueRepo.RemoveFromQueue(c.Context(), id)
 		if err == nil {
-			// Also remove from history if it existed there (to prevent ghost items)
-			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-			_, _ = s.queueRepo.RemoveFromHistory(c.Context(), id)
-
 			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 		}
 	}
 
 	// 2. Fallback to DownloadID if not found or not numeric
 	if s.queueRepo != nil {
-		// Try to find the item first to get its ID (for history cleanup)
-		item, _ := s.queueRepo.GetQueueItemByDownloadID(c.Context(), nzoID)
-
 		err = s.queueRepo.RemoveFromQueueByDownloadID(c.Context(), nzoID)
 		if err == nil {
-			// Also remove from history by DownloadID
-			_, _ = s.queueRepo.RemoveFromHistoryByDownloadID(c.Context(), nzoID)
-
-			if item != nil {
-				_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), item.ID)
-			}
-
 			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 		}
 	}
@@ -895,47 +904,16 @@ func (s *Server) handleSABnzbdHistoryDelete(c *fiber.Ctx) error {
 	// 1. Try numeric ID
 	id, err := strconv.ParseInt(nzoID, 10, 64)
 	if err == nil {
-		// Delete from queue (history items are still queue items with completed/failed status)
-		err = s.queueRepo.RemoveFromQueue(c.Context(), id)
-		if err == nil {
-			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-			_, _ = s.queueRepo.RemoveFromHistory(c.Context(), id)
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		// If not in active queue, it might be in persistent history
-		// Try by original NzbID first
-		affected, histErr := s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
-		if histErr == nil && affected > 0 {
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		affected, histErr = s.queueRepo.RemoveFromHistory(c.Context(), id)
-		if histErr == nil && affected > 0 {
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
+		// Remove from queue but NOT history; we want persistent GUIDs
+		_ = s.queueRepo.RemoveFromQueue(c.Context(), id)
+		return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 	}
 
 	// 2. Fallback to DownloadID if not found or not numeric
 	if s.queueRepo != nil {
-		// Try to find the item first to get its ID
-		item, _ := s.queueRepo.GetQueueItemByDownloadID(c.Context(), nzoID)
-
-		// Remove from queue and history by DownloadID
+		// Remove from queue only; history is preserved
 		_ = s.queueRepo.RemoveFromQueueByDownloadID(c.Context(), nzoID)
-		affected, err := s.queueRepo.RemoveFromHistoryByDownloadID(c.Context(), nzoID)
-
-		if err == nil && affected > 0 {
-			if item != nil {
-				_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), item.ID)
-			}
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
-
-		// If item was found in queue but not in history, consider it handled
-		if item != nil {
-			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
-		}
+		return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 	}
 
 	return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true}) // Always return true for delete consistency
@@ -1344,6 +1322,23 @@ func (s *Server) findARRInstanceByURL(checkURL string) *arrs.ConfigInstance {
 		normalizedInstance := normalizeURL(instance.URL)
 		if normalizedInstance == normalizedCheck {
 			return instance
+		}
+	}
+
+	return nil
+}
+
+// guessInstanceByCategory attempts to find an ARR instance that matches the given category.
+// This is used as a best-effort identification when the specific instance URL is not provided.
+func (s *Server) guessInstanceByCategory(category string) *arrs.ConfigInstance {
+	if s.arrsService == nil || category == "" {
+		return nil
+	}
+
+	instances := s.arrsService.GetAllInstances()
+	for _, inst := range instances {
+		if strings.EqualFold(inst.Category, category) {
+			return inst
 		}
 	}
 

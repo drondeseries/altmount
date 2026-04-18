@@ -46,6 +46,7 @@ type ImportQueueItem struct {
 	Metadata     *string       `db:"metadata"`    // JSON metadata
 	FileSize     *int64        `db:"file_size"`   // Total size in bytes calculated from segments
 	TargetPath   *string       `db:"target_path"` // Optional forced symlink destination path
+	InstanceName *string       `db:"instance_name"`
 }
 
 // BulkOperationResult represents the result of a bulk queue operation
@@ -108,7 +109,8 @@ type FileHealth struct {
 	Priority         HealthPriority `db:"priority"`           // Priority level for health checks
 	// Failure masking fields
 	StreamingFailureCount int  `db:"streaming_failure_count"`
-	IsMasked              bool `db:"is_masked"`
+	IsMasked              bool           `db:"is_masked"`
+	DownloadID            string         `db:"download_id"`
 }
 
 // User represents a user account in the system
@@ -153,17 +155,28 @@ type ImportHourlyStat struct {
 	UpdatedAt       time.Time `db:"updated_at"`
 }
 
+// ImportStatus represents the status of an import history record
+type ImportStatus string
+
+const (
+	ImportStatusGrabbed   ImportStatus = "grabbed"
+	ImportStatusCompleted ImportStatus = "completed"
+	ImportStatusFailed    ImportStatus = "failed"
+)
+
 // ImportHistory represents a persistent record of a single imported file
 type ImportHistory struct {
-	ID          int64     `db:"id"`
-	DownloadID  *string   `db:"download_id"`
-	NzbID       *int64    `db:"nzb_id"` // Nullable if queue item deleted
-	NzbName     string    `db:"nzb_name"`
-	FileName    string    `db:"file_name"`
-	FileSize    int64     `db:"file_size"`
-	VirtualPath string    `db:"virtual_path"`
-	LibraryPath *string   `db:"library_path"` // Added to show final location from file_health
-	Category    *string   `db:"category"`
-	Metadata    *string   `db:"metadata"`
-	CompletedAt time.Time `db:"completed_at"`
+	ID           int64        `db:"id"`
+	DownloadID   *string      `db:"download_id"`
+	NzbID        *int64       `db:"nzb_id"` // Nullable if queue item deleted
+	NzbName      string       `db:"nzb_name"`
+	FileName     string       `db:"file_name"`
+	FileSize     int64        `db:"file_size"`
+	VirtualPath  string       `db:"virtual_path"`
+	LibraryPath  *string      `db:"library_path"` // Added to show final location from file_health
+	Category     *string      `db:"category"`
+	Metadata     *string      `db:"metadata"`
+	CompletedAt  time.Time    `db:"completed_at"`
+	Status       ImportStatus `db:"status"`
+	InstanceName *string      `db:"instance_name"`
 }

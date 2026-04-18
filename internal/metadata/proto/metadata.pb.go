@@ -358,6 +358,7 @@ type FileMetadata struct {
 	Par2Files     []*Par2FileReference   `protobuf:"bytes,13,rep,name=par2_files,json=par2Files,proto3" json:"par2_files,omitempty"`              // Associated PAR2 repair files
 	NzbdavId      string                 `protobuf:"bytes,14,opt,name=nzbdav_id,json=nzbdavId,proto3" json:"nzbdav_id,omitempty"`                 // ID to maintain compatibility with nzbdav
 	NestedSources []*NestedSegmentSource `protobuf:"bytes,15,rep,name=nested_sources,json=nestedSources,proto3" json:"nested_sources,omitempty"`  // Nested RAR sources (when file is inside inner RAR within outer RAR)
+	DownloadID    string                 `protobuf:"bytes,16,opt,name=download_id,json=downloadId,proto3" json:"download_id,omitempty"`           // Persistent tracking ID (GUID) from ARR applications
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -495,6 +496,13 @@ func (x *FileMetadata) GetNestedSources() []*NestedSegmentSource {
 		return x.NestedSources
 	}
 	return nil
+}
+
+func (x *FileMetadata) GetDownloadID() string {
+	if x != nil {
+		return x.DownloadID
+	}
+	return ""
 }
 
 var File_internal_metadata_proto_metadata_proto protoreflect.FileDescriptor
