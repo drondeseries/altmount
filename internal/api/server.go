@@ -150,13 +150,7 @@ func (s *Server) GetProgressBroadcaster() *progress.ProgressBroadcaster {
 
 // SetupFiberRoutes configures API routes directly on the Fiber app
 func (s *Server) SetupRoutes(app *fiber.App) {
-	// SABnzbd API — protected by API key
-	sabnzbd := app.Group("/sabnzbd")
-	if s.userRepo != nil {
-		sabnzbd.Use(auth.APIKeyMiddleware(s.userRepo))
-	}
-	sabnzbd.Get("", s.handleSABnzbd)
-	sabnzbd.Post("", s.handleSABnzbd)
+	app.Use("/sabnzbd", s.handleSABnzbd)
 
 	// Stremio addon endpoints — key-based auth, no JWT required.
 	// CORS must be open (*) so Stremio can install the addon from any origin.
