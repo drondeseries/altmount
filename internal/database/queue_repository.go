@@ -109,8 +109,8 @@ func (r *QueueRepository) RestartQueueItemsBulk(ctx context.Context, ids []int64
 // AddToQueue adds a new NZB file to the import queue
 func (r *QueueRepository) AddToQueue(ctx context.Context, item *ImportQueueItem) error {
 	query := `
-		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, instance_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT(nzb_path) DO UPDATE SET
 		download_id = COALESCE(excluded.download_id, import_queue.download_id),
 		priority = CASE WHEN excluded.priority < priority THEN excluded.priority ELSE priority END,
@@ -119,6 +119,7 @@ func (r *QueueRepository) AddToQueue(ctx context.Context, item *ImportQueueItem)
 		metadata = excluded.metadata,
 		file_size = excluded.file_size,
 		target_path = excluded.target_path,
+		instance_name = COALESCE(excluded.instance_name, import_queue.instance_name),
 		status = excluded.status,
 		retry_count = 0,
 		started_at = NULL,
@@ -128,7 +129,7 @@ func (r *QueueRepository) AddToQueue(ctx context.Context, item *ImportQueueItem)
 	`
 
 	args := []any{item.DownloadID, item.NzbPath, item.RelativePath, item.Category, item.Priority, item.Status,
-		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath}
+		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath, item.InstanceName}
 
 	if r.dialect.IsPostgres() {
 		err := r.db.QueryRowContext(ctx, query+" RETURNING id", args...).Scan(&item.ID)
@@ -410,22 +411,64 @@ func (r *QueueRepository) GetImportHistory(ctx context.Context, days int) ([]*Im
 // AddImportHistory records a successful file import in the persistent history table
 func (r *QueueRepository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
 	query := `
-		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, metadata, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, metadata, status, instance_name, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		history.DownloadID, history.NzbID, history.NzbName, history.FileName, history.FileSize,
-		history.VirtualPath, history.Category, history.Metadata)
+		history.VirtualPath, history.Category, history.Metadata, history.Status, history.InstanceName)
 	if err != nil {
 		return fmt.Errorf("failed to add import history: %w", err)
 	}
 	return nil
 }
 
+// UpsertImportHistory records or updates a file import in the persistent history table
+func (r *QueueRepository) UpsertImportHistory(ctx context.Context, history *ImportHistory) error {
+	if history.DownloadID == nil || *history.DownloadID == "" {
+		return r.AddImportHistory(ctx, history)
+	}
+
+	// Try to update existing record by DownloadID first
+	queryUpdate := `
+		UPDATE import_history 
+		SET nzb_id = COALESCE(?, nzb_id),
+		    nzb_name = ?,
+		    file_name = CASE WHEN ? != '' THEN ? ELSE file_name END,
+		    file_size = COALESCE(?, file_size),
+		    virtual_path = CASE WHEN ? != '' THEN ? ELSE virtual_path END,
+		    category = COALESCE(?, category),
+		    metadata = COALESCE(?, metadata),
+		    status = ?,
+		    instance_name = COALESCE(?, instance_name),
+		    completed_at = datetime('now')
+		WHERE download_id = ?
+	`
+	res, err := r.db.ExecContext(ctx, queryUpdate,
+		history.NzbID, history.NzbName, 
+		history.FileName, history.FileName,
+		history.FileSize, 
+		history.VirtualPath, history.VirtualPath,
+		history.Category, history.Metadata, 
+		history.Status, history.InstanceName, *history.DownloadID)
+	
+	if err != nil {
+		return fmt.Errorf("failed to update import history during upsert: %w", err)
+	}
+
+	rows, _ := res.RowsAffected()
+	if rows > 0 {
+		return nil
+	}
+
+	// If no rows updated, perform initial insert
+	return r.AddImportHistory(ctx, history)
+}
+
 // ListImportHistory retrieves the last N successful imports from the persistent history
 func (r *QueueRepository) ListImportHistory(ctx context.Context, limit int) ([]*ImportHistory, error) {
 	query := `
-		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.completed_at
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.completed_at, h.status
 		FROM import_history h
 		LEFT JOIN file_health f ON h.virtual_path = f.file_path
 		ORDER BY h.completed_at DESC
@@ -440,7 +483,7 @@ func (r *QueueRepository) ListImportHistory(ctx context.Context, limit int) ([]*
 	var history []*ImportHistory
 	for rows.Next() {
 		var h ImportHistory
-		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.CompletedAt)
+		err := rows.Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.CompletedAt, &h.Status)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan import history: %w", err)
 		}

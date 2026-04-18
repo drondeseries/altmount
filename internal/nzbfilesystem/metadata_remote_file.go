@@ -253,6 +253,7 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string) (bool,
 		AesIv:         fileMeta.AesIv,
 		SegmentData:   fileMeta.SegmentData,
 		NestedSources: fileMeta.NestedSources,
+		DownloadID:    fileMeta.DownloadID,
 	}
 
 	// Create a metadata-based virtual file handle
@@ -786,6 +787,7 @@ type fileHandleMeta struct {
 	AesIv         []byte
 	SegmentData   []*metapb.SegmentData
 	NestedSources []*metapb.NestedSegmentSource
+	DownloadID    string
 }
 
 // MetadataVirtualFile implements afero.File for metadata-backed virtual files
@@ -1773,11 +1775,16 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	}
 
 	// Update database with high priority (scheduled for immediate pick-up by HealthWorker)
+	var downloadID *string
+	if mvf.meta.DownloadID != "" {
+		downloadID = &mvf.meta.DownloadID
+	}
 	if err := mvf.healthRepository.UpdateFileHealthScheduled(ctx,
 		mvf.name,
 		dbStatus,
 		&errorMsg,
 		sourceNzbPath,
+		downloadID,
 		&errorDetails,
 		true, // noRetry=true forces it to be picked up for repair immediately
 		time.Now().UTC(),

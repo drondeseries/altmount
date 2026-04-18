@@ -49,9 +49,11 @@ type NzbDavImporter interface {
 // QueueOperations provides queue manipulation operations
 type QueueOperations interface {
 	// AddToQueue adds an item to the import queue
-	AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string, downloadID *string) (*database.ImportQueueItem, error)
+	AddToQueue(ctx context.Context, filePath string, relativePath *string, category *string, priority *database.QueuePriority, metadata *string, downloadID *string, instanceName *string) (*database.ImportQueueItem, error)
 	// GetQueueStats returns queue statistics
 	GetQueueStats(ctx context.Context) (*database.QueueStats, error)
+	// IsFileInQueue checks if a file is already in the queue
+	IsFileInQueue(ctx context.Context, filePath string) (bool, error)
 }
 
 // SymlinkCreator handles symlink creation for imported files
@@ -143,4 +145,6 @@ type FileSizeCalculator interface {
 type HistoryRecorder interface {
 	// AddImportHistory records a successful file import
 	AddImportHistory(ctx context.Context, history *database.ImportHistory) error
+	// UpsertImportHistory records or updates a file import
+	UpsertImportHistory(ctx context.Context, history *database.ImportHistory) error
 }

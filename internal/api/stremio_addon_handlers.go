@@ -402,7 +402,7 @@ func (s *Server) handleStremioAddonPlay(c *fiber.Ctx) error {
 	case "series":
 		category = "TV"
 	}
-	item, err := s.importerService.AddToQueue(ctx, tempPath, basePath, &category, &priority, nil, nil)
+	item, err := s.importerService.AddToQueue(ctx, tempPath, basePath, &category, &priority, nil, nil, nil)
 	if err != nil {
 		os.Remove(tempPath)
 		slog.ErrorContext(ctx, "Failed to add Prowlarr NZB to queue", "error", err, "title", safeTitle)
