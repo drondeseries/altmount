@@ -929,6 +929,22 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 						}
 					}
 
+					// HARD SAFETY: Never delete the entire mount root or library root
+					cleanFile := filepath.Clean(file)
+					cleanMount := ""
+					if cfg.MountPath != "" {
+						cleanMount = filepath.Clean(cfg.MountPath)
+					}
+					cleanLibDir := ""
+					if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+						cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
+					}
+
+					if cleanFile == cleanMount || cleanFile == cleanLibDir || cleanFile == "/" || cleanFile == "." || cleanFile == "/mnt/usenet-rclone" || cleanFile == "/mnt/altmount-rclone" {
+						slog.WarnContext(ctx, "Nuclear Guard: Blocked attempt to delete protected path in sync", "path", cleanFile)
+						continue
+					}
+
 					err = os.Remove(file)
 					if err != nil {
 						if !os.IsNotExist(err) {
@@ -1148,6 +1164,12 @@ func updateSymlinkForMountChange(
 
 	// Create new target path
 	newTarget := filepath.Join(newMountPath, relativePath)
+
+	// HARD SAFETY: Never delete protected paths
+	cleanSymlink := filepath.Clean(symlinkPath)
+	if cleanSymlink == "/" || cleanSymlink == "." || cleanSymlink == "/mnt/usenet-rclone" || cleanSymlink == "/mnt/altmount-rclone" {
+		return currentTarget, false, fmt.Errorf("safety block: refusing to remove protected symlink path: %s", cleanSymlink)
+	}
 
 	// Remove old symlink
 	if err := os.Remove(symlinkPath); err != nil {
@@ -1578,6 +1600,21 @@ func (lsw *LibrarySyncWorker) removeEmptyDirectories(ctx context.Context) (int, 
 			case <-ctx.Done():
 				return deletedCount, ctx.Err()
 			default:
+			}
+
+			// HARD SAFETY: Never delete protected paths
+			cleanDir := filepath.Clean(dir)
+			cleanMount := ""
+			if cfg.MountPath != "" {
+				cleanMount = filepath.Clean(cfg.MountPath)
+			}
+			cleanLibDir := ""
+			if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+				cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
+			}
+
+			if cleanDir == cleanMount || cleanDir == cleanLibDir || cleanDir == "/" || cleanDir == "." || cleanDir == "/mnt/usenet-rclone" || cleanDir == "/mnt/altmount-rclone" {
+				continue
 			}
 
 			// Try to remove the directory (will fail if not empty)
