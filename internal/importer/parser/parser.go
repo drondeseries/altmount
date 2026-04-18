@@ -827,7 +827,6 @@ func (p *Parser) fallbackGetFileInfos(files []nzbparser.NzbFile) []*fileinfo.Fil
 	return fileInfos
 }
 
-// determineNzbType analyzes the parsed files to determine the NZB type
 func (p *Parser) determineNzbType(files []ParsedFile) NzbType {
 	// Exclude PAR2 files — a single media file + N PAR2 files is still a single-file NZB
 	var mediaFiles []ParsedFile
@@ -843,10 +842,10 @@ func (p *Parser) determineNzbType(files []ParsedFile) NzbType {
 
 	if len(files) == 1 {
 		// Single file NZB
-		if files[0].IsRarArchive {
+		if files[0].IsRarArchive || fileinfo.IsRarFile(files[0].Filename) {
 			return NzbTypeRarArchive
 		}
-		if files[0].Is7zArchive {
+		if files[0].Is7zArchive || fileinfo.Is7zFile(files[0].Filename) {
 			return NzbType7zArchive
 		}
 		return NzbTypeSingleFile
@@ -856,10 +855,10 @@ func (p *Parser) determineNzbType(files []ParsedFile) NzbType {
 	hasRarFiles := false
 	has7zFiles := false
 	for _, file := range files {
-		if file.IsRarArchive {
+		if file.IsRarArchive || fileinfo.IsRarFile(file.Filename) {
 			hasRarFiles = true
 		}
-		if file.Is7zArchive {
+		if file.Is7zArchive || fileinfo.Is7zFile(file.Filename) {
 			has7zFiles = true
 		}
 	}
