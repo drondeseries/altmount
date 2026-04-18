@@ -496,48 +496,76 @@ func (r *Repository) RemoveFromQueueBulk(ctx context.Context, ids []int64) (*Bul
 		return &BulkOperationResult{}, nil
 	}
 
-	// Build placeholders for the IN clause
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
-	}
+	const batchSize = 500
+	var totalDeleted int
+	var totalProcessing int64
 
-	// First, count how many items are currently processing
-	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM import_queue WHERE id IN (%s) AND status = ?`, strings.Join(placeholders, ","))
-	countArgs := append(args, QueueStatusProcessing)
+	// 1. First, count how many items are currently processing (in batches)
+	for i := 0; i < len(ids); i += batchSize {
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
 
-	var processingCount int64
-	err := r.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&processingCount)
-	if err != nil {
-		return nil, fmt.Errorf("failed to count processing items: %w", err)
+		batch := ids[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM import_queue WHERE id IN (%s) AND status = ?`, strings.Join(placeholders, ","))
+		countArgs := append(args, QueueStatusProcessing)
+
+		var processingCount int64
+		err := r.db.QueryRowContext(ctx, countQuery, countArgs...).Scan(&processingCount)
+		if err != nil {
+			return nil, fmt.Errorf("failed to count processing items batch starting at %d: %w", i, err)
+		}
+		totalProcessing += processingCount
 	}
 
 	// If there are processing items, return error
-	if processingCount > 0 {
+	if totalProcessing > 0 {
 		return &BulkOperationResult{
 			DeletedCount:    0,
-			ProcessingCount: int(processingCount),
-		}, fmt.Errorf("cannot delete %d items that are currently being processed", processingCount)
+			ProcessingCount: int(totalProcessing),
+		}, fmt.Errorf("cannot delete %d items that are currently being processed", totalProcessing)
 	}
 
-	// Delete items that are not processing
-	deleteQuery := fmt.Sprintf(`DELETE FROM import_queue WHERE id IN (%s) AND status != ?`, strings.Join(placeholders, ","))
-	deleteArgs := append(args, QueueStatusProcessing)
+	// 2. Delete items that are not processing (in batches)
+	for i := 0; i < len(ids); i += batchSize {
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
 
-	result, err := r.db.ExecContext(ctx, deleteQuery, deleteArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to remove items from queue: %w", err)
-	}
+		batch := ids[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
 
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get rows affected: %w", err)
+		deleteQuery := fmt.Sprintf(`DELETE FROM import_queue WHERE id IN (%s) AND status != ?`, strings.Join(placeholders, ","))
+		deleteArgs := append(args, QueueStatusProcessing)
+
+		result, err := r.db.ExecContext(ctx, deleteQuery, deleteArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to remove items from queue batch starting at %d: %w", i, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("failed to get rows affected: %w", err)
+		}
+		totalDeleted += int(rowsAffected)
 	}
 
 	return &BulkOperationResult{
-		DeletedCount:    int(rowsAffected),
+		DeletedCount:    totalDeleted,
 		ProcessingCount: 0,
 	}, nil
 }
@@ -548,37 +576,48 @@ func (r *Repository) RestartQueueItemsBulk(ctx context.Context, ids []int64) err
 		return nil
 	}
 
-	// Build placeholders for the IN clause
-	placeholders := make([]string, len(ids))
-	args := make([]any, len(ids))
-	for i, id := range ids {
-		placeholders[i] = "?"
-		args[i] = id
+	const batchSize = 500
+	var totalAffected int64
+
+	for i := 0; i < len(ids); i += batchSize {
+		end := i + batchSize
+		if end > len(ids) {
+			end = len(ids)
+		}
+
+		batch := ids[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, id := range batch {
+			placeholders[j] = "?"
+			args[j] = id
+		}
+
+		// Reset items to pending status with cleared retry count and timestamps
+		query := fmt.Sprintf(`
+			UPDATE import_queue 
+			SET status = 'pending',
+				retry_count = 0,
+				error_message = NULL,
+				started_at = NULL,
+				completed_at = NULL,
+				updated_at = datetime('now')
+			WHERE id IN (%s)
+		`, strings.Join(placeholders, ","))
+
+		result, err := r.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to restart queue items batch starting at %d: %w", i, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %w", err)
+		}
+		totalAffected += rowsAffected
 	}
 
-	// Reset items to pending status with cleared retry count and timestamps
-	query := fmt.Sprintf(`
-		UPDATE import_queue 
-		SET status = 'pending',
-		    retry_count = 0,
-		    error_message = NULL,
-		    started_at = NULL,
-		    completed_at = NULL,
-		    updated_at = datetime('now')
-		WHERE id IN (%s)
-	`, strings.Join(placeholders, ","))
-
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to restart queue items: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
+	if totalAffected == 0 {
 		return fmt.Errorf("no queue items found to restart")
 	}
 

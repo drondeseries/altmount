@@ -641,26 +641,59 @@ func (r *HealthRepository) CleanupHealthRecords(ctx context.Context, existingFil
 		return err
 	}
 
-	// Create placeholders for IN clause
-	placeholders := make([]string, len(existingFiles))
-	args := make([]any, len(existingFiles))
-	for i, file := range existingFiles {
-		placeholders[i] = "?"
-		args[i] = file
-	}
-
-	placeholderStr := "?" + strings.Repeat(",?", len(existingFiles)-1)
-	query := fmt.Sprintf(`
-		DELETE FROM file_health 
-		WHERE file_path NOT IN (%s)
-	`, placeholderStr)
-
-	_, err := r.db.ExecContext(ctx, query, args...)
+	// For large libraries, the NOT IN (?) approach fails with "too many SQL variables".
+	// We use a temporary table strategy instead.
+	// We MUST use a transaction to ensure all operations use the same connection,
+	// otherwise the temp table created in one step might not be visible in the next.
+	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {
-		return fmt.Errorf("failed to cleanup health records: %w", err)
+		return fmt.Errorf("failed to begin transaction for cleanup: %w", err)
+	}
+	defer tx.Rollback()
+	
+	// 1. Create temporary table
+	_, err = tx.ExecContext(ctx, "CREATE TEMP TABLE IF NOT EXISTS temp_cleanup_health (file_path TEXT)")
+	if err != nil {
+		return fmt.Errorf("failed to create temp table for cleanup: %w", err)
+	}
+	
+	// 2. Clear temp table (in case it existed)
+	_, err = tx.ExecContext(ctx, "DELETE FROM temp_cleanup_health")
+	if err != nil {
+		return fmt.Errorf("failed to clear temp table for cleanup: %w", err)
 	}
 
-	return nil
+	// 3. Insert existing files into temp table in batches
+	const batchSize = 500
+	for i := 0; i < len(existingFiles); i += batchSize {
+		end := i + batchSize
+		if end > len(existingFiles) {
+			end = len(existingFiles)
+		}
+
+		batch := existingFiles[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, file := range batch {
+			placeholders[j] = "(?)"
+			args[j] = file
+		}
+
+		query := fmt.Sprintf("INSERT INTO temp_cleanup_health (file_path) VALUES %s", strings.Join(placeholders, ","))
+		_, err = tx.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to insert batch into temp cleanup table: %w", err)
+		}
+	}
+
+	// 4. Delete records not in temp table
+	query := "DELETE FROM file_health WHERE file_path NOT IN (SELECT file_path FROM temp_cleanup_health)"
+	_, err = tx.ExecContext(ctx, query)
+	if err != nil {
+		return fmt.Errorf("failed to cleanup health records using temp table: %w", err)
+	}
+
+	return tx.Commit()
 }
 
 // RegisterCorruptedFile adds or updates a file as corrupted and schedules it for immediate check/repair
@@ -925,27 +958,38 @@ func (r *HealthRepository) DeleteHealthRecordsBulk(ctx context.Context, filePath
 		return nil
 	}
 
-	// Build placeholders for the IN clause
-	placeholders := make([]string, len(filePaths))
-	args := make([]any, len(filePaths))
-	for i, path := range filePaths {
-		placeholders[i] = "?"
-		args[i] = strings.TrimPrefix(path, "/")
+	const batchSize = 500
+	var totalAffected int64
+
+	for i := 0; i < len(filePaths); i += batchSize {
+		end := i + batchSize
+		if end > len(filePaths) {
+			end = len(filePaths)
+		}
+
+		batch := filePaths[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, path := range batch {
+			placeholders[j] = "?"
+			args[j] = strings.TrimPrefix(path, "/")
+		}
+
+		query := fmt.Sprintf(`DELETE FROM file_health WHERE file_path IN (%s)`, strings.Join(placeholders, ","))
+
+		result, err := r.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return fmt.Errorf("failed to delete health records batch starting at %d: %w", i, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("failed to get rows affected: %w", err)
+		}
+		totalAffected += rowsAffected
 	}
 
-	query := fmt.Sprintf(`DELETE FROM file_health WHERE file_path IN (%s)`, strings.Join(placeholders, ","))
-
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return fmt.Errorf("failed to delete health records: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	if rowsAffected == 0 {
+	if totalAffected == 0 {
 		return fmt.Errorf("no health records found to delete")
 	}
 
@@ -958,38 +1002,49 @@ func (r *HealthRepository) ResetHealthChecksBulk(ctx context.Context, filePaths 
 		return 0, nil
 	}
 
-	// Build placeholders for the IN clause; prepend the status value as first arg
-	placeholders := make([]string, len(filePaths))
-	args := make([]any, 0, len(filePaths)+1)
-	args = append(args, string(HealthStatusPending))
-	for i, path := range filePaths {
-		placeholders[i] = "?"
-		args = append(args, path)
+	const batchSize = 500
+	var totalAffected int
+
+	for i := 0; i < len(filePaths); i += batchSize {
+		end := i + batchSize
+		if end > len(filePaths) {
+			end = len(filePaths)
+		}
+
+		batch := filePaths[i:end]
+		placeholders := make([]string, 0, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, string(HealthStatusPending))
+		for _, path := range batch {
+			placeholders = append(placeholders, "?")
+			args = append(args, path)
+		}
+
+		query := fmt.Sprintf(`
+			UPDATE file_health
+			SET status = ?,
+				retry_count = 0,
+				repair_retry_count = 0,
+				last_error = NULL,
+				error_details = NULL,
+				updated_at = datetime('now'),
+				scheduled_check_at = datetime('now')
+			WHERE file_path IN (%s)
+		`, strings.Join(placeholders, ","))
+
+		result, err := r.db.ExecContext(ctx, query, args...)
+		if err != nil {
+			return totalAffected, fmt.Errorf("failed to reset health records batch starting at %d: %w", i, err)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return totalAffected, fmt.Errorf("failed to get rows affected: %w", err)
+		}
+		totalAffected += int(rowsAffected)
 	}
 
-	query := fmt.Sprintf(`
-		UPDATE file_health
-		SET status = ?,
-		    retry_count = 0,
-		    repair_retry_count = 0,
-		    last_error = NULL,
-		    error_details = NULL,
-		    updated_at = datetime('now'),
-			scheduled_check_at = datetime('now')
-		WHERE file_path IN (%s)
-	`, strings.Join(placeholders, ","))
-
-	result, err := r.db.ExecContext(ctx, query, args...)
-	if err != nil {
-		return 0, fmt.Errorf("failed to reset health records: %w", err)
-	}
-
-	rowsAffected, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("failed to get rows affected: %w", err)
-	}
-
-	return int(rowsAffected), nil
+	return totalAffected, nil
 }
 
 // ResetAllHealthChecks resets all health records to pending status
@@ -1715,46 +1770,58 @@ func (r *HealthRepository) GetFilesByPaths(ctx context.Context, filePaths []stri
 		return nil, nil
 	}
 
-	// Build placeholders for the IN clause
-	placeholders := make([]string, len(filePaths))
-	args := make([]any, len(filePaths))
-	for i, path := range filePaths {
-		placeholders[i] = "?"
-		args[i] = strings.TrimPrefix(path, "/")
-	}
+	const batchSize = 500
+	var allFiles []*FileHealth
 
-	query := fmt.Sprintf(`
-		SELECT id, file_path, library_path, status, last_checked, last_error, retry_count, max_retries,
-		       repair_retry_count, max_repair_retries, source_nzb_path,
-		       error_details, created_at, updated_at, release_date, priority, download_id
-		FROM file_health
-		WHERE file_path IN (%s)
-		ORDER BY file_path ASC
-	`, strings.Join(placeholders, ","))
-
-	rows, err := r.db.QueryContext(ctx, query, args...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query files by paths: %w", err)
-	}
-	defer rows.Close()
-
-	var files []*FileHealth
-	for rows.Next() {
-		var health FileHealth
-		err := rows.Scan(
-			&health.ID, &health.FilePath, &health.LibraryPath, &health.Status, &health.LastChecked,
-			&health.LastError, &health.RetryCount, &health.MaxRetries,
-			&health.RepairRetryCount, &health.MaxRepairRetries, &health.SourceNzbPath,
-			&health.ErrorDetails, &health.CreatedAt, &health.UpdatedAt, &health.ReleaseDate, &health.Priority,
-			&health.DownloadID,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan file health: %w", err)
+	for i := 0; i < len(filePaths); i += batchSize {
+		end := i + batchSize
+		if end > len(filePaths) {
+			end = len(filePaths)
 		}
-		files = append(files, &health)
+
+		batch := filePaths[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, len(batch))
+		for j, path := range batch {
+			placeholders[j] = "?"
+			args[j] = strings.TrimPrefix(path, "/")
+		}
+
+		query := fmt.Sprintf(`
+			SELECT id, file_path, library_path, status, last_checked, last_error, retry_count, max_retries,
+				   repair_retry_count, max_repair_retries, source_nzb_path,
+				   error_details, created_at, updated_at, release_date, priority, download_id
+			FROM file_health
+			WHERE file_path IN (%s)
+			ORDER BY file_path ASC
+		`, strings.Join(placeholders, ","))
+
+		rows, err := r.db.QueryContext(ctx, query, args...)
+		if err != nil {
+			return nil, fmt.Errorf("failed to query files by paths batch starting at %d: %w", i, err)
+		}
+		defer rows.Close()
+
+		for rows.Next() {
+			var health FileHealth
+			err := rows.Scan(
+				&health.ID, &health.FilePath, &health.LibraryPath, &health.Status, &health.LastChecked,
+				&health.LastError, &health.RetryCount, &health.MaxRetries,
+				&health.RepairRetryCount, &health.MaxRepairRetries, &health.SourceNzbPath,
+				&health.ErrorDetails, &health.CreatedAt, &health.UpdatedAt, &health.ReleaseDate, &health.Priority,
+				&health.DownloadID,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("failed to scan file health: %w", err)
+			}
+			allFiles = append(allFiles, &health)
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("error iterating rows in batch starting at %d: %w", i, err)
+		}
 	}
 
-	return files, nil
+	return allFiles, nil
 }
 
 // GetFilesForLibrarySync returns all health records to verify their physical presence in the library

@@ -150,7 +150,13 @@ func (s *Server) GetProgressBroadcaster() *progress.ProgressBroadcaster {
 
 // SetupFiberRoutes configures API routes directly on the Fiber app
 func (s *Server) SetupRoutes(app *fiber.App) {
-	app.Use("/sabnzbd", s.handleSABnzbd)
+	// SABnzbd API — protected by API key
+	sabnzbd := app.Group("/sabnzbd")
+	if s.userRepo != nil {
+		sabnzbd.Use(auth.APIKeyMiddleware(s.userRepo))
+	}
+	sabnzbd.Get("", s.handleSABnzbd)
+	sabnzbd.Post("", s.handleSABnzbd)
 
 	// Stremio addon endpoints — key-based auth, no JWT required.
 	// CORS must be open (*) so Stremio can install the addon from any origin.
@@ -165,10 +171,16 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 
 	api := app.Group(s.config.Prefix)
 
-	// Public endpoints (authentication handled inside or not required)
-	api.Post("/import/file", s.handleManualImportFile)
-	api.Post("/arrs/webhook", s.handleArrsWebhook)
-	api.Post("/nzb/streams", s.handleNzbStreams)
+	// Public endpoints (now protected by API key middleware where appropriate)
+	if s.userRepo != nil {
+		api.Post("/import/file", auth.APIKeyMiddleware(s.userRepo), s.handleManualImportFile)
+		api.Post("/arrs/webhook", auth.APIKeyMiddleware(s.userRepo), s.handleArrsWebhook)
+		api.Post("/nzb/streams", auth.APIKeyMiddleware(s.userRepo), s.handleNzbStreams)
+	} else {
+		api.Post("/import/file", s.handleManualImportFile)
+		api.Post("/arrs/webhook", s.handleArrsWebhook)
+		api.Post("/nzb/streams", s.handleNzbStreams)
+	}
 
 	cfg := s.configManager.GetConfig()
 
