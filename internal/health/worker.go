@@ -902,11 +902,28 @@ func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
 // no longer tracked by ARR (zombie or orphan). Errors are logged but not returned because
 // cleanup is best-effort.
 func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.FileHealth) {
+	cfg := hw.configGetter()
+
 	// Delete library symlink/STRM if it exists
 	if item.LibraryPath != nil && *item.LibraryPath != "" {
-		if err := os.Remove(*item.LibraryPath); err != nil && !os.IsNotExist(err) {
-			slog.ErrorContext(ctx, "Failed to delete library file during zombie cleanup",
-				"path", *item.LibraryPath, "error", err)
+		cleanLibPath := filepath.Clean(*item.LibraryPath)
+		cleanMount := ""
+		if cfg.MountPath != "" {
+			cleanMount = filepath.Clean(cfg.MountPath)
+		}
+		cleanLibDir := ""
+		if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+			cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
+		}
+
+		// Safety check: Never delete the entire mount root or library root
+		if cleanLibPath != cleanMount && cleanLibPath != cleanLibDir && cleanLibPath != "." && cleanLibPath != "/" {
+			if err := os.Remove(*item.LibraryPath); err != nil && !os.IsNotExist(err) {
+				slog.ErrorContext(ctx, "Failed to delete library file during zombie cleanup",
+					"path", *item.LibraryPath, "error", err)
+			}
+		} else {
+			slog.WarnContext(ctx, "Refusing to delete library path that matches root directory", "path", *item.LibraryPath)
 		}
 	}
 
@@ -914,7 +931,6 @@ func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.
 		slog.ErrorContext(ctx, "Failed to delete health record during cleanup", "file_path", item.FilePath, "error", delErr)
 	}
 
-	cfg := hw.configGetter()
 	relativePath := strings.TrimPrefix(item.FilePath, cfg.MountPath)
 	relativePath = strings.TrimPrefix(relativePath, "/")
 

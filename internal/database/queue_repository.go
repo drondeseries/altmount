@@ -886,3 +886,51 @@ func (r *QueueRepository) ClearImportHistorySince(ctx context.Context, since tim
 	// as strict rolling 24h will naturally age out the data.
 	return nil
 }
+
+// GetHistoryByDownloadID retrieves a history record by its DownloadID
+func (r *QueueRepository) GetHistoryByDownloadID(ctx context.Context, downloadID string) (*ImportHistory, error) {
+	query := `
+		SELECT id, download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, metadata, status, instance_name, completed_at
+		FROM import_history WHERE download_id = ? LIMIT 1
+	`
+	var h ImportHistory
+	err := r.db.QueryRowContext(ctx, query, downloadID).Scan(
+		&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.Category, &h.Metadata, &h.Status, &h.InstanceName, &h.CompletedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get history by download ID: %w", err)
+	}
+	return &h, nil
+}
+
+// RemoveFromHistoryByDownloadID deletes a history record by its DownloadID
+func (r *QueueRepository) RemoveFromHistoryByDownloadID(ctx context.Context, downloadID string) (int64, error) {
+	query := `DELETE FROM import_history WHERE download_id = ?`
+	res, err := r.db.ExecContext(ctx, query, downloadID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to remove from history by download ID: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// RemoveFromHistoryByNzbID deletes a history record by its NZB ID
+func (r *QueueRepository) RemoveFromHistoryByNzbID(ctx context.Context, nzbID int64) (int64, error) {
+	query := `DELETE FROM import_history WHERE nzb_id = ?`
+	res, err := r.db.ExecContext(ctx, query, nzbID)
+	if err != nil {
+		return 0, fmt.Errorf("failed to remove from history by nzb ID: %w", err)
+	}
+	return res.RowsAffected()
+}
+
+// RemoveFromHistory deletes a history record by its ID
+func (r *QueueRepository) RemoveFromHistory(ctx context.Context, id int64) (int64, error) {
+	query := `DELETE FROM import_history WHERE id = ?`
+	res, err := r.db.ExecContext(ctx, query, id)
+	if err != nil {
+		return 0, fmt.Errorf("failed to remove from history by ID: %w", err)
+	}
+	return res.RowsAffected()
+}

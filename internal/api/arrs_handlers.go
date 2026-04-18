@@ -86,13 +86,39 @@ func (df *ArrsDeletedFiles) UnmarshalJSON(data []byte) error {
 // handleArrsWebhook handles webhooks from Radarr/Sonarr/Lidarr/Readarr/Whisparr
 //
 //	@Summary		ARR webhook receiver
-//	@Description	Receives file-import webhook events from ARR instances and triggers health checks. Authenticated via API key query parameter or header.
+//	@Description	Receives file-import webhook events from ARR instances and triggers health checks. Authenticated via API key query parameter.
 //	@Tags			ARRs
 //	@Accept			json
 //	@Produce		json
+//	@Param			apikey	query		string				true	"AltMount API key"
+//	@Param			body	body		ArrsWebhookRequest	true	"Webhook payload"
+//	@Success		200		{object}	APIResponse
+//	@Failure		401		{object}	APIResponse
 //	@Security		ApiKeyAuth
 //	@Router			/arrs/webhook [post]
 func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
+	// Check for API key authentication
+	// Try query param first, then header
+	apiKey := c.Query("apikey")
+	if apiKey == "" {
+		apiKey = c.Get("X-Api-Key")
+	}
+
+	if apiKey == "" {
+		return c.Status(401).JSON(fiber.Map{
+			"success": false,
+			"message": "API key required",
+		})
+	}
+
+	// Validate API key
+	if !s.validateAPIKey(c, apiKey) {
+		return c.Status(401).JSON(fiber.Map{
+			"success": false,
+			"message": "Invalid API key",
+		})
+	}
+
 	if s.arrsService == nil {
 		slog.ErrorContext(c.Context(), "Arrs service is not available for webhook")
 		return RespondServiceUnavailable(c, "Arrs not available", "")
@@ -161,7 +187,7 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 				filesToDelete = append(filesToDelete, deleted.Path)
 			}
 		}
-	case "MovieDelete", "ArtistDelete", "AuthorDelete", "AlbumDelete":
+	case "MovieDelete", "ArtistDelete", "AuthorDelete":
 		if req.Movie.FolderPath != "" {
 			dirsToDelete = append(dirsToDelete, req.Movie.FolderPath)
 		} else if req.Artist.Path != "" {
@@ -173,13 +199,13 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 		if req.Series.Path != "" {
 			dirsToDelete = append(dirsToDelete, req.Series.Path)
 		}
-	case "MovieFileDelete", "EpisodeFileDelete", "BookFileDelete", "AlbumFileDelete":
+	case "MovieFileDelete":
 		if req.MovieFile.Path != "" {
 			filesToDelete = append(filesToDelete, req.MovieFile.Path)
-		} else if req.EpisodeFile.Path != "" {
+		}
+	case "EpisodeFileDelete":
+		if req.EpisodeFile.Path != "" {
 			filesToDelete = append(filesToDelete, req.EpisodeFile.Path)
-		} else if req.FilePath != "" {
-			filesToDelete = append(filesToDelete, req.FilePath)
 		}
 	default:
 		slog.DebugContext(c.Context(), "Ignoring unhandled webhook event", "event_type", req.EventType)

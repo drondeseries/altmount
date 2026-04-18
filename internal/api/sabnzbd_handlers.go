@@ -904,15 +904,23 @@ func (s *Server) handleSABnzbdHistoryDelete(c *fiber.Ctx) error {
 	// 1. Try numeric ID
 	id, err := strconv.ParseInt(nzoID, 10, 64)
 	if err == nil {
-		// Remove from queue but NOT history; we want persistent GUIDs
-		_ = s.queueRepo.RemoveFromQueue(c.Context(), id)
-		return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
+		// Delete from queue (history items are still queue items with completed/failed status)
+		err = s.queueRepo.RemoveFromQueue(c.Context(), id)
+		if err == nil {
+			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), id)
+			_, _ = s.queueRepo.RemoveFromHistory(c.Context(), id)
+			return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
+		}
 	}
 
 	// 2. Fallback to DownloadID if not found or not numeric
 	if s.queueRepo != nil {
-		// Remove from queue only; history is preserved
-		_ = s.queueRepo.RemoveFromQueueByDownloadID(c.Context(), nzoID)
+		history, _ := s.queueRepo.GetImportHistoryByDownloadID(c.Context(), nzoID)
+		if history != nil && history.NzbID != nil {
+			_ = s.queueRepo.RemoveFromQueue(c.Context(), *history.NzbID)
+			_, _ = s.queueRepo.RemoveFromHistoryByNzbID(c.Context(), *history.NzbID)
+		}
+		_, _ = s.queueRepo.RemoveFromHistoryByDownloadID(c.Context(), nzoID)
 		return s.writeSABnzbdResponseFiber(c, SABnzbdDeleteResponse{Status: true})
 	}
 
