@@ -23,6 +23,7 @@ import (
 	"github.com/javi11/altmount/internal/pool"
 	"github.com/javi11/altmount/internal/progress"
 	"github.com/javi11/altmount/internal/rclone"
+	"github.com/javi11/altmount/internal/updater"
 	"github.com/javi11/altmount/internal/version"
 	"github.com/javi11/altmount/pkg/rclonecli"
 )
@@ -63,6 +64,8 @@ type Server struct {
 	fuseManager         *FuseManager
 	cacheSource         *segcache.Source
 	logFilePath         string
+	migrationRepo       *database.ImportMigrationRepository
+	updater             updater.Updater
 	ready               atomic.Bool
 }
 
@@ -108,6 +111,7 @@ func NewServer(
 		streamTracker:       streamTracker,
 		cacheSource:         cacheSource,
 		fuseManager:         NewFuseManager(newMountFactory(nzbFilesystem, configManager, streamTracker)),
+		updater:             updater.Default(),
 	}
 
 	return server
@@ -118,6 +122,12 @@ func (s *Server) SetHealthWorker(healthWorker *health.HealthWorker) {
 	s.healthWorker = healthWorker
 }
 
+// SetUpdater overrides the binary updater used for self-update operations.
+// Primarily intended for tests that need to substitute a fake implementation.
+func (s *Server) SetUpdater(u updater.Updater) {
+	s.updater = u
+}
+
 // SetLibrarySyncWorker sets the library sync worker reference for the server
 func (s *Server) SetLibrarySyncWorker(librarySyncWorker *health.LibrarySyncWorker) {
 	s.librarySyncWorker = librarySyncWorker
@@ -126,6 +136,11 @@ func (s *Server) SetLibrarySyncWorker(librarySyncWorker *health.LibrarySyncWorke
 // SetLogFilePath sets the path to the JSON log file used by the logs endpoints.
 func (s *Server) SetLogFilePath(path string) {
 	s.logFilePath = path
+}
+
+// SetMigrationRepo sets the migration repository used by the migrate-symlinks endpoint.
+func (s *Server) SetMigrationRepo(repo *database.ImportMigrationRepository) {
+	s.migrationRepo = repo
 }
 
 // SetReady sets the server as ready to accept requests
@@ -222,6 +237,9 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Post("/import/nzbdav/reset", s.handleResetNzbdavImportStatus)
 	api.Get("/import/nzbdav/status", s.handleGetNzbdavImportStatus)
 	api.Delete("/import/nzbdav", s.handleCancelNzbdavImport)
+	api.Delete("/import/nzbdav/pending-migrations", s.handleClearPendingNzbdavMigrations)
+	api.Delete("/import/nzbdav/migrations", s.handleClearAllNzbdavMigrations)
+	api.Post("/import/nzbdav/migrate-symlinks", s.handleMigrateNzbdavSymlinks)
 
 	// Queue endpoints
 	api.Get("/queue", s.handleListQueue)
