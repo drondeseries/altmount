@@ -23,14 +23,16 @@ func CalculateVirtualDirectory(nzbPath, relativePath string) string {
 
 	relPath, err := filepath.Rel(relativePath, nzbPath)
 	if err != nil || strings.HasPrefix(relPath, "..") {
-		// If nzbPath is not inside relativePath, we cannot derive a valid relative virtual path.
-		// Return root as a safe default instead of potentially returning a host-absolute path.
-		return "/"
+		if strings.HasPrefix(relativePath, "/") {
+			return filepath.Clean(relativePath)
+		}
+		return "/" + strings.ReplaceAll(relativePath, string(filepath.Separator), "/")
 	}
 
 	relDir := filepath.Dir(relPath)
 	if relDir == "." || relDir == "" {
 		// If the file is at the root, return root
+		// The processor will handle creating a folder if needed (e.g. for archives or multi-file NZBs)
 		return "/"
 	}
 

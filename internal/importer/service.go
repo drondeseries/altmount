@@ -742,19 +742,6 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 }
 
 func (s *Service) calculateProcessVirtualDir(item *database.ImportQueueItem, basePath *string) string {
-	// Sanitize basePath to strip any absolute path prefix that might have leaked from temp dirs
-	cleanBase := *basePath
-	// Strip common temp upload prefixes
-	tempUploadDir := filepath.Join(os.TempDir(), "altmount-uploads")
-	if strings.HasPrefix(cleanBase, tempUploadDir) {
-		cleanBase = strings.TrimPrefix(cleanBase, tempUploadDir)
-	}
-	// Ensure we are not dealing with a hardcoded absolute path
-	if strings.HasPrefix(cleanBase, "/") {
-		cleanBase = filepath.Base(cleanBase)
-	}
-	*basePath = cleanBase
-
 	// Calculate initial virtual directory from physical/relative path
 	virtualDir := filesystem.CalculateVirtualDirectory(item.NzbPath, *basePath)
 
