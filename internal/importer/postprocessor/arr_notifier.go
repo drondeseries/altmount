@@ -3,12 +3,14 @@ package postprocessor
 import (
 	"context"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
 	"github.com/javi11/altmount/internal/arrs"
 	"github.com/javi11/altmount/internal/config"
 	"github.com/javi11/altmount/internal/database"
+	"github.com/javi11/altmount/internal/utils"
 )
 
 // NotifyARR notifies ARR applications about imported content
@@ -50,8 +52,18 @@ func (c *Coordinator) notifyARRWith(ctx context.Context, arrsService *arrs.Servi
 		basePath = cfg.MountPath
 	}
 
-	// 1. Get the internal relative path (relative to FUSE mount)
-	relPath := strings.TrimPrefix(resultingPath, "/")
+	// 1. Get the internal relative path by stripping any known base directories
+	baseDirs := []string{}
+	if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+		baseDirs = append(baseDirs, *cfg.Import.ImportDir)
+	}
+	if cfg.MountPath != "" {
+		baseDirs = append(baseDirs, cfg.MountPath)
+	}
+	baseDirs = append(baseDirs, filepath.Join(os.TempDir(), "altmount-uploads"))
+	baseDirs = append(baseDirs, "/tmp/altmount-uploads")
+
+	relPath := utils.GetRelativePath(resultingPath, baseDirs...)
 
 	// 2. Strip any existing /complete or /category prefix from the internal path to start clean
 	category := ""
@@ -74,6 +86,7 @@ func (c *Coordinator) notifyARRWith(ctx context.Context, arrsService *arrs.Servi
 			relPath = ""
 		}
 	}
+
 
 	// 3. Build the clean path using the determined base
 	pathParts := []string{basePath}

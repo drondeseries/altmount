@@ -10,18 +10,20 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sync/singleflight"
 	"github.com/javi11/altmount/internal/arrs/clients"
 	"github.com/javi11/altmount/internal/arrs/data"
 	"github.com/javi11/altmount/internal/arrs/instances"
 	"github.com/javi11/altmount/internal/arrs/model"
 	"github.com/javi11/altmount/internal/config"
+	"github.com/javi11/altmount/internal/utils"
 	"golift.io/starr"
 	"golift.io/starr/lidarr"
 	"golift.io/starr/radarr"
 	"golift.io/starr/readarr"
 	"golift.io/starr/sonarr"
-	)
+	"golang.org/x/sync/singleflight"
+	"os"
+)
 
 type Manager struct {
 	configGetter config.ConfigGetter
@@ -62,13 +64,35 @@ func (m *Manager) findInstanceForFilePath(ctx context.Context, filePath string, 
 	// Strategy 2: Category Match - Check if file is in the staging/complete folder
 	cfg := m.configGetter()
 	if cfg.SABnzbd.CompleteDir != "" {
-		// Normalize completeDir to a segment like "/complete/"
 		completeDir := strings.Trim(filepath.ToSlash(cfg.SABnzbd.CompleteDir), "/")
-		completeSegment := "/" + completeDir + "/"
 		normalizedPath := filepath.ToSlash(filePath)
 
-		// Check if path contains the complete directory as a segment
-		if _, after, ok := strings.Cut(normalizedPath, completeSegment); ok {
+		var after string
+		var found bool
+
+		if completeDir != "" {
+			completeSegment := "/" + completeDir + "/"
+			_, after, found = strings.Cut(normalizedPath, completeSegment)
+		} else {
+			// If completeDir is "/", the complete directory is root, so category is at the root of a managed dir or FUSE mount
+			// Let's try to find category by checking managed directories/mount prefixes
+			var baseDirs []string
+			if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+				baseDirs = append(baseDirs, *cfg.Import.ImportDir)
+			}
+			if cfg.MountPath != "" {
+				baseDirs = append(baseDirs, cfg.MountPath)
+			}
+			baseDirs = append(baseDirs, filepath.Join(os.TempDir(), "altmount-uploads"))
+			baseDirs = append(baseDirs, "/tmp/altmount-uploads")
+
+			after = utils.GetRelativePath(filePath, baseDirs...)
+			if after != "" {
+				found = true
+			}
+		}
+
+		if found {
 			// Extract everything after the complete directory segment (e.g., "tv/show/file.mkv")
 			afterPrefix := after
 			parts := strings.Split(afterPrefix, "/")

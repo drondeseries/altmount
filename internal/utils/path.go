@@ -169,3 +169,42 @@ func CheckFileDirectoryWritable(filePath string, fileType string) error {
 
 	return nil
 }
+
+// GetRelativePath strips the best-matching base directory from the given target path.
+// It normalizes path separators to '/' and returns a slash-separated relative path.
+func GetRelativePath(targetPath string, baseDirs ...string) string {
+	normalizedTarget := filepath.ToSlash(targetPath)
+
+	// Collect clean, non-empty base directories
+	var prefixes []string
+	for _, base := range baseDirs {
+		baseClean := strings.TrimSuffix(filepath.ToSlash(base), "/")
+		if baseClean != "" {
+			prefixes = append(prefixes, baseClean)
+		}
+	}
+
+	// Find the longest prefix that matches the target path
+	var bestPrefix string
+	for _, p := range prefixes {
+		if strings.HasPrefix(normalizedTarget, p+"/") {
+			if len(p) > len(bestPrefix) {
+				bestPrefix = p
+			}
+		} else if normalizedTarget == p {
+			if len(p) > len(bestPrefix) {
+				bestPrefix = p
+			}
+		}
+	}
+
+	var relPath string
+	if bestPrefix != "" {
+		relPath = strings.TrimPrefix(normalizedTarget, bestPrefix)
+	} else {
+		relPath = normalizedTarget
+	}
+
+	return strings.TrimPrefix(relPath, "/")
+}
+

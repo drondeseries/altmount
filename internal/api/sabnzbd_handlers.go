@@ -1462,8 +1462,18 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 		category = *item.Category
 	}
 
-	// 1. Get the internal relative path (relative to FUSE mount)
-	relPath := strings.TrimPrefix(storagePath, "/")
+	// 1. Get the internal relative path by stripping any known base directories
+	baseDirs := []string{}
+	if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+		baseDirs = append(baseDirs, *cfg.Import.ImportDir)
+	}
+	if cfg.MountPath != "" {
+		baseDirs = append(baseDirs, cfg.MountPath)
+	}
+	baseDirs = append(baseDirs, filepath.Join(os.TempDir(), "altmount-uploads"))
+	baseDirs = append(baseDirs, "/tmp/altmount-uploads")
+
+	relPath := apputils.GetRelativePath(storagePath, baseDirs...)
 
 	// 2. Strip any existing /complete or /category prefix from the internal path to start clean
 	if cfg.SABnzbd.CompleteDir != "" {
@@ -1479,6 +1489,7 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	} else if relPath == category {
 		relPath = ""
 	}
+
 
 	// 3. Determine the base path for reporting
 	// For NONE, use MountPath. For others, use ImportDir.
