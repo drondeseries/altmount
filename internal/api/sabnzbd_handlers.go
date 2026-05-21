@@ -1456,6 +1456,12 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	cfg := s.configManager.GetConfig()
 	storagePath := *item.StoragePath
 
+	// Sanitize storagePath: strip host-temporary prefixes if present
+	tempUploadDir := filepath.Join(os.TempDir(), "altmount-uploads")
+	if strings.HasPrefix(storagePath, tempUploadDir) {
+		storagePath = strings.TrimPrefix(storagePath, tempUploadDir)
+	}
+
 	// Determine category folder
 	category := config.DefaultCategoryName
 	if item.Category != nil && *item.Category != "" {
@@ -1481,7 +1487,6 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	}
 
 	// 3. Determine the base path for reporting
-	// For NONE, use MountPath. For others, use ImportDir.
 	finalBasePath := cfg.MountPath
 	if cfg.Import.ImportStrategy != config.ImportStrategyNone {
 		if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
@@ -1495,7 +1500,10 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	if cfg.SABnzbd.CompleteDir != "" {
 		pathParts = append(pathParts, strings.Trim(cfg.SABnzbd.CompleteDir, "/"))
 	}
-	pathParts = append(pathParts, category)
+	// Avoid double-prefixing category if it's already in finalBasePath
+	if !strings.HasSuffix(filepath.Join(pathParts...), category) {
+		pathParts = append(pathParts, category)
+	}
 	pathParts = append(pathParts, relPath)
 
 	fullStoragePath := filepath.Join(pathParts...)
