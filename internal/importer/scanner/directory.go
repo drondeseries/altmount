@@ -191,7 +191,13 @@ func (d *DirectoryScanner) performScan(ctx context.Context, scanPath string) {
 			return nil
 		}
 
-		if err := d.queueAdder.AddToQueue(ctx, path, &scanPath, nil); err != nil {
+		// Calculate path relative to the scan root for accurate queue mapping
+		relPath, relErr := filepath.Rel(scanPath, path)
+		if relErr != nil {
+			relPath = path // Fallback if rel fails, though it shouldn't
+		}
+
+		if err := d.queueAdder.AddToQueue(ctx, path, &relPath, nil); err != nil {
 			d.log.ErrorContext(ctx, "Failed to add file to queue during scan", "file", path, "error", err)
 		}
 
