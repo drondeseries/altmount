@@ -101,7 +101,7 @@ func TestFindInstanceForFilePath_CategoryMatch(t *testing.T) {
 			}
 
 			instMgr := instances.NewManager(configGetter, nil)
-			clientMgr := clients.NewManager()
+			clientMgr := clients.NewManager(nil)
 			mgr := NewManager(configGetter, instMgr, clientMgr, nil)
 
 			gotType, gotName, err := mgr.findInstanceForFilePath(context.Background(), tt.filePath, "")
