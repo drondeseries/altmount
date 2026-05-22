@@ -22,6 +22,7 @@ export interface ConfigResponse {
 	stremio: StremioConfig;
 	providers: ProviderConfig[];
 	nzblnk: NzblnkConfig;
+	network: NetworkConfig;
 	mount_path: string;
 	mount_type: MountType;
 	api_key?: string;
@@ -46,6 +47,16 @@ export interface APIConfig {
 // Authentication configuration
 export interface AuthConfig {
 	login_required: boolean;
+}
+
+// Network proxy configuration for outbound HTTP (indexers, arrs, SABnzbd, NZBLNK).
+// Empty strings disable proxying for that scheme. Mirrors standard
+// HTTP_PROXY/HTTPS_PROXY/NO_PROXY env-var semantics. Internal endpoints
+// (RC server, self-loopback) are not affected.
+export interface NetworkConfig {
+	http_proxy: string;
+	https_proxy: string;
+	no_proxy: string;
 }
 
 // Database configuration
@@ -239,7 +250,6 @@ export interface ImportConfig {
 	failed_item_retention_hours?: number | null;
 	history_retention_days?: number | null;
 	delete_completed_nzb?: boolean;
-	allow_symlinks_on_windows?: boolean;
 }
 
 // Log configuration
@@ -321,6 +331,7 @@ export interface ConfigUpdateRequest {
 	stremio?: Partial<StremioConfig>;
 	providers?: ProviderUpdateRequest[];
 	nzblnk?: NzblnkConfig;
+	network?: NetworkConfig;
 	mount_path?: string;
 	mount_type?: MountType;
 	profiler_enabled?: boolean;
@@ -450,7 +461,6 @@ export interface ImportUpdateRequest {
 	allow_nested_rar_extraction?: boolean;
 	rename_to_nzb_name?: boolean;
 	filter_sample_files?: boolean;
-	allow_symlinks_on_windows?: boolean;
 }
 
 // Log update request
@@ -512,6 +522,7 @@ export type ConfigSection =
 	| "arrs"
 	| "stremio"
 	| "nzblnk"
+	| "network"
 	| "system";
 
 // Form data interfaces for UI components
@@ -944,6 +955,13 @@ export const CONFIG_SECTIONS: Record<ConfigSection | "system", ConfigSectionInfo
 		title: "NZBLNK",
 		description: "Settings for resolving nzblnk:// links via public NZB indexers",
 		icon: "Link",
+		canEdit: true,
+	},
+	network: {
+		title: "Network & Proxy",
+		description:
+			"HTTP/HTTPS proxy for outbound indexer, Arrs, NZB grab, and SABnzbd fallback traffic",
+		icon: "Globe",
 		canEdit: true,
 	},
 	system: {

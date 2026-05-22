@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -54,6 +53,7 @@ type Config struct {
 	SegmentCache    SegmentCacheConfig `yaml:"segment_cache" mapstructure:"segment_cache" json:"segment_cache"`
 	Providers       []ProviderConfig   `yaml:"providers" mapstructure:"providers" json:"providers"`
 	Nzblnk          NzblnkConfig       `yaml:"nzblnk" mapstructure:"nzblnk" json:"nzblnk"`
+	Network         NetworkConfig      `yaml:"network" mapstructure:"network" json:"network"`
 	MountPath       string             `yaml:"mount_path" mapstructure:"mount_path" json:"mount_path"`
 	MountType       MountType          `yaml:"mount_type" mapstructure:"mount_type" json:"mount_type"`
 	ProfilerEnabled bool               `yaml:"profiler_enabled" mapstructure:"profiler_enabled" json:"profiler_enabled" default:"false"`
@@ -65,6 +65,28 @@ type NzblnkConfig struct {
 	// Defaults to a browser-like string. Leave empty to use the default.
 	UserAgent string `yaml:"user_agent" mapstructure:"user_agent" json:"user_agent,omitempty"`
 }
+
+// NetworkConfig holds outbound HTTP routing options applied to every external
+// client (indexers, arrs, SABnzbd fallback, NZBLNK resolver). Internal
+// endpoints (RC server, self-loopback) are unaffected.
+//
+// Semantics mirror Go's standard HTTP_PROXY/HTTPS_PROXY/NO_PROXY env vars.
+// Empty strings disable proxying for that scheme.
+type NetworkConfig struct {
+	HTTPProxy  string `yaml:"http_proxy" mapstructure:"http_proxy" json:"http_proxy,omitempty"`
+	HTTPSProxy string `yaml:"https_proxy" mapstructure:"https_proxy" json:"https_proxy,omitempty"`
+	NoProxy    string `yaml:"no_proxy" mapstructure:"no_proxy" json:"no_proxy,omitempty"`
+}
+
+// GetHTTPProxy returns the configured HTTP proxy URL. Implements the
+// httpclient.NetworkProxyConfig interface to avoid config↔httpclient import cycles.
+func (n NetworkConfig) GetHTTPProxy() string { return n.HTTPProxy }
+
+// GetHTTPSProxy returns the configured HTTPS proxy URL.
+func (n NetworkConfig) GetHTTPSProxy() string { return n.HTTPSProxy }
+
+// GetNoProxy returns the comma-separated bypass list.
+func (n NetworkConfig) GetNoProxy() string { return n.NoProxy }
 
 // SegmentCacheConfig configures the segment-aligned disk cache shared by FUSE and WebDAV.
 // When enabled, this cache replaces the FUSE VFS disk cache and additionally benefits WebDAV.
@@ -262,6 +284,13 @@ type ImportConfig struct {
 	QueueProcessingIntervalSeconds int            `yaml:"queue_processing_interval_seconds" mapstructure:"queue_processing_interval_seconds" json:"queue_processing_interval_seconds"`
 	AllowedFileExtensions          []string       `yaml:"allowed_file_extensions" mapstructure:"allowed_file_extensions" json:"allowed_file_extensions"`
 	MaxImportConnections           int            `yaml:"max_import_connections" mapstructure:"max_import_connections" json:"max_import_connections"`
+	// MaxConcurrentImports caps the number of NZB imports that may run
+	// end-to-end at the same time when no stream is active. 0 = unlimited.
+	MaxConcurrentImports int `yaml:"max_concurrent_imports" mapstructure:"max_concurrent_imports" json:"max_concurrent_imports"`
+	// MaxConcurrentImportsWhileStreaming caps concurrent imports while at
+	// least one stream is active, so streams are not starved by imports.
+	// 0 = unlimited.
+	MaxConcurrentImportsWhileStreaming int `yaml:"max_concurrent_imports_while_streaming" mapstructure:"max_concurrent_imports_while_streaming" json:"max_concurrent_imports_while_streaming"`
 	MaxDownloadPrefetch            int            `yaml:"max_download_prefetch" mapstructure:"max_download_prefetch" json:"max_download_prefetch"`
 	SegmentSamplePercentage        int            `yaml:"segment_sample_percentage" mapstructure:"segment_sample_percentage" json:"segment_sample_percentage"`
 	ReadTimeoutSeconds             int            `yaml:"read_timeout_seconds" mapstructure:"read_timeout_seconds" json:"read_timeout_seconds"`
@@ -276,7 +305,6 @@ type ImportConfig struct {
 	FailedItemRetentionHours       *int           `yaml:"failed_item_retention_hours" mapstructure:"failed_item_retention_hours" json:"failed_item_retention_hours,omitempty"`
 	HistoryRetentionDays           *int           `yaml:"history_retention_days" mapstructure:"history_retention_days" json:"history_retention_days,omitempty"`
 	DeleteCompletedNzb             *bool          `yaml:"delete_completed_nzb" mapstructure:"delete_completed_nzb" json:"delete_completed_nzb,omitempty"`
-	AllowSymlinksOnWindows         *bool          `yaml:"allow_symlinks_on_windows" mapstructure:"allow_symlinks_on_windows" json:"allow_symlinks_on_windows,omitempty"`
 }
 
 // ShouldDeleteCompletedNzb returns whether the NZB file should be removed from
@@ -513,10 +541,6 @@ func (c *Config) Validate() error {
 	if !validStrategies[c.Import.ImportStrategy] {
 		return fmt.Errorf("import_strategy must be one of: NONE, SYMLINK, STRM")
 	}
-	if runtime.GOOS == "windows" && c.Import.ImportStrategy == ImportStrategySYMLINK {
-		return fmt.Errorf("import_strategy SYMLINK is not supported on Windows; use STRM instead")
-	}
-
 	// Validate import directory when strategy requires it
 	if c.Import.ImportStrategy == ImportStrategySYMLINK || c.Import.ImportStrategy == ImportStrategySTRM {
 		if c.Import.ImportDir == nil || *c.Import.ImportDir == "" {
