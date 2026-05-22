@@ -1454,19 +1454,40 @@ func (r *Repository) RecordProviderSpeedTest(ctx context.Context, providerID str
 
 // GetProviderSpeedTestHistory retrieves the speed test history over the given number of days
 func (r *Repository) GetProviderSpeedTestHistory(ctx context.Context, days int) ([]*ProviderSpeedTestStat, error) {
-	var cutoffExpr string
+	var query string
 	if r.dialect.IsPostgres() {
-		cutoffExpr = fmt.Sprintf("NOW() - INTERVAL '%d days'", days)
+		var format string
+		if days <= 7 {
+			format = "date_trunc('hour', created_at)"
+		} else if days <= 60 {
+			format = "date_trunc('day', created_at)"
+		} else {
+			format = "date_trunc('week', created_at)"
+		}
+		query = fmt.Sprintf(`
+			SELECT MIN(id) as id, provider_id, AVG(speed_mbps) as speed_mbps, %s as created_at
+			FROM provider_speed_tests_history
+			WHERE created_at >= NOW() - INTERVAL '%d days'
+			GROUP BY provider_id, %s
+			ORDER BY created_at ASC
+		`, format, days, format)
 	} else {
-		cutoffExpr = fmt.Sprintf("datetime('now', '-%d days')", days)
+		var format string
+		if days <= 7 {
+			format = "strftime('%Y-%m-%d %H:00:00', created_at)"
+		} else if days <= 60 {
+			format = "strftime('%Y-%m-%d 00:00:00', created_at)"
+		} else {
+			format = "strftime('%Y-%m-%d 00:00:00', created_at, 'weekday 0', '-6 days')"
+		}
+		query = fmt.Sprintf(`
+			SELECT MIN(id) as id, provider_id, AVG(speed_mbps) as speed_mbps, %s as created_at
+			FROM provider_speed_tests_history
+			WHERE created_at >= datetime('now', '-%d days')
+			GROUP BY provider_id, %s
+			ORDER BY created_at ASC
+		`, format, days, format)
 	}
-
-	query := fmt.Sprintf(`
-		SELECT id, provider_id, speed_mbps, created_at
-		FROM provider_speed_tests_history
-		WHERE created_at >= %s
-		ORDER BY created_at ASC
-	`, cutoffExpr)
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {

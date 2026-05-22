@@ -35,6 +35,8 @@ type ConfigAPIResponse struct {
 	RClone          RCloneAPIResponse     `json:"rclone"`
 	SABnzbd         SABnzbdAPIResponse    `json:"sabnzbd"`
 	Providers       []ProviderAPIResponse `json:"providers"`
+	Arrs            ArrsAPIResponse       `json:"arrs"`
+	Stremio         StremioAPIResponse    `json:"stremio"`
 	APIKey          string                `json:"api_key,omitempty"`      // User's API key for authentication
 	DownloadKey     string                `json:"download_key,omitempty"` // SHA256 of the API key, used for download/stream URLs
 	ProfilerEnabled bool                  `json:"profiler_enabled"`
@@ -167,6 +169,53 @@ type SABnzbdAPIResponse struct {
 	FallbackAPIKeySet       bool                     `json:"fallback_api_key_set"` // Indicates if API key is set
 }
 
+// ArrsAPIResponse sanitizes Arrs config for API responses
+type ArrsAPIResponse struct {
+	Enabled                        bool                      `json:"enabled"`
+	MaxWorkers                     int                       `json:"max_workers,omitempty"`
+	WebhookBaseURL                 string                    `json:"webhook_base_url,omitempty"`
+	RadarrInstances                []ArrsInstanceAPIResponse `json:"radarr_instances"`
+	SonarrInstances                []ArrsInstanceAPIResponse `json:"sonarr_instances"`
+	LidarrInstances                []ArrsInstanceAPIResponse `json:"lidarr_instances"`
+	ReadarrInstances               []ArrsInstanceAPIResponse `json:"readarr_instances"`
+	WhisparrInstances              []ArrsInstanceAPIResponse `json:"whisparr_instances"`
+	QueueCleanupEnabled            bool                      `json:"queue_cleanup_enabled,omitempty"`
+	QueueCleanupIntervalSeconds    int                       `json:"queue_cleanup_interval_seconds,omitempty"`
+	CleanupAutomaticImportFailure  bool                      `json:"cleanup_automatic_import_failure,omitempty"`
+	QueueCleanupGracePeriodMinutes int                       `json:"queue_cleanup_grace_period_minutes,omitempty"`
+	QueueCleanupAllowlist          []config.IgnoredMessage   `json:"queue_cleanup_allowlist,omitempty"`
+}
+
+// ArrsInstanceAPIResponse sanitizes ArrsInstance config for API responses
+type ArrsInstanceAPIResponse struct {
+	Name              string `json:"name"`
+	URL               string `json:"url"`
+	APIKey            string `json:"api_key"`
+	APIKeySet         bool   `json:"api_key_set"`
+	Category          string `json:"category,omitempty"`
+	Enabled           bool   `json:"enabled,omitempty"`
+	SyncIntervalHours *int   `json:"sync_interval_hours,omitempty"`
+}
+
+// StremioAPIResponse sanitizes Stremio config for API responses
+type StremioAPIResponse struct {
+	Enabled     bool                `json:"enabled"`
+	NzbTTLHours int                 `json:"nzb_ttl_hours,omitempty"`
+	BaseURL     string              `json:"base_url,omitempty"`
+	Prowlarr    ProwlarrAPIResponse `json:"prowlarr"`
+}
+
+// ProwlarrAPIResponse sanitizes Prowlarr config for API responses
+type ProwlarrAPIResponse struct {
+	Enabled    bool     `json:"enabled"`
+	Host       string   `json:"host,omitempty"`
+	APIKey     string   `json:"api_key"`
+	APIKeySet  bool     `json:"api_key_set"`
+	Categories []int    `json:"categories,omitempty"`
+	Languages  []string `json:"languages,omitempty"`
+	Qualities  []string `json:"qualities,omitempty"`
+}
+
 // Helper functions to create API responses from core config types
 
 // ToConfigAPIResponse converts config.Config to ConfigAPIResponse with sensitive data masked
@@ -284,6 +333,65 @@ func ToConfigAPIResponse(cfg *config.Config, apiKey string) *ConfigAPIResponse {
 		downloadKey = auth.HashAPIKey(apiKey)
 	}
 
+	toArrsInstances := func(instances []config.ArrsInstanceConfig) []ArrsInstanceAPIResponse {
+		var resp []ArrsInstanceAPIResponse
+		for _, inst := range instances {
+			maskedKey := ""
+			if inst.APIKey != "" {
+				maskedKey = "********"
+			}
+			resp = append(resp, ArrsInstanceAPIResponse{
+				Name:              inst.Name,
+				URL:               inst.URL,
+				APIKey:            maskedKey,
+				APIKeySet:         inst.APIKey != "",
+				Category:          inst.Category,
+				Enabled:           inst.Enabled != nil && *inst.Enabled,
+				SyncIntervalHours: inst.SyncIntervalHours,
+			})
+		}
+		if resp == nil {
+			resp = []ArrsInstanceAPIResponse{}
+		}
+		return resp
+	}
+
+	arrsResp := ArrsAPIResponse{
+		Enabled:                        cfg.Arrs.Enabled != nil && *cfg.Arrs.Enabled,
+		MaxWorkers:                     cfg.Arrs.MaxWorkers,
+		WebhookBaseURL:                 cfg.Arrs.WebhookBaseURL,
+		RadarrInstances:                toArrsInstances(cfg.Arrs.RadarrInstances),
+		SonarrInstances:                toArrsInstances(cfg.Arrs.SonarrInstances),
+		LidarrInstances:                toArrsInstances(cfg.Arrs.LidarrInstances),
+		ReadarrInstances:               toArrsInstances(cfg.Arrs.ReadarrInstances),
+		WhisparrInstances:              toArrsInstances(cfg.Arrs.WhisparrInstances),
+		QueueCleanupEnabled:            cfg.Arrs.QueueCleanupEnabled != nil && *cfg.Arrs.QueueCleanupEnabled,
+		QueueCleanupIntervalSeconds:    cfg.Arrs.QueueCleanupIntervalSeconds,
+		CleanupAutomaticImportFailure:  cfg.Arrs.CleanupAutomaticImportFailure != nil && *cfg.Arrs.CleanupAutomaticImportFailure,
+		QueueCleanupGracePeriodMinutes: cfg.Arrs.QueueCleanupGracePeriodMinutes,
+		QueueCleanupAllowlist:          cfg.Arrs.QueueCleanupAllowlist,
+	}
+
+	prowlarrMaskedKey := ""
+	if cfg.Stremio.Prowlarr.APIKey != "" {
+		prowlarrMaskedKey = "********"
+	}
+
+	stremioResp := StremioAPIResponse{
+		Enabled:     cfg.Stremio.Enabled != nil && *cfg.Stremio.Enabled,
+		NzbTTLHours: cfg.Stremio.NzbTTLHours,
+		BaseURL:     cfg.Stremio.BaseURL,
+		Prowlarr: ProwlarrAPIResponse{
+			Enabled:    cfg.Stremio.Prowlarr.Enabled != nil && *cfg.Stremio.Prowlarr.Enabled,
+			Host:       cfg.Stremio.Prowlarr.Host,
+			APIKey:     prowlarrMaskedKey,
+			APIKeySet:  cfg.Stremio.Prowlarr.APIKey != "",
+			Categories: cfg.Stremio.Prowlarr.Categories,
+			Languages:  cfg.Stremio.Prowlarr.Languages,
+			Qualities:  cfg.Stremio.Prowlarr.Qualities,
+		},
+	}
+
 	return &ConfigAPIResponse{
 		Config:          cfg,
 		WebDAV:          webdavResp,
@@ -291,6 +399,8 @@ func ToConfigAPIResponse(cfg *config.Config, apiKey string) *ConfigAPIResponse {
 		RClone:          rcloneResp,
 		SABnzbd:         sabnzbdResp,
 		Providers:       providers,
+		Arrs:            arrsResp,
+		Stremio:         stremioResp,
 		APIKey:          apiKey,
 		DownloadKey:     downloadKey,
 		ProfilerEnabled: cfg.ProfilerEnabled,
