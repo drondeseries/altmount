@@ -1513,7 +1513,7 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	fullStoragePath = filepath.ToSlash(filepath.Clean(fullStoragePath))
 
 	if _, err := os.Stat(fullStoragePath); os.IsNotExist(err) {
-		slog.WarnContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
+		slog.DebugContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
 			"item_id", item.ID,
 			"storage_path", *item.StoragePath,
 			"reported_path", fullStoragePath,
