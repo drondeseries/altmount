@@ -38,13 +38,14 @@ type Manager struct {
 }
 
 type MountInfo struct {
-	Provider   string `json:"provider"`
-	LocalPath  string `json:"local_path"`
-	WebDAVURL  string `json:"webdav_url"`
-	Mounted    bool   `json:"mounted"`
-	MountedAt  string `json:"mounted_at,omitempty"`
-	ConfigName string `json:"config_name"`
-	Error      string `json:"error,omitempty"`
+	Provider            string `json:"provider"`
+	LocalPath           string `json:"local_path"`
+	WebDAVURL           string `json:"webdav_url"`
+	Mounted             bool   `json:"mounted"`
+	MountedAt           string `json:"mounted_at,omitempty"`
+	ConfigName          string `json:"config_name"`
+	Error               string `json:"error,omitempty"`
+	consecutiveFailures int
 }
 
 type RCRequest struct {
