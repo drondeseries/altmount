@@ -487,6 +487,7 @@ type QueueItemResponse struct {
 	BatchID      *string                `json:"batch_id"`
 	Metadata     *string                `json:"metadata"`
 	FileSize     *int64                 `json:"file_size"`
+	Indexer      *string                `json:"indexer,omitempty"`      // Indexer name
 	Percentage   *int                   `json:"percentage,omitempty"`    // Progress percentage (0-100), only for items being processed
 	Stage        string                 `json:"stage,omitempty"`         // Progress stage (e.g. "Validating segments")
 	StoragePath  *string                `json:"storage_path,omitempty"` // Internal FUSE mount path (populated after completion)
@@ -526,6 +527,7 @@ type ImportHistoryResponse struct {
 	VirtualPath string    `json:"virtual_path"`
 	LibraryPath *string   `json:"library_path,omitempty"`
 	Category    *string   `json:"category"`
+	Indexer     *string   `json:"indexer,omitempty"` // Added indexer
 	Metadata    *string   `json:"metadata,omitempty"`
 	CompletedAt time.Time `json:"completed_at"`
 }
@@ -562,6 +564,7 @@ type HealthItemResponse struct {
 	ErrorDetails     *string                 `json:"error_details"`
 	RepairRetryCount int                     `json:"repair_retry_count"`
 	MaxRepairRetries int                     `json:"max_repair_retries"`
+	Indexer          *string                 `json:"indexer,omitempty"` // Added indexer
 	CreatedAt        time.Time               `json:"created_at"`
 	UpdatedAt        time.Time               `json:"updated_at"`
 	ScheduledCheckAt *time.Time              `json:"scheduled_check_at,omitempty"`
@@ -757,6 +760,7 @@ func ToQueueItemResponse(item *database.ImportQueueItem) *QueueItemResponse {
 		Metadata:     item.Metadata,
 		FileSize:     item.FileSize,
 		StoragePath:  item.StoragePath,
+		Indexer:      item.Indexer,
 	}
 }
 
@@ -858,6 +862,7 @@ func ToImportHistoryResponse(h *database.ImportHistory) *ImportHistoryResponse {
 		VirtualPath: h.VirtualPath,
 		LibraryPath: h.LibraryPath,
 		Category:    h.Category,
+		Indexer:     h.Indexer, // Fixed: use pointer directly
 		Metadata:    h.Metadata,
 		CompletedAt: h.CompletedAt,
 	}
@@ -881,6 +886,7 @@ func ToHealthItemResponse(item *database.FileHealth) *HealthItemResponse {
 		ErrorDetails:          item.ErrorDetails,
 		RepairRetryCount:      item.RepairRetryCount,
 		MaxRepairRetries:      item.MaxRepairRetries,
+		Indexer:               item.Indexer, // Fixed: use pointer directly
 		CreatedAt:             item.CreatedAt,
 		UpdatedAt:             item.UpdatedAt,
 		ScheduledCheckAt:      item.ScheduledCheckAt,

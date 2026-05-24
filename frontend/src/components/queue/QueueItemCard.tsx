@@ -72,6 +72,11 @@ export const QueueItemCard = memo(function QueueItemCard({
 
 						{/* Quick Info Pills */}
 						<div className="mt-2 flex flex-wrap gap-2">
+							{item.indexer && (
+								<span className="badge badge-primary badge-xs py-2 font-bold tracking-tight bg-primary/20 text-primary border-primary/30">
+									{item.indexer}
+								</span>
+							)}
 							{item.category && (
 								<span className="badge badge-outline badge-xs py-2 font-semibold uppercase tracking-wide">
 									{item.category}
