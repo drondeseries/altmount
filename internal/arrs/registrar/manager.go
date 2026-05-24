@@ -79,14 +79,14 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					}
 				}
 
-				if currentURL != webhookURL {
-					slog.InfoContext(ctx, "Updating Radarr webhook API key/URL", "instance", instance.Name)
+				if currentURL != webhookURL || !existing.OnGrab || !existing.OnDownload {
+					slog.InfoContext(ctx, "Updating Radarr webhook configuration (enabling Grab and Import notifications)", "instance", instance.Name)
 					notif := &radarr.NotificationInput{
 						ID:                          existing.ID,
 						Name:                        webhookName,
 						Implementation:              "Webhook",
 						ConfigContract:              "WebhookSettings",
-						OnGrab:                      false,
+						OnGrab:                      true,
 						OnDownload:                  true,
 						OnUpgrade:                   true,
 						OnRename:                    true,
@@ -108,7 +108,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                        webhookName,
 					Implementation:              "Webhook",
 					ConfigContract:              "WebhookSettings",
-					OnGrab:                      false,
+					OnGrab:                      true,
 					OnDownload:                  true, // OnImport
 					OnUpgrade:                   true,
 					OnRename:                    true,
@@ -159,14 +159,14 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					}
 				}
 
-				if currentURL != webhookURL {
-					slog.InfoContext(ctx, "Updating Sonarr webhook API key/URL", "instance", instance.Name)
+				if currentURL != webhookURL || !existing.OnGrab || !existing.OnDownload {
+					slog.InfoContext(ctx, "Updating Sonarr webhook configuration (enabling Grab and Import notifications)", "instance", instance.Name)
 					notif := &sonarr.NotificationInput{
 						ID:                            existing.ID,
 						Name:                          webhookName,
 						Implementation:                "Webhook",
 						ConfigContract:                "WebhookSettings",
-						OnGrab:                        false,
+						OnGrab:                        true,
 						OnDownload:                    true,
 						OnUpgrade:                     true,
 						OnRename:                      true,
@@ -188,7 +188,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                          webhookName,
 					Implementation:                "Webhook",
 					ConfigContract:                "WebhookSettings",
-					OnGrab:                        false,
+					OnGrab:                        true,
 					OnDownload:                    true, // OnImport
 					OnUpgrade:                     true,
 					OnRename:                      true,
@@ -239,14 +239,14 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					}
 				}
 
-				if currentURL != webhookURL {
-					slog.InfoContext(ctx, "Updating Lidarr webhook API key/URL", "instance", instance.Name)
+				if currentURL != webhookURL || !existing.OnGrab || !existing.OnReleaseImport {
+					slog.InfoContext(ctx, "Updating Lidarr webhook configuration (enabling Grab and Import notifications)", "instance", instance.Name)
 					notif := &lidarr.NotificationInput{
 						ID:              existing.ID,
 						Name:            webhookName,
 						Implementation:  "Webhook",
 						ConfigContract:  "WebhookSettings",
-						OnGrab:          false,
+						OnGrab:          true,
 						OnReleaseImport: true,
 						OnUpgrade:       true,
 						OnRename:        true,
@@ -265,7 +265,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:            webhookName,
 					Implementation:  "Webhook",
 					ConfigContract:  "WebhookSettings",
-					OnGrab:          false,
+					OnGrab:          true,
 					OnReleaseImport: true,
 					OnUpgrade:       true,
 					OnRename:        true,
@@ -313,14 +313,14 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					}
 				}
 
-				if currentURL != webhookURL {
-					slog.InfoContext(ctx, "Updating Readarr webhook API key/URL", "instance", instance.Name)
+				if currentURL != webhookURL || !existing.OnGrab || !existing.OnReleaseImport {
+					slog.InfoContext(ctx, "Updating Readarr webhook configuration (enabling Grab and Import notifications)", "instance", instance.Name)
 					notif := &readarr.NotificationInput{
 						ID:                         existing.ID,
 						Name:                       webhookName,
 						Implementation:             "Webhook",
 						ConfigContract:             "WebhookSettings",
-						OnGrab:                     false,
+						OnGrab:                     true,
 						OnReleaseImport:            true,
 						OnUpgrade:                  true,
 						OnRename:                   true,
@@ -343,7 +343,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                       webhookName,
 					Implementation:             "Webhook",
 					ConfigContract:             "WebhookSettings",
-					OnGrab:                     false,
+					OnGrab:                     true,
 					OnReleaseImport:            true,
 					OnUpgrade:                  true,
 					OnRename:                   true,
