@@ -75,3 +75,59 @@ func TestRemoveEmptyDirs(t *testing.T) {
 		t.Error("Expected keep.txt to still exist")
 	}
 }
+
+func TestGetRelativePath(t *testing.T) {
+	tests := []struct {
+		name       string
+		target     string
+		baseDirs   []string
+		expected   string
+	}{
+		{
+			name:     "no matching prefixes, returns relative",
+			target:   "tv/show/episode.mkv",
+			baseDirs: []string{"/mnt/disk1/cloud/altmount"},
+			expected: "tv/show/episode.mkv",
+		},
+		{
+			name:     "matches single prefix",
+			target:   "/mnt/disk1/cloud/altmount/tv/show/episode.mkv",
+			baseDirs: []string{"/mnt/disk1/cloud/altmount"},
+			expected: "tv/show/episode.mkv",
+		},
+		{
+			name:     "longest prefix wins: temp uploads inside mount path",
+			target:   "/mnt/disk1/cloud/altmount/tmp/altmount-uploads/tvHQ/show/episode.mkv",
+			baseDirs: []string{"/mnt/disk1/cloud/altmount", "/mnt/disk1/cloud/altmount/tmp/altmount-uploads"},
+			expected: "tvHQ/show/episode.mkv",
+		},
+		{
+			name:     "exact match with prefix",
+			target:   "/mnt/disk1/cloud/altmount",
+			baseDirs: []string{"/mnt/disk1/cloud/altmount"},
+			expected: "",
+		},
+		{
+			name:     "trailing slash handled gracefully",
+			target:   "/mnt/disk1/cloud/altmount/tvHQ/episode.mkv",
+			baseDirs: []string{"/mnt/disk1/cloud/altmount/"},
+			expected: "tvHQ/episode.mkv",
+		},
+		{
+			name:     "empty base dirs are ignored",
+			target:   "/mnt/disk1/cloud/altmount/tvHQ/episode.mkv",
+			baseDirs: []string{"", "/mnt/disk1/cloud/altmount"},
+			expected: "tvHQ/episode.mkv",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := GetRelativePath(tt.target, tt.baseDirs...)
+			if actual != tt.expected {
+				t.Errorf("GetRelativePath(%q, %v) = %q, want %q", tt.target, tt.baseDirs, actual, tt.expected)
+			}
+		})
+	}
+}
+

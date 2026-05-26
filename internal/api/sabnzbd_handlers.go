@@ -382,7 +382,7 @@ func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
 	if movie := c.FormValue("movie"); movie != "" {
 		metadata["movie_title"] = movie
 	}
-
+	
 	var metadataJSON *string
 	if len(metadata) > 0 {
 		if b, err := json.Marshal(metadata); err == nil {
@@ -1462,8 +1462,18 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 		category = *item.Category
 	}
 
-	// 1. Get the internal relative path (relative to FUSE mount)
-	relPath := strings.TrimPrefix(storagePath, "/")
+	// 1. Get the internal relative path by stripping any known base directories
+	baseDirs := []string{}
+	if cfg.Import.ImportDir != nil && *cfg.Import.ImportDir != "" {
+		baseDirs = append(baseDirs, *cfg.Import.ImportDir)
+	}
+	if cfg.MountPath != "" {
+		baseDirs = append(baseDirs, cfg.MountPath)
+	}
+	baseDirs = append(baseDirs, filepath.Join(os.TempDir(), "altmount-uploads"))
+	baseDirs = append(baseDirs, "/tmp/altmount-uploads")
+
+	relPath := apputils.GetRelativePath(storagePath, baseDirs...)
 
 	// 2. Strip any existing /complete or /category prefix from the internal path to start clean
 	if cfg.SABnzbd.CompleteDir != "" {
@@ -1479,6 +1489,7 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	} else if relPath == category {
 		relPath = ""
 	}
+
 
 	// 3. Determine the base path for reporting
 	// For NONE, use MountPath. For others, use ImportDir.
@@ -1502,7 +1513,7 @@ func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, bas
 	fullStoragePath = filepath.ToSlash(filepath.Clean(fullStoragePath))
 
 	if _, err := os.Stat(fullStoragePath); os.IsNotExist(err) {
-		slog.WarnContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
+		slog.DebugContext(context.Background(), "sabnzbd history: reported path does not exist on disk",
 			"item_id", item.ID,
 			"storage_path", *item.StoragePath,
 			"reported_path", fullStoragePath,
