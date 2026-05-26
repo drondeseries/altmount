@@ -2,9 +2,11 @@ package importer
 
 import (
 	"bufio"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"fmt"
+	"html"
 	"io"
 	"log/slog"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+
 
 	"github.com/javi11/altmount/internal/arrs"
 	"github.com/javi11/altmount/internal/config"
@@ -208,6 +211,7 @@ type Service struct {
 	// HandleFailure can clean them up without changing the ItemProcessor interface.
 	// Keys are item.ID (int64), values are []string.
 	writtenPathsCache sync.Map
+	grabbedIndexers   sync.Map
 }
 
 // NewService creates a new NZB import service with manual scanning and queue processing capabilities
@@ -684,17 +688,37 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 		itemPriority = *priority
 	}
 
+	var indexerName *string = nil
+	
+	// Determine the release title to use as a fallback lookup key
+	releaseTitle := filepath.Base(filePath)
+	
+	// Lookup indexer from grabbedIndexers (Webhook-provided)
+	// This will return the exact indexer name as it was received from the webhook (e.g., "NZBgeek (Prowlarr)")
+	if downloadID != nil && *downloadID != "" {
+		if name, ok := s.GetGrabbedIndexer(*downloadID, releaseTitle); ok {
+			indexerName = &name
+		}
+	} else if name, ok := s.GetGrabbedIndexer("", releaseTitle); ok {
+		indexerName = &name
+	}
+
+	// If a file arrives at the addfile endpoint and does not find a match in the memory map,
+	// it remains nil (Unknown) to ensure stats are never corrupted by false guesses.
+
+
 	item := &database.ImportQueueItem{
 		DownloadID:   downloadID,
 		NzbPath:      filePath,
 		RelativePath: relativePath,
 		Category:     category,
 		Priority:     itemPriority,
-		Status:       database.QueueStatusPending,
+		Status:       database.QueueStatusPaused, // Hold processing until persisted/compressed to prevent worker race conditions
 		RetryCount:   0,
 		MaxRetries:   3,
 		FileSize:     fileSize,
 		Metadata:     metadata,
+		Indexer:      indexerName,
 		CreatedAt:    time.Now(),
 	}
 
@@ -715,6 +739,13 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 		return nil, fmt.Errorf("failed to make NZB persistent: %w", err)
 	}
 
+	// Change status to Pending now that the NZB has been safely compressed and persisted
+	item.Status = database.QueueStatusPending
+	if err := s.database.Repository.UpdateQueueItemStatus(ctx, item.ID, database.QueueStatusPending, nil); err != nil {
+		s.log.ErrorContext(ctx, "Failed to activate queue item after persistence", "queue_id", item.ID, "error", err)
+		return nil, fmt.Errorf("failed to activate queue item: %w", err)
+	}
+
 	if s.broadcaster != nil {
 		s.broadcaster.BroadcastQueueChanged()
 	}
@@ -730,6 +761,10 @@ func (s *Service) AddToQueue(ctx context.Context, filePath string, relativePath 
 
 // processNzbItem processes the NZB file for a queue item
 func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueueItem) (string, []string, error) {
+	// Try to extract and populate indexer if not already set
+	// Note: We no longer scan the NZB file for indexer info to prevent incorrect stats.
+	// Indexer must come from webhook metadata.
+
 	// Determine the base path
 	basePath := ""
 	if item.RelativePath != nil {
@@ -1022,6 +1057,22 @@ func (s *Service) resolveCategoryPath(category string) string {
 
 // handleProcessingSuccess handles all steps after successful NZB processing
 func (s *Service) handleProcessingSuccess(ctx context.Context, item *database.ImportQueueItem, resultingPath string) error {
+	// Log persistent indexer statistic
+	indexerName := "Unknown"
+	if item.Indexer != nil && *item.Indexer != "" {
+		indexerName = *item.Indexer
+	}
+	if (indexerName == "Unknown" || indexerName == "") && item.DownloadID != nil && *item.DownloadID != "" {
+		if latestItem, err := s.database.Repository.GetQueueItemByDownloadID(ctx, *item.DownloadID); err == nil && latestItem != nil && latestItem.Indexer != nil && *latestItem.Indexer != "" {
+			indexerName = *latestItem.Indexer
+		} else if name, ok := s.GetGrabbedIndexer(*item.DownloadID, filepath.Base(item.NzbPath)); ok {
+			indexerName = name
+		}
+	}
+	if err := s.database.Repository.LogIndexerImport(ctx, indexerName, "success", "", item.DownloadID); err != nil {
+		s.log.WarnContext(ctx, "Failed to log indexer success statistic", "indexer", indexerName, "error", err)
+	}
+
 	// Add storage path to database
 	if err := s.database.Repository.AddStoragePath(ctx, item.ID, resultingPath); err != nil {
 		s.log.ErrorContext(ctx, "Failed to add storage path", "queue_id", item.ID, "error", err)
@@ -1128,6 +1179,25 @@ func (s *Service) cleanupWrittenPaths(ctx context.Context, itemID int64, paths [
 // handleProcessingFailure handles when processing fails
 func (s *Service) handleProcessingFailure(ctx context.Context, item *database.ImportQueueItem, processingErr error) {
 	errorMessage := processingErr.Error()
+
+	// Log persistent indexer statistic
+	indexerName := "Unknown"
+	if item.Indexer != nil && *item.Indexer != "" {
+		indexerName = *item.Indexer
+	}
+	if (indexerName == "Unknown" || indexerName == "") && item.DownloadID != nil && *item.DownloadID != "" {
+		if latestItem, err := s.database.Repository.GetQueueItemByDownloadID(ctx, *item.DownloadID); err == nil && latestItem != nil && latestItem.Indexer != nil && *latestItem.Indexer != "" {
+			indexerName = *latestItem.Indexer
+		} else if name, ok := s.GetGrabbedIndexer(*item.DownloadID, filepath.Base(item.NzbPath)); ok {
+			indexerName = name
+		}
+	}
+	// Don't log if it was just cancelled by the user
+	if !strings.Contains(errorMessage, "context canceled") && !strings.Contains(errorMessage, "processing cancelled") {
+		if err := s.database.Repository.LogIndexerImport(ctx, indexerName, "failed", errorMessage, item.DownloadID); err != nil {
+			s.log.WarnContext(ctx, "Failed to log indexer failure statistic", "indexer", indexerName, "error", err)
+		}
+	}
 
 	// Check if the error was due to cancellation
 	if strings.Contains(errorMessage, "context canceled") || strings.Contains(errorMessage, "processing cancelled") {
@@ -1503,4 +1573,166 @@ func (s *Service) RegenerateMetadata(ctx context.Context, mountRelativePath stri
 
 	s.log.InfoContext(ctx, "Successfully regenerated metadata", "path", mountRelativePath)
 	return nil
+}
+
+var (
+	commentRegex = regexp.MustCompile(`(?i)<!--\s*(?:Provided|Generated)\s+by\s+([a-zA-Z0-9_\-\. ]+)`)
+	metaRegex    = regexp.MustCompile(`(?i)<meta\s+type="([^"]+)">([^<]+)</meta>`)
+	anyCommentRegex = regexp.MustCompile(`(?i)<!--(.*?)-->`)
+)
+
+// ExtractIndexerFromNzb extracts the indexer name from an NZB file.
+func ExtractIndexerFromNzb(nzbPath string) string {
+	if nzbPath == "" {
+		return "Unknown"
+	}
+
+	// 1. Open file (might be gzip compressed)
+	f, err := os.Open(nzbPath)
+	if err != nil {
+		return "Unknown"
+	}
+	defer f.Close()
+
+	var reader io.Reader = f
+	filenameLower := strings.ToLower(filepath.Base(nzbPath))
+	if strings.HasSuffix(filenameLower, ".nzb.gz") {
+		gzReader, err := gzip.NewReader(f)
+		if err != nil {
+			return "Unknown"
+		}
+		defer gzReader.Close()
+		reader = gzReader
+	} else if !strings.HasSuffix(filenameLower, ".nzb") {
+		// Not an NZB file, return Unknown
+		return "Unknown"
+	}
+
+	// Read first 2MB since signature comments/meta tags are near top/bottom
+	limitReader := io.LimitReader(reader, 2*1024*1024)
+	contentBytes, err := io.ReadAll(limitReader)
+	if err != nil && err != io.ErrUnexpectedEOF {
+		return "Unknown"
+	}
+	content := string(contentBytes)
+
+	// 1. First look for metadata tags that are explicitly indexer-related
+	metaMatches := metaRegex.FindAllStringSubmatch(content, -1)
+	for _, match := range metaMatches {
+		if len(match) > 2 {
+			metaType := strings.ToLower(strings.TrimSpace(match[1]))
+			mVal := strings.TrimSpace(match[2])
+			if mVal != "" && (strings.Contains(metaType, "indexer") || strings.Contains(metaType, "client") || strings.Contains(metaType, "website") || strings.Contains(metaType, "provider")) {
+				// Avoid HTML entities like &amp;, &lt;, &gt;, etc.
+				mVal = html.UnescapeString(mVal)
+				return mVal
+			}
+		}
+	}
+
+	// 2. Next look for signature comments (e.g. <!-- Provided by NZBgeek -->)
+	commentMatches := commentRegex.FindAllStringSubmatch(content, -1)
+	for _, match := range commentMatches {
+		if len(match) > 1 {
+			cVal := strings.TrimSpace(match[1])
+			if cVal != "" {
+				cVal = html.UnescapeString(cVal)
+				return cVal
+			}
+		}
+	}
+
+	// 3. Fallback to scanning all comments for known indexers
+	anyCommentMatches := anyCommentRegex.FindAllStringSubmatch(content, -1)
+	knownIndexers := []string{"nzbgeek", "nzbfinder", "althub", "dognzb", "abnzb", "nzbindex", "nzb.su", "omgwtfnzbs"}
+	for _, match := range anyCommentMatches {
+		if len(match) > 1 {
+			commentText := strings.ToLower(match[1])
+			for _, ind := range knownIndexers {
+				if strings.Contains(commentText, ind) {
+					// Return nice-looking camelcase names
+					switch ind {
+					case "nzbgeek":
+						return "NZBgeek"
+					case "nzbfinder":
+						return "NZBfinder"
+					case "althub":
+						return "altHUB"
+					case "dognzb":
+						return "DogNZB"
+					case "abnzb":
+						return "ABNZB"
+					case "nzbindex":
+						return "NZBIndex"
+					case "nzb.su":
+						return "NZB.su"
+					case "omgwtfnzbs":
+						return "OMGWTFNZBs"
+					}
+				}
+			}
+		}
+	}
+
+	return "Unknown"
+}
+
+type grabbedIndexerInfo struct {
+	indexer   string
+	timestamp time.Time
+}
+
+// StoreGrabbedIndexer stores a downloadID to indexer mapping in-memory
+func (s *Service) StoreGrabbedIndexer(downloadID string, releaseTitle string, indexer string) {
+	info := grabbedIndexerInfo{
+		indexer:   indexer,
+		timestamp: time.Now(),
+	}
+
+	if downloadID != "" {
+		s.grabbedIndexers.Store(downloadID, info)
+	}
+	// Sanitize and use release title as an alternative fallback key
+	if releaseTitle != "" {
+		cleanTitle := strings.TrimSpace(strings.ToLower(releaseTitle))
+		cleanTitle = strings.TrimSuffix(cleanTitle, ".gz")
+		cleanTitle = strings.TrimSuffix(cleanTitle, ".nzb")
+		s.grabbedIndexers.Store(cleanTitle, info)
+	}
+}
+
+// GetGrabbedIndexer retrieves a grabbed indexer by download ID or release title
+// It only returns a match if it was stored within the last 15 seconds.
+func (s *Service) GetGrabbedIndexer(downloadID string, releaseTitle string) (string, bool) {
+	now := time.Now()
+	
+	check := func(key string) (string, bool) {
+		if val, ok := s.grabbedIndexers.Load(key); ok {
+			if info, isInfo := val.(grabbedIndexerInfo); isInfo {
+				if now.Sub(info.timestamp) < 15*time.Second {
+					return info.indexer, true
+				}
+				// Cleanup expired entry
+				s.grabbedIndexers.Delete(key)
+			}
+		}
+		return "", false
+	}
+
+	if downloadID != "" {
+		if name, ok := check(downloadID); ok {
+			return name, true
+		}
+	}
+	
+	if releaseTitle != "" {
+		cleanTitle := strings.TrimSpace(strings.ToLower(releaseTitle))
+		cleanTitle = strings.TrimSuffix(cleanTitle, ".gz")
+		cleanTitle = strings.TrimSuffix(cleanTitle, ".nzb")
+		if name, ok := check(cleanTitle); ok {
+			return name, true
+		}
+	}
+	
+	return "", false
 }
