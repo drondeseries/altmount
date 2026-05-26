@@ -74,7 +74,7 @@ func (c *Coordinator) notifyVFSWith(ctx context.Context, rcloneClient rclonecli.
 				"dirs", dirsToRefresh,
 				"error", err)
 		} else {
-			slog.InfoContext(refreshCtx, "Successfully notified rclone VFS refresh",
+			slog.InfoContext(refreshCtx, "Successfully queued async rclone VFS refresh",
 				"dirs", dirsToRefresh)
 		}
 	}

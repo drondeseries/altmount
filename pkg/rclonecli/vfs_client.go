@@ -119,7 +119,7 @@ func (c *rcloneRcClient) RefreshDir(ctx context.Context, provider string, dirs [
 
 	// Use similar logic to Manager's RefreshDir but with vfs/refresh endpoint
 	refreshArgs := map[string]any{
-		"_async":    "false", // Use async refresh
+		"_async":    "true",
 		"recursive": "false", // Non-recursive by default
 	}
 
@@ -139,48 +139,17 @@ func (c *rcloneRcClient) RefreshDir(ctx context.Context, provider string, dirs [
 		}
 	}
 
-	forgetArgs := make(map[string]any)
-	for k, v := range refreshArgs {
-		if k != "recursive" {
-			forgetArgs[k] = v
-		}
-	}
-
-	forgetPayload, err := json.Marshal(forgetArgs)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, "POST", baseUrl+"/vfs/forget", bytes.NewBuffer(forgetPayload))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			return err
-		}
-		return fmt.Errorf("unexpected status code: %d, error: %s", resp.StatusCode, string(body))
-	}
-
 	refreshPayload, err := json.Marshal(refreshArgs)
 	if err != nil {
 		return err
 	}
 
-	req, err = http.NewRequestWithContext(ctx, "POST", baseUrl+"/vfs/refresh", bytes.NewBuffer(refreshPayload))
+	req, err := http.NewRequestWithContext(ctx, "POST", baseUrl+"/vfs/refresh", bytes.NewBuffer(refreshPayload))
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err = c.httpClient.Do(req)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return err
 	}

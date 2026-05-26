@@ -3,6 +3,7 @@ package rclonecli
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -80,23 +81,45 @@ func (m *Manager) RecoverMount(ctx context.Context, provider string) error {
 			return fmt.Errorf("failed to recover mount for %s after rcd restart: %w", provider, err)
 		}
 		m.logger.InfoContext(ctx, "Successfully recovered mount after rcd restart", "provider", provider)
+		m.mountsMutex.Lock()
+		mountInfo.consecutiveFailures = 0
+		m.mountsMutex.Unlock()
 		return nil
 	}
 
-	// First try to unmount cleanly
-	if err := m.unmount(ctx, provider); err != nil {
-		m.logger.ErrorContext(ctx, "Failed to unmount during recovery", "err", err, "provider", provider)
-	}
+	// Ensure target mount is thoroughly cleaned up and the kernel is not busy
+	m.logger.InfoContext(ctx, "Forcing cleanup of stale FUSE mount point before recovery remount", "provider", provider)
+	_ = m.unmount(ctx, provider)
+	_ = m.forceUnmountPath(mountInfo.LocalPath)
 
-	// Wait a moment
-	time.Sleep(1 * time.Second)
+	// Wait longer to allow the kernel FUSE driver to release resources
+	time.Sleep(3 * time.Second)
 
 	// Try to remount
 	if err := m.Mount(ctx, provider, mountInfo.LocalPath, mountInfo.WebDAVURL); err != nil {
+		// If mount times out (deadline exceeded or timeout in error string), force a server subprocess restart
+		if ctx.Err() != nil || (err != nil && (strings.Contains(err.Error(), "deadline exceeded") || strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "Timeout"))) {
+			m.logger.WarnContext(ctx, "Mount timed out / wedged in kernel, performing hard rcd subprocess restart", "provider", provider)
+			if rErr := m.restartServer(ctx); rErr != nil {
+				return fmt.Errorf("failed to recover mount for %s: %w (rcd restart failed: %v)", provider, err, rErr)
+			}
+			// After restart, try to Mount again on the fresh process
+			if err2 := m.Mount(ctx, provider, mountInfo.LocalPath, mountInfo.WebDAVURL); err2 != nil {
+				return fmt.Errorf("failed to recover mount for %s after rcd restart: %w", provider, err2)
+			}
+			m.logger.InfoContext(ctx, "Successfully recovered mount after rcd restart", "provider", provider)
+			m.mountsMutex.Lock()
+			mountInfo.consecutiveFailures = 0
+			m.mountsMutex.Unlock()
+			return nil
+		}
 		return fmt.Errorf("failed to recover mount for %s: %w", provider, err)
 	}
 
 	m.logger.InfoContext(ctx, "Successfully recovered mount", "provider", provider)
+	m.mountsMutex.Lock()
+	mountInfo.consecutiveFailures = 0
+	m.mountsMutex.Unlock()
 	return nil
 }
 
@@ -168,22 +191,42 @@ func (m *Manager) performMountHealthCheck() {
 
 	for _, provider := range providers {
 		if !m.checkMountHealth(provider) {
-			m.logger.WarnContext(m.ctx, "Mount health check failed, attempting recovery", "provider", provider)
-
-			// Mark mount as unhealthy
 			m.mountsMutex.Lock()
-			if mount, exists := m.mounts[provider]; exists {
-				mount.Error = "Health check failed"
-				mount.Mounted = false
+			mount, exists := m.mounts[provider]
+			var failures int
+			if exists {
+				mount.consecutiveFailures++
+				failures = mount.consecutiveFailures
 			}
 			m.mountsMutex.Unlock()
 
-			// Attempt recovery
-			go func(provider string) {
-				if err := m.RecoverMount(m.ctx, provider); err != nil {
-					m.logger.ErrorContext(m.ctx, "Failed to recover mount", "err", err, "provider", provider)
+			m.logger.WarnContext(m.ctx, "Mount health check failed", "provider", provider, "consecutive_failures", failures)
+
+			if failures >= 3 {
+				m.logger.ErrorContext(m.ctx, "Mount health check failed 3 consecutive times, initiating recovery", "provider", provider)
+
+				// Mark mount as unhealthy
+				m.mountsMutex.Lock()
+				if exists {
+					mount.Error = "Health check failed (3 consecutive failures)"
+					mount.Mounted = false
 				}
-			}(provider)
+				m.mountsMutex.Unlock()
+
+				// Attempt recovery
+				go func(provider string) {
+					if err := m.RecoverMount(m.ctx, provider); err != nil {
+						m.logger.ErrorContext(m.ctx, "Failed to recover mount", "err", err, "provider", provider)
+					}
+				}(provider)
+			}
+		} else {
+			// Reset failures on success
+			m.mountsMutex.Lock()
+			if mount, exists := m.mounts[provider]; exists {
+				mount.consecutiveFailures = 0
+			}
+			m.mountsMutex.Unlock()
 		}
 	}
 }

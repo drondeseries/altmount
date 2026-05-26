@@ -59,6 +59,7 @@ type MetricsTracker struct {
 	retentionPeriod   time.Duration
 	calculationWindow time.Duration // Window for speed calculations (shorter than retention for accuracy)
 	maxDownloadSpeed  float64
+	peakProviderSpeeds map[string]float64 // Tracks peak speeds between DB flushes
 	// Live counters
 	articlesDownloaded  atomic.Int64
 	articlesPosted      atomic.Int64
@@ -98,8 +99,9 @@ func NewMetricsTracker(pool *nntppool.Client, repo StatsRepository) *MetricsTrac
 		initialProviderErrors: make(map[string]int64),
 		initialProviderBytes:  make(map[string]int64),
 		initialProviderStartedAt: make(map[string]time.Time),
-		lastSavedProviderBytes: make(map[string]int64),
-		sampleInterval:        2 * time.Second, // Match playback sampling for "live" feel
+		lastSavedProviderBytes:   make(map[string]int64),
+		peakProviderSpeeds:       make(map[string]float64),
+		sampleInterval:        1 * time.Second, // Match playback sampling for "live" feel
 		retentionPeriod:       60 * time.Second,
 		calculationWindow:     10 * time.Second,   // Use 10s window for more accurate real-time speeds
 		persistenceThreshold:  1024 * 1024 * 1024, // Save every 1GB downloaded
@@ -501,13 +503,28 @@ func (mt *MetricsTracker) saveStats(ctx context.Context) {
 
 		// Update per-provider hourly stats
 		for providerID, providerDelta := range providerDeltas {
-			if err := mt.repo.AddProviderBytesToHourlyStat(ctx, providerID, providerDelta); err != nil {
-				mt.logger.ErrorContext(ctx, "Failed to update provider hourly volume", "provider", providerID, "error", err)
+			id := providerID
+			mt.mu.RLock()
+			if mappedID, ok := mt.providerIDMap[providerID]; ok {
+				id = mappedID
+			}
+			mt.mu.RUnlock()
+
+			if err := mt.repo.AddProviderBytesToHourlyStat(ctx, id, providerDelta); err != nil {
+				mt.logger.ErrorContext(ctx, "Failed to update provider hourly volume", "provider", id, "error", err)
 			}
 		}
 
-		// Record current speed to history for charting (MBps)
-		for poolName, speedBytes := range snapshot.ProviderSpeeds {
+		// Record peak speeds to history for charting (MBps)
+		mt.mu.Lock()
+		peaksToRecord := make(map[string]float64)
+		for k, v := range mt.peakProviderSpeeds {
+			peaksToRecord[k] = v
+			mt.peakProviderSpeeds[k] = 0 // Reset after capturing
+		}
+		mt.mu.Unlock()
+
+		for poolName, speedBytes := range peaksToRecord {
 			if speedBytes > 1024*1024 { // Only record if speed > 1MB/s to show active performance
 				speedMbps := speedBytes / (1024 * 1024)
 				
@@ -545,6 +562,7 @@ func (mt *MetricsTracker) Reset(ctx context.Context, resetPeak bool, resetTotals
 		mt.initialProviderBytes = make(map[string]int64)
 		mt.initialProviderStartedAt = make(map[string]time.Time)
 		mt.lastSavedProviderBytes = make(map[string]int64)
+		mt.peakProviderSpeeds = make(map[string]float64)
 
 		// Clear samples to reset speed calculation
 		mt.samples = make([]metricsample, 0, 60)
@@ -559,6 +577,7 @@ func (mt *MetricsTracker) Reset(ctx context.Context, resetPeak bool, resetTotals
 
 	if resetPeak {
 		mt.maxDownloadSpeed = 0
+		mt.peakProviderSpeeds = make(map[string]float64)
 	}
 
 	// Persist the reset state to database
@@ -652,15 +671,35 @@ func (mt *MetricsTracker) takeSample() {
 	var totalErrors int64
 	providerErrors := make(map[string]int64)
 	providerMissing := make(map[string]int64)
+	providerSpeeds := make(map[string]float64)
+
+	var totalPoolAvgSpeed float64
 	for _, ps := range stats.Providers {
-		totalErrors += ps.Errors
+		totalPoolAvgSpeed += ps.AvgSpeed
+	}
+
+	for _, ps := range stats.Providers {
 		providerErrors[ps.Name] = ps.Errors
 		providerMissing[ps.Name] = ps.Missing
+		
+		// Calculate proportional speed
+		currentProviderSpeed := ps.AvgSpeed
+		if totalPoolAvgSpeed > 0 && stats.AvgSpeed > 0 {
+			weight := ps.AvgSpeed / totalPoolAvgSpeed
+			currentProviderSpeed = stats.AvgSpeed * weight
+		}
+		providerSpeeds[ps.Name] = currentProviderSpeed
 	}
 
 	bytesDownloaded := mt.liveBytesDownloaded.Load()
 
-	// Create sample
+	// Update peak provider speeds for charting
+	for pName, speed := range providerSpeeds {
+		if speed > mt.peakProviderSpeeds[pName] {
+			mt.peakProviderSpeeds[pName] = speed
+		}
+	}
+
 	sample := metricsample{
 		totalBytes:      bytesDownloaded,
 		avgSpeed:        stats.AvgSpeed,
