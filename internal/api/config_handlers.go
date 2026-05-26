@@ -83,6 +83,81 @@ func RegisterLogLevelHandler(ctx context.Context, configManager *config.Manager,
 	})
 }
 
+// restoreMaskedSecrets restores passwords and API keys that were masked in API responses
+// or omitted (empty string) from the frontend updates.
+func restoreMaskedSecrets(newConfig, currentConfig *config.Config) {
+	// Preserve existing rc_pass
+	if newConfig.RClone.RCPass == "" || newConfig.RClone.RCPass == "********" {
+		newConfig.RClone.RCPass = currentConfig.RClone.RCPass
+	}
+	// Preserve existing WebDAV password
+	if newConfig.WebDAV.Password == "" || newConfig.WebDAV.Password == "********" {
+		newConfig.WebDAV.Password = currentConfig.WebDAV.Password
+	}
+	// Preserve existing SABnzbd Fallback API Key
+	if newConfig.SABnzbd.FallbackAPIKey == "" || newConfig.SABnzbd.FallbackAPIKey == "********" {
+		newConfig.SABnzbd.FallbackAPIKey = currentConfig.SABnzbd.FallbackAPIKey
+	}
+	// Preserve existing Stremio Prowlarr API Key
+	if newConfig.Stremio.Prowlarr.APIKey == "" || newConfig.Stremio.Prowlarr.APIKey == "********" {
+		newConfig.Stremio.Prowlarr.APIKey = currentConfig.Stremio.Prowlarr.APIKey
+	}
+
+	// Preserve Arrs Instances API Keys
+	preserveArrsKeys := func(newInstances, currentInstances []config.ArrsInstanceConfig) {
+		for i := range newInstances {
+			if newInstances[i].APIKey == "" || newInstances[i].APIKey == "********" {
+				found := false
+				// 1. Try to match by both Name and URL
+				for _, current := range currentInstances {
+					if current.Name == newInstances[i].Name && current.URL == newInstances[i].URL {
+						newInstances[i].APIKey = current.APIKey
+						found = true
+						break
+					}
+				}
+				// 2. Fallback: match by URL only (user might have renamed the instance)
+				if !found {
+					for _, current := range currentInstances {
+						if current.URL == newInstances[i].URL {
+							newInstances[i].APIKey = current.APIKey
+							found = true
+							break
+						}
+					}
+				}
+				// 3. Fallback: match by Name only (user might have changed the URL)
+				if !found {
+					for _, current := range currentInstances {
+						if current.Name == newInstances[i].Name {
+							newInstances[i].APIKey = current.APIKey
+							break
+						}
+					}
+				}
+			}
+		}
+	}
+
+	preserveArrsKeys(newConfig.Arrs.RadarrInstances, currentConfig.Arrs.RadarrInstances)
+	preserveArrsKeys(newConfig.Arrs.SonarrInstances, currentConfig.Arrs.SonarrInstances)
+	preserveArrsKeys(newConfig.Arrs.LidarrInstances, currentConfig.Arrs.LidarrInstances)
+	preserveArrsKeys(newConfig.Arrs.ReadarrInstances, currentConfig.Arrs.ReadarrInstances)
+	preserveArrsKeys(newConfig.Arrs.WhisparrInstances, currentConfig.Arrs.WhisparrInstances)
+
+	// Preserve Provider Passwords
+	for i := range newConfig.Providers {
+		if newConfig.Providers[i].Password == "" || newConfig.Providers[i].Password == "********" {
+			for _, current := range currentConfig.Providers {
+				if current.ID == newConfig.Providers[i].ID {
+					newConfig.Providers[i].Password = current.Password
+					break
+				}
+			}
+		}
+	}
+}
+
 // handleGetConfig returns the current configuration
 //
 //	@Summary		Get configuration
@@ -135,6 +210,8 @@ func (s *Server) handleUpdateConfig(c *fiber.Ctx) error {
 	if err := c.BodyParser(newConfig); err != nil {
 		return RespondValidationError(c, "Invalid JSON in request body", err.Error())
 	}
+
+	restoreMaskedSecrets(newConfig, currentConfig)
 
 	slog.DebugContext(c.Context(), "Updating configuration")
 
@@ -223,16 +300,8 @@ func (s *Server) handlePatchConfigSection(c *fiber.Ctx) error {
 		err = c.BodyParser(newConfig)
 		// BodyParser will map fields like "profiler_enabled" from JSON to the root of newConfig
 		// because Config struct has it with `json:"profiler_enabled"`.
-		// Preserve existing rc_pass when the request omits or sends an empty value.
-		// The frontend sends rc_pass: "" when the user hasn't entered a new password,
-		// so an empty value means "keep the existing password", not "clear it".
-		if err == nil && newConfig.RClone.RCPass == "" {
-			newConfig.RClone.RCPass = currentConfig.RClone.RCPass
-		}
-		// Preserve existing WebDAV password when the request omits or sends an empty value.
-		// The frontend sends password: "" when the user hasn't entered a new password.
-		if err == nil && newConfig.WebDAV.Password == "" {
-			newConfig.WebDAV.Password = currentConfig.WebDAV.Password
+		if err == nil {
+			restoreMaskedSecrets(newConfig, currentConfig)
 		}
 	default:
 		return RespondValidationError(c, fmt.Sprintf("Unknown configuration section: %s", section), "INVALID_SECTION")
