@@ -14,6 +14,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/javi11/altmount/internal/arrs/model"
+	"github.com/javi11/altmount/internal/config"
 	"github.com/javi11/altmount/internal/database"
 )
 
@@ -85,6 +86,11 @@ type ArrsWebhookRequest struct {
 		Path      string `json:"path"`
 	} `json:"episodeFile"`
 	DeletedFiles ArrsDeletedFiles `json:"deletedFiles,omitempty"`
+	DownloadId string `json:"downloadId,omitempty"`
+	Release    *struct {
+		Indexer      string `json:"indexer,omitempty"`
+		ReleaseTitle string `json:"releaseTitle,omitempty"`
+	} `json:"release,omitempty"`
 }
 
 func (req ArrsWebhookRequest) ToMetadata() model.WebhookMetadata {
@@ -244,6 +250,21 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 	case "Test":
 		slog.InfoContext(c.Context(), "Received ARR test webhook")
 		return c.Status(200).JSON(fiber.Map{"success": true, "message": "Test successful"})
+	case "Grab":
+		if req.DownloadId != "" && req.Release != nil && req.Release.Indexer != "" {
+			indexerName := req.Release.Indexer
+			releaseTitle := req.Release.ReleaseTitle
+			s.importerService.StoreGrabbedIndexer(req.DownloadId, releaseTitle, indexerName)
+			slog.InfoContext(c.Context(), "Logged grabbed indexer from webhook", "download_id", req.DownloadId, "release_title", releaseTitle, "indexer", indexerName)
+			// Proactively update any existing queue item with this download ID
+			if err := s.queueRepo.UpdateQueueItemIndexerByDownloadID(c.Context(), req.DownloadId, indexerName); err != nil {
+				slog.WarnContext(c.Context(), "Failed to update indexer for existing queue item", "download_id", req.DownloadId, "indexer", indexerName, "error", err)
+			}
+			// In case the import already completed or failed (e.g. race condition), update history and stats
+			_ = s.queueRepo.UpdateImportHistoryIndexerByDownloadID(c.Context(), req.DownloadId, indexerName)
+			_ = s.queueRepo.UpdateIndexerStatsByDownloadID(c.Context(), req.DownloadId, indexerName)
+		}
+		return c.Status(200).JSON(fiber.Map{"success": true, "message": "Grab logged successfully"})
 	case "Download", "AlbumImport", "BookImport": // OnImport
 		isScanEvent = true
 		if req.EpisodeFile.Path != "" {
@@ -253,6 +274,22 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 		} else if req.FilePath != "" {
 			pathsToScan = append(pathsToScan, req.FilePath)
 		}
+
+		// Update indexer name in database tables if present in webhook
+		if req.DownloadId != "" && req.Release != nil && req.Release.Indexer != "" {
+			indexerName := req.Release.Indexer
+			slog.InfoContext(c.Context(), "Logged indexer from OnImport webhook", "download_id", req.DownloadId, "indexer", indexerName)
+			
+			// 1. Update queue if it still exists
+			_ = s.queueRepo.UpdateQueueItemIndexerByDownloadID(c.Context(), req.DownloadId, indexerName)
+			
+			// 2. Update import history if it has already completed
+			_ = s.queueRepo.UpdateImportHistoryIndexerByDownloadID(c.Context(), req.DownloadId, indexerName)
+			
+			// 3. Update indexer_import_stats from Unknown to actual indexer
+			_ = s.queueRepo.UpdateIndexerStatsByDownloadID(c.Context(), req.DownloadId, indexerName)
+		}
+
 	case "Rename":
 		isScanEvent = true
 		// For rename, we want to scan the new file
@@ -615,9 +652,18 @@ func (s *Server) handleArrsWebhook(c *fiber.Ctx) error {
 				metadataStr = &str
 			}
 
+			var indexer *string = nil
+			if req.Release != nil && req.Release.Indexer != "" {
+				indexer = &req.Release.Indexer
+			} else if req.DownloadId != "" {
+				if idxName, ok := s.importerService.GetGrabbedIndexer(req.DownloadId, ""); ok {
+					indexer = &idxName
+				}
+			}
+
 			// Add to health check (pending status) with high priority (Next) to ensure it's processed right away
 			cfg := s.configManager.GetConfigGetter()()
-			err = s.healthRepo.AddFileToHealthCheckWithMetadata(c.Context(), normalizedPath, &path, cfg.GetMaxRetries(), cfg.GetMaxRepairRetries(), sourceNzb, database.HealthPriorityNext, releaseDate, metadataStr, nil)
+			err = s.healthRepo.AddFileToHealthCheckWithMetadata(c.Context(), normalizedPath, &path, cfg.GetMaxRetries(), cfg.GetMaxRepairRetries(), sourceNzb, database.HealthPriorityNext, releaseDate, metadataStr, indexer)
 			if err != nil {
 				slog.ErrorContext(c.Context(), "Failed to add webhook file to health check", "path", normalizedPath, "error", err)
 			} else {
@@ -819,6 +865,40 @@ func (s *Server) handleTestArrsConnection(c *fiber.Ctx) error {
 			"success": false,
 			"message": "URL and API key are required",
 		})
+	}
+
+	if req.APIKey == "********" && s.configManager != nil {
+		if cfg := s.configManager.GetConfig(); cfg != nil {
+			var instances []config.ArrsInstanceConfig
+			switch string(req.Type) {
+			case "radarr":
+				instances = cfg.Arrs.RadarrInstances
+			case "sonarr":
+				instances = cfg.Arrs.SonarrInstances
+			case "lidarr":
+				instances = cfg.Arrs.LidarrInstances
+			case "readarr":
+				instances = cfg.Arrs.ReadarrInstances
+			case "whisparr":
+				instances = cfg.Arrs.WhisparrInstances
+			}
+
+			found := false
+			for _, inst := range instances {
+				if inst.URL == req.URL {
+					req.APIKey = inst.APIKey
+					found = true
+					break
+				}
+			}
+
+			if !found {
+				return c.Status(400).JSON(fiber.Map{
+					"success": false,
+					"message": "Cannot test with masked API key for an unknown instance. Please enter the real API key.",
+				})
+			}
+		}
 	}
 
 	if err := s.arrsService.TestConnection(c.Context(), string(req.Type), req.URL, req.APIKey); err != nil {
