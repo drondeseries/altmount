@@ -474,6 +474,16 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 			update.Status = database.HealthStatusCorrupted
 			sideEffect = func() error {
 				slog.ErrorContext(ctx, "File permanently marked as corrupted after repair retries exhausted", "file_path", fh.FilePath)
+				
+				// Log failure against the indexer if known
+				if fh.Indexer != nil && *fh.Indexer != "" && *fh.Indexer != "Unknown" {
+					errMsg := "Permanently corrupted"
+					if errorMsg != nil {
+						errMsg = *errorMsg
+					}
+					_ = hw.healthRepo.LogIndexerImport(ctx, *fh.Indexer, "failed", fmt.Sprintf("Health check permanently corrupted: %s", errMsg), nil)
+				}
+				
 				return nil
 			}
 		} else {
@@ -516,6 +526,16 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 
 			sideEffect = func() error {
 				slog.InfoContext(ctx, "Health check retries exhausted, triggering repair", "file_path", fh.FilePath)
+				
+				// Log failure against the indexer if known
+				if fh.Indexer != nil && *fh.Indexer != "" && *fh.Indexer != "Unknown" {
+					errMsg := "Retries exhausted"
+					if errorMsg != nil {
+						errMsg = *errorMsg
+					}
+					_ = hw.healthRepo.LogIndexerImport(ctx, *fh.Indexer, "failed", fmt.Sprintf("Health check failed (repair triggered): %s", errMsg), nil)
+				}
+				
 				outcome, err := hw.triggerFileRepair(ctx, fh, errorMsg, event.Details)
 				applyRepairOutcome(update, outcome, err)
 				return nil

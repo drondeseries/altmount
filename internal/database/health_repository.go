@@ -1869,3 +1869,9 @@ func (r *HealthRepository) UpdateFileMetadata(ctx context.Context, id int64, met
 	_, err := r.db.ExecContext(ctx, query, metadata, id)
 	return err
 }
+
+// LogIndexerImport records a success or failure for an indexer persistently.
+func (r *HealthRepository) LogIndexerImport(ctx context.Context, indexer string, status string, errMsg string, downloadID *string) error {
+	return logIndexerImport(ctx, r.db, indexer, status, errMsg, downloadID)
+}
+
