@@ -31,10 +31,10 @@ func logIndexerImport(ctx context.Context, db DBQuerier, indexer string, status 
 		errDetails = errMsg
 	}
 	query := `
-		INSERT INTO indexer_import_stats (indexer, status, error_message, download_id, created_at)
-		VALUES (?, ?, ?, ?, datetime('now'))
+		INSERT INTO indexer_import_stats (indexer, status, error_message, created_at)
+		VALUES (?, ?, ?, datetime('now'))
 	`
-	_, err := db.ExecContext(ctx, query, indexer, status, errDetails, downloadID)
+	_, err := db.ExecContext(ctx, query, indexer, status, errDetails)
 	return err
 }
 
@@ -79,7 +79,7 @@ func getIndexerHealthStats(ctx context.Context, db DBQuerier) ([]*IndexerAggrega
 
 func pruneIndexerStats(ctx context.Context, db DBQuerier, hours int) (int64, error) {
 	cutoff := time.Now().Add(-time.Duration(hours) * time.Hour)
-	query := `DELETE FROM indexer_import_stats WHERE created_at >= ?`
+	query := `DELETE FROM indexer_import_stats WHERE created_at <= ?`
 	res, err := db.ExecContext(ctx, query, cutoff)
 	if err != nil {
 		return 0, err
@@ -97,9 +97,8 @@ func deleteIndexerStats(ctx context.Context, db DBQuerier, indexer string) (int6
 }
 
 func updateIndexerStatsByDownloadID(ctx context.Context, db DBQuerier, downloadID string, indexer string) error {
-	query := `UPDATE indexer_import_stats SET indexer = ? WHERE download_id = ? AND indexer = 'Unknown'`
-	_, err := db.ExecContext(ctx, query, indexer, downloadID)
-	return err
+	// No-op: we keep upstream schemas clean and already associate download_ids in queue/history tables
+	return nil
 }
 
 func updateImportHistoryIndexerByDownloadID(ctx context.Context, db DBQuerier, downloadID string, indexer string) error {
