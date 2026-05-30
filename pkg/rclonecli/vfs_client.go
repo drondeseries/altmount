@@ -117,6 +117,8 @@ func (c *rcloneRcClient) RefreshDir(ctx context.Context, provider string, dirs [
 		return fmt.Errorf("invalid RC URL configuration: %w", err)
 	}
 
+	var errs []error
+
 	// Issue a vfs/forget call for each directory to ensure all parents/children are forgotten
 	for _, dir := range dirs {
 		if dir == "" {
@@ -131,26 +133,27 @@ func (c *rcloneRcClient) RefreshDir(ctx context.Context, provider string, dirs [
 
 		forgetPayload, err := json.Marshal(forgetArgs)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", baseUrl+"/vfs/forget", bytes.NewBuffer(forgetPayload))
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, err := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("unexpected status code: %d, error: %s", resp.StatusCode, string(body))
+			errs = append(errs, fmt.Errorf("vfs/forget failed for %s: status %d, error: %s", dir, resp.StatusCode, string(body)))
+			continue
 		}
 		resp.Body.Close()
 	}
@@ -171,28 +174,33 @@ func (c *rcloneRcClient) RefreshDir(ctx context.Context, provider string, dirs [
 
 		refreshPayload, err := json.Marshal(refreshArgs)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 
 		req, err := http.NewRequestWithContext(ctx, "POST", baseUrl+"/vfs/refresh", bytes.NewBuffer(refreshPayload))
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		req.Header.Set("Content-Type", "application/json")
 		resp, err := c.httpClient.Do(req)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			body, err := io.ReadAll(resp.Body)
+			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
-			if err != nil {
-				return err
-			}
-			return fmt.Errorf("unexpected status code: %d, error: %s", resp.StatusCode, string(body))
+			errs = append(errs, fmt.Errorf("vfs/refresh failed for %s: status %d, error: %s", dir, resp.StatusCode, string(body)))
+			continue
 		}
 		resp.Body.Close()
+	}
+
+	if len(errs) > 0 {
+		return fmt.Errorf("VFS sync completed with %d errors; first error: %w", len(errs), errs[0])
 	}
 
 	return nil
