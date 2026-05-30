@@ -703,7 +703,7 @@ func (r *HealthRepository) RegisterCorruptedFile(ctx context.Context, filePath s
 			status = 'pending',
 			last_error = excluded.last_error,
 			error_details = excluded.error_details,
-			retry_count = CASE WHEN max_retries > 0 THEN max_retries - 1 ELSE 0 END,
+			retry_count = 0,
 			scheduled_check_at = datetime('now'),
 			last_checked = datetime('now'),
 			updated_at = datetime('now'),
