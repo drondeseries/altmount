@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -108,9 +109,15 @@ func (s *Server) runProviderSpeedTest(ctx context.Context, p *config.ProviderCon
 	if s.poolManager != nil {
 		if cp, err := s.poolManager.GetPool(); err == nil && cp != nil {
 			if real, ok := cp.(*nntppool.Client); ok {
-				providerName := p.Host
+				// Match the name the production pool registers for this
+				// provider: ToNNTPProvider sets Host = "host:port", and
+				// nntppool's resolveProviderName derives "host:port+user".
+				// Building the lookup from p.Host alone (no port) never
+				// matches, forcing the slow coordinator fallback.
+				host := fmt.Sprintf("%s:%d", p.Host, p.Port)
+				providerName := host
 				if p.Username != "" {
-					providerName = p.Host + "+" + p.Username
+					providerName = host + "+" + p.Username
 				}
 				// Try the production pool first. If the provider isn't
 				// in it, nntppool returns an error and we fall through
