@@ -62,7 +62,20 @@ func (s *Server) handleTestProviderSpeed(c *fiber.Ctx) error {
 	if err != nil {
 		return RespondInternalError(c, "Speed test failed", err.Error())
 	}
-	speed := result.WireSpeedBps / 1024 / 1024 // bytes/sec → MB/s
+	// Prefer the targeted provider's per-provider wire speed over the
+	// client-wide aggregate. WireSpeedBps divides the whole-client
+	// BytesConsumed delta by elapsed, so on the shared production pool
+	// any concurrent stream or other provider's traffic during the test
+	// window inflates it. result.Providers carries the delta-based,
+	// per-provider speed for exactly the provider we targeted.
+	wireBps := result.WireSpeedBps
+	for _, ps := range result.Providers {
+		if ps.AvgSpeed > 0 {
+			wireBps = ps.AvgSpeed
+			break
+		}
+	}
+	speed := wireBps / 1024 / 1024 // bytes/sec → MB/s
 
 	// Update provider config with speed test result
 	now := time.Now()
