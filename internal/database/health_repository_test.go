@@ -341,11 +341,12 @@ func TestRelinkFileByFilename_DownloadRevalidatesRepairState(t *testing.T) {
 
 	filePath := "tv/Show.S01E02/Show.S01E02.mkv"
 	future := time.Now().UTC().Add(30 * time.Minute).Format("2006-01-02 15:04:05")
+	past := time.Now().UTC().Add(-5 * time.Minute).Format("2006-01-02 15:04:05")
 	_, err := repo.db.ExecContext(ctx, `
 		INSERT INTO file_health (file_path, status, retry_count, repair_retry_count,
-			max_repair_retries, last_error, error_details, scheduled_check_at)
-		VALUES (?, 'repair_triggered', 2, 1, 3, 'missing segments', 'details', ?)
-	`, filePath, future)
+			max_repair_retries, last_error, error_details, scheduled_check_at, updated_at)
+		VALUES (?, 'repair_triggered', 2, 1, 3, 'missing segments', 'details', ?, ?)
+	`, filePath, future, past)
 	require.NoError(t, err)
 
 	before := time.Now().UTC()
@@ -487,6 +488,11 @@ func TestRelinkFileByMetadata(t *testing.T) {
 	err = repo.UpdateFileHealth(ctx, oldPath, HealthStatusRepairTriggered, nil, nil, nil, false)
 	require.NoError(t, err)
 
+	// Back-date updated_at so the 60-second guard doesn't block the reset to pending
+	past := time.Now().UTC().Add(-5 * time.Minute).Format("2006-01-02 15:04:05")
+	_, err = repo.db.ExecContext(ctx, "UPDATE file_health SET updated_at = ? WHERE file_path = ?", past, oldPath)
+	require.NoError(t, err)
+
 	// Verify it's repair_triggered
 	hOld, err := repo.GetFileHealth(ctx, oldPath)
 	require.NoError(t, err)
@@ -569,19 +575,20 @@ func TestRelinkFileByMetadata_ConflictMerge(t *testing.T) {
 	oldPath := "complete/tv/show.S01E01.mkv"
 	libraryPath := "/mnt/library/tv/show.S01E01.mkv"
 	dbMeta := `{"eventType":"Download","instanceName":"Sonarr","series":{"id":100,"tvdbId":200},"episodeFile":{"id":300},"episodes":[{"id":400}]}`
+	past := time.Now().UTC().Add(-5 * time.Minute).Format("2006-01-02 15:04:05")
 	_, err := repo.db.ExecContext(ctx, `
-		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries, metadata, library_path)
-		VALUES (?, 'repair_triggered', 2, 3, ?, ?)
-	`, oldPath, dbMeta, libraryPath)
+		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries, metadata, library_path, updated_at)
+		VALUES (?, 'repair_triggered', 2, 3, ?, ?, ?)
+	`, oldPath, dbMeta, libraryPath, past)
 	require.NoError(t, err)
 
 	// 2. Setup conflicting record at the target path
 	newPath := "tv/show/Season 01/show.S01E01.mkv"
 	newLibPath := "/mnt/library/tv/show/Season 01/show.S01E01.mkv"
 	_, err = repo.db.ExecContext(ctx, `
-		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries, metadata, library_path)
-		VALUES (?, 'corrupted', 1, 3, ?, ?)
-	`, newPath, dbMeta, newLibPath)
+		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries, metadata, library_path, updated_at)
+		VALUES (?, 'corrupted', 1, 3, ?, ?, ?)
+	`, newPath, dbMeta, newLibPath, past)
 	require.NoError(t, err)
 
 	// 3. Relink
