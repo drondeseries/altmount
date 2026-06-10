@@ -224,17 +224,39 @@ func (m *Manager) discoverSonarrStrict(ctx context.Context, filePath, cleanNzbNa
 	req := &starr.PageReq{PageSize: 100, SortKey: "date", SortDir: starr.SortDescend}
 	history, err := client.GetHistoryPageContext(ctx, req)
 	if err == nil {
+		var matchedRecord *sonarr.HistoryRecord
+		var episodeIDs []int64
+		episodeIDMap := make(map[int64]bool)
+
 		for _, record := range history.Records {
 			if strings.EqualFold(record.SourceTitle, cleanNzbName) {
-				metadata := &model.WebhookMetadata{
-					EventType:    "StrictHistoryDiscovery",
-					InstanceName: instanceName,
-					Series: &model.SeriesMetadata{
-						Id: record.SeriesID,
-					},
+				if matchedRecord == nil {
+					matchedRecord = record
 				}
-				return metadata, nil
+				if record.EpisodeID > 0 && !episodeIDMap[record.EpisodeID] {
+					episodeIDMap[record.EpisodeID] = true
+					episodeIDs = append(episodeIDs, record.EpisodeID)
+				}
 			}
+		}
+
+		if matchedRecord != nil {
+			var episodes []model.EpisodeMetadata
+			for _, epID := range episodeIDs {
+				episodes = append(episodes, model.EpisodeMetadata{
+					Id: epID,
+				})
+			}
+
+			metadata := &model.WebhookMetadata{
+				EventType:    "StrictHistoryDiscovery",
+				InstanceName: instanceName,
+				Series: &model.SeriesMetadata{
+					Id: matchedRecord.SeriesID,
+				},
+				Episodes: episodes,
+			}
+			return metadata, nil
 		}
 	}
 
