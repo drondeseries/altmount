@@ -172,10 +172,11 @@ func TestRelinkFileByFilename_CollisionResolvedByExactPath(t *testing.T) {
 	repo := setupTestDB(t)
 	ctx := context.Background()
 
+	past := time.Now().UTC().Add(-5 * time.Minute).Format("2006-01-02 15:04:05")
 	_, err := repo.db.ExecContext(ctx, `
-		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries)
-		VALUES ('tv/ShowA/01.mkv', 'repair_triggered', 1, 3), ('tv/ShowB/01.mkv', 'repair_triggered', 2, 3)
-	`)
+		INSERT INTO file_health (file_path, status, repair_retry_count, max_repair_retries, updated_at)
+		VALUES ('tv/ShowA/01.mkv', 'repair_triggered', 1, 3, ?), ('tv/ShowB/01.mkv', 'repair_triggered', 2, 3, ?)
+	`, past, past)
 	require.NoError(t, err)
 
 	// Incoming Download whose path matches ShowA exactly: relink only that one.

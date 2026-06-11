@@ -1795,66 +1795,94 @@ func (r *HealthRepository) RelinkFileByFilename(ctx context.Context, filename, f
 	}
 	defer tx.Rollback()
 
-	// Query to find all matched IDs
+	// Query to find all matched records
 	rows, err := tx.QueryContext(ctx, `
-		SELECT id FROM file_health
+		SELECT id, file_path, library_path FROM file_health
 		WHERE (file_path LIKE ? ESCAPE '\' OR file_path = ? OR library_path LIKE ? ESCAPE '\' OR library_path = ?)
 	`, likePattern, filename, likePattern, libraryPath)
 	if err != nil {
 		return false, fmt.Errorf("failed to query records for filename relink: %w", err)
 	}
 	
-	var matchedIDs []int64
+	type candidate struct {
+		id          int64
+		filePath    string
+		libraryPath string
+	}
+	var allCandidates []candidate
 	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
+		var c candidate
+		var lp sql.NullString
+		if err := rows.Scan(&c.id, &c.filePath, &lp); err != nil {
 			rows.Close()
 			return false, err
 		}
-		matchedIDs = append(matchedIDs, id)
+		if lp.Valid {
+			c.libraryPath = lp.String
+		}
+		allCandidates = append(allCandidates, c)
 	}
 	rows.Close()
+
+	if len(allCandidates) == 0 {
+		return false, nil
+	}
+
+	var matchedIDs []int64
+	for _, cand := range allCandidates {
+		// Keep if it is the target path/library path precisely
+		if cand.filePath == filePath || cand.libraryPath == libraryPath {
+			matchedIDs = append(matchedIDs, cand.id)
+			continue
+		}
+		// Keep if it is a downloader path or shares show folder with the target path
+		if isDownloaderPath(cand.filePath) || shareShowFolder(cand.filePath, filePath) {
+			matchedIDs = append(matchedIDs, cand.id)
+			continue
+		}
+	}
 
 	if len(matchedIDs) == 0 {
 		return false, nil
 	}
 
 	var targetID int64
-	if len(matchedIDs) == 1 {
-		targetID = matchedIDs[0]
-	} else {
-		// Collision: only proceed if exactly one record matches the incoming path
-		// precisely; otherwise refuse and leave every matched row intact.
-		exactRows, err := tx.QueryContext(ctx, `
-			SELECT id FROM file_health WHERE file_path = ? OR library_path = ?
-		`, filePath, libraryPath)
-		if err != nil {
-			return false, fmt.Errorf("failed to resolve exact relink target: %w", err)
-		}
-		
-		var exactIDs []int64
-		for exactRows.Next() {
-			var id int64
-			if err := exactRows.Scan(&id); err != nil {
-				exactRows.Close()
-				return false, err
+	var sourceID int64
+	for _, id := range matchedIDs {
+		var isExact bool
+		for _, cand := range allCandidates {
+			if cand.id == id && (cand.filePath == filePath || cand.libraryPath == libraryPath) {
+				isExact = true
+				break
 			}
-			exactIDs = append(exactIDs, id)
 		}
-		exactRows.Close()
-
-		if len(exactIDs) != 1 {
-			slog.WarnContext(ctx, "Refusing ambiguous relink — filename matches multiple records",
-				"filename", filename, "matches", len(matchedIDs), "exact_matches", len(exactIDs))
-			return false, nil
+		if isExact {
+			targetID = id
+		} else {
+			sourceID = id
 		}
-		slog.WarnContext(ctx, "Filename collision on relink — scoping to the exact path match",
-			"filename", filename, "matches", len(matchedIDs))
-		targetID = exactIDs[0]
 	}
 
-	if err := r.relinkOrMergeRecordTx(ctx, tx, targetID, filePath, libraryPath, metadataStr, revalidate); err != nil {
-		return false, fmt.Errorf("failed to merge/relink record %d: %w", targetID, err)
+	// If there are multiple other source IDs (e.g. len(matchedIDs) > 2), it is ambiguous collision
+	if len(matchedIDs) > 2 {
+		slog.WarnContext(ctx, "Refusing ambiguous relink — filename matches multiple source records",
+			"filename", filename, "matches", len(matchedIDs))
+		return false, nil
+	}
+
+	var actID int64
+	if targetID != 0 && sourceID != 0 {
+		actID = sourceID
+	} else if targetID != 0 {
+		actID = targetID
+	} else if sourceID != 0 {
+		actID = sourceID
+	} else {
+		return false, nil
+	}
+
+	if err := r.relinkOrMergeRecordTx(ctx, tx, actID, filePath, libraryPath, metadataStr, revalidate); err != nil {
+		return false, fmt.Errorf("failed to merge/relink record %d: %w", actID, err)
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -1862,6 +1890,38 @@ func (r *HealthRepository) RelinkFileByFilename(ctx context.Context, filename, f
 	}
 
 	return true, nil
+}
+
+func isDownloaderPath(p string) bool {
+	low := strings.ToLower(p)
+	return strings.Contains(low, "complete") || 
+	       strings.Contains(low, "download") || 
+	       strings.Contains(low, "nzb") || 
+	       strings.Contains(low, "temp") || 
+	       strings.Contains(low, "tmp") || 
+	       strings.Contains(low, "incoming")
+}
+
+func shareShowFolder(p1, p2 string) bool {
+	s1 := strings.Split(p1, "/")
+	s2 := strings.Split(p2, "/")
+	if len(s1) < 2 || len(s2) < 2 {
+		return false
+	}
+	for i := len(s1) - 2; i >= 0 && i >= len(s1) - 3; i-- {
+		seg := s1[i]
+		low := strings.ToLower(seg)
+		if strings.HasPrefix(low, "season") || 
+		   low == "specials" || low == "tv" || low == "movies" || low == "downloads" {
+			continue
+		}
+		for j := len(s2) - 2; j >= 0 && j >= len(s2) - 3; j-- {
+			if s2[j] == seg {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // scanIDs reads an id column from a query result, always closing the rows. It centralizes
