@@ -7,7 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/javi11/altmount/internal/config"
 	"github.com/javi11/altmount/internal/database"
+	"github.com/javi11/altmount/internal/importer/parser/fileinfo"
 )
 
 // maxDirExpansionDepth bounds the recursive walk of "DIR:" written-path entries.
@@ -35,20 +37,42 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 	}
 
 	cfg := c.configGetter()
+
+	// Under SYMLINK/STRM strategies a record only becomes checkable once an ARR
+	// Download webhook relinks it to a real library path (GetUnhealthyFiles
+	// filters on library_path), and ARRs only ever import media files. Sidecars
+	// (.nfo, .srt, ...) would sit permanently ineligible in pending until the
+	// next library sync deletes them, so don't schedule them here. Any sidecar
+	// an ARR does copy into the library is still registered — with a real
+	// library path — by the library sync.
+	if cfg.Import.ImportStrategy != config.ImportStrategyNone {
+		media := make([]string, 0, len(paths))
+		for _, p := range paths {
+			if isArrImportableMedia(p) {
+				media = append(media, p)
+			}
+		}
+		if skipped := len(paths) - len(media); skipped > 0 {
+			slog.DebugContext(ctx, "Skipping health checks for sidecar files",
+				"path", resultingPath, "skipped", skipped)
+		}
+		paths = media
+	}
+
 	var indexer *string = nil
 	if item != nil {
 		indexer = item.Indexer
 	}
 
-	scheduled := 0
 	var lastErr error
 	repairDirs := make(map[string]struct{})
-	for _, path := range paths {
+	records := make([]database.HealthCheckUpsert, 0, len(paths))
+	for _, p := range paths {
 		// Read metadata to get SourceNzbPath needed for health check
-		fileMeta, err := c.metadataService.ReadFileMetadata(path)
+		fileMeta, err := c.metadataService.ReadFileMetadata(p)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to read metadata for health check scheduling",
-				"path", path,
+				"path", p,
 				"error", err)
 			lastErr = err
 			continue
@@ -57,17 +81,34 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 			continue
 		}
 
-		// Add/Update health record with high priority
-		filePath := path
-		if err := c.healthRepo.AddFileToHealthCheckWithMetadata(ctx, filePath, &filePath, cfg.GetMaxRetries(), cfg.GetMaxRepairRetries(), &fileMeta.SourceNzbPath, database.HealthPriorityNext, nil, nil, indexer); err != nil {
-			slog.ErrorContext(ctx, "Failed to schedule immediate health check for imported file",
-				"path", path,
-				"error", err)
+		// Copy the path and source NZB into per-iteration locals so the pointers stored in
+		// the batch outlive the loop and do not retain the proto message.
+		filePath := p
+		srcNzb := fileMeta.SourceNzbPath
+		records = append(records, database.HealthCheckUpsert{
+			FilePath:         filePath,
+			LibraryPath:      &filePath,
+			SourceNzbPath:    &srcNzb,
+			Indexer:          indexer,
+			Priority:         database.HealthPriorityNext,
+			MaxRetries:       cfg.GetMaxRetries(),
+			MaxRepairRetries: cfg.GetMaxRepairRetries(),
+		})
+		repairDirs[filepath.Dir(p)] = struct{}{}
+	}
+
+	// One batched upsert for the whole import instead of a write transaction per file — a
+	// season pack / archive can expand to hundreds of paths. Conflict semantics match the
+	// single-row upsert (reset to pending, preserve repair_retry_count).
+	scheduled := 0
+	if len(records) > 0 {
+		if err := c.healthRepo.BatchAddFileToHealthCheck(ctx, records); err != nil {
+			slog.ErrorContext(ctx, "Failed to schedule immediate health checks for imported files",
+				"path", resultingPath, "files", len(records), "error", err)
 			lastErr = err
-			continue
+		} else {
+			scheduled = len(records)
 		}
-		scheduled++
-		repairDirs[filepath.Dir(path)] = struct{}{}
 	}
 
 	if scheduled > 0 {
@@ -77,7 +118,7 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 		// A successful import that schedules nothing means the file will only be
 		// covered by library sync much later — and any pending repair in its
 		// directory stays unresolved. Surface it instead of failing silently.
-		slog.WarnContext(ctx, "No health checks scheduled for import - no readable file metadata found",
+		slog.WarnContext(ctx, "No health checks scheduled for import - no checkable media files with readable metadata found",
 			"path", resultingPath, "written_paths", len(writtenPaths))
 	}
 
@@ -92,6 +133,23 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 	return nil
 }
 
+// arrAudioBookExtensions are the non-video media types ARRs import (Lidarr audio,
+// Readarr books). Video extensions are covered by fileinfo.IsVideoFile.
+var arrAudioBookExtensions = map[string]bool{
+	".mp3": true, ".flac": true, ".m4a": true, ".m4b": true, ".aac": true,
+	".ogg": true, ".opus": true, ".wav": true,
+	".epub": true, ".pdf": true, ".cbz": true, ".cbr": true, ".mobi": true, ".azw3": true,
+}
+
+// isArrImportableMedia reports whether the virtual path is a media file an ARR could
+// import into the library — i.e. one that can ever be relinked to a real library path
+// by a Download webhook and so become eligible for health checks under SYMLINK/STRM.
+func isArrImportableMedia(p string) bool {
+	if fileinfo.IsVideoFile(p) {
+		return true
+	}
+	return arrAudioBookExtensions[strings.ToLower(path.Ext(p))]
+}
 // expandWrittenPaths resolves "DIR:"-prefixed entries (whole-directory imports such
 // as RAR/7z archives, which only report their NZB folder) into the per-file virtual
 // paths beneath them by walking the metadata tree. Plain file entries pass through
