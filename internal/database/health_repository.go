@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -1903,8 +1904,8 @@ func isDownloaderPath(p string) bool {
 }
 
 func shareShowFolder(p1, p2 string) bool {
-	s1 := strings.Split(p1, "/")
-	s2 := strings.Split(p2, "/")
+	s1 := strings.Split(filepath.ToSlash(p1), "/")
+	s2 := strings.Split(filepath.ToSlash(p2), "/")
 	if len(s1) < 2 || len(s2) < 2 {
 		return false
 	}
