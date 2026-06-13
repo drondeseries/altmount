@@ -166,7 +166,6 @@ func TestScheduleHealthCheck_PlainPathsUnchanged(t *testing.T) {
 	require.NotNil(t, h)
 	assert.Equal(t, database.HealthStatusPending, h.Status)
 }
-
 // TestScheduleHealthCheck_SkipsSidecarsUnderSymlinkStrategy verifies that under
 // SYMLINK/STRM strategies only ARR-importable media files are scheduled. Sidecars
 // (.nfo, .srt, ...) can never be relinked to a real library path by a Download
