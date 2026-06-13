@@ -85,7 +85,6 @@ export function QueuePage() {
 		return (saved as "asc" | "desc") || "desc";
 	});
 
-
 	const queryClient = useQueryClient();
 
 	const pageSize = 20;
@@ -117,11 +116,16 @@ export function QueuePage() {
 
 	const enrichedQueueData = useMemo(() => {
 		if (!queueData) return undefined;
-		return queueData.map((item) => ({
+		const enriched = queueData.map((item) => ({
 			...item,
 			percentage: liveProgress[item.id]?.percentage ?? item.percentage,
 			stage: liveProgress[item.id]?.stage,
 		}));
+		return enriched.sort((a, b) => {
+			const aActive = a.status === QueueStatus.PROCESSING ? 0 : 1;
+			const bActive = b.status === QueueStatus.PROCESSING ? 0 : 1;
+			return aActive - bActive;
+		});
 	}, [queueData, liveProgress]);
 
 	const { data: stats } = useQueueStats();
