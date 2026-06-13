@@ -185,19 +185,34 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker login (DockerHub)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set images list
+        id: images
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          IMAGES="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}"
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            IMAGES="${IMAGES}
+            ${{ env.DOCKERHUB_IMAGE }}"
+          fi
+          echo "images<<EOF" >> $GITHUB_OUTPUT
+          echo "$IMAGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       # Extract metadata for tags and labels
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
-            ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ steps.images.outputs.images }}
           tags: |
             type=ref,event=tag,suffix=-amd64-temp
             type=semver,pattern={{version}},suffix=-amd64-temp
@@ -256,19 +271,34 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker login (DockerHub)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set images list
+        id: images
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          IMAGES="${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}"
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            IMAGES="${IMAGES}
+            ${{ env.DOCKERHUB_IMAGE }}"
+          fi
+          echo "images<<EOF" >> $GITHUB_OUTPUT
+          echo "$IMAGES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
 
       # Extract metadata for tags and labels
       - name: Extract metadata
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}
-            ${{ env.DOCKERHUB_IMAGE }}
+          images: ${{ steps.images.outputs.images }}
           tags: |
             type=ref,event=tag,suffix=-arm64-temp
             type=semver,pattern={{version}},suffix=-arm64-temp
@@ -317,6 +347,9 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Docker login (DockerHub)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        if: env.DOCKERHUB_USERNAME != ''
         uses: docker/login-action@v4
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -367,6 +400,9 @@ jobs:
           docker manifest push ${GHCR}:latest
 
       - name: Create multi-platform manifest (DockerHub)
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        if: env.DOCKERHUB_USERNAME != ''
         run: |
           AMD64_IMAGE="${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-amd64-temp"
           ARM64_IMAGE="${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-arm64-temp"
@@ -395,8 +431,12 @@ jobs:
 
       # Clean up temporary tags
       - name: Clean up temporary tags
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
         run: |
           docker manifest rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:v${{ steps.version.outputs.version }}-amd64-temp || true
           docker manifest rm ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LC }}:v${{ steps.version.outputs.version }}-arm64-temp || true
-          docker manifest rm ${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-amd64-temp || true
-          docker manifest rm ${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-arm64-temp || true
+          if [ -n "$DOCKERHUB_USERNAME" ]; then
+            docker manifest rm ${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-amd64-temp || true
+            docker manifest rm ${{ env.DOCKERHUB_IMAGE }}:v${{ steps.version.outputs.version }}-arm64-temp || true
+          fi
