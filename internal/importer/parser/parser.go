@@ -23,6 +23,7 @@ import (
 	"github.com/javi11/altmount/internal/errors"
 	"github.com/javi11/altmount/internal/importer/parser/fileinfo"
 	"github.com/javi11/altmount/internal/importer/parser/par2"
+	"github.com/javi11/altmount/internal/importer/rarname"
 	"github.com/javi11/altmount/internal/importer/utils/nzbtrim"
 	metapb "github.com/javi11/altmount/internal/metadata/proto"
 	"github.com/javi11/altmount/internal/pool"
@@ -80,7 +81,23 @@ func (p *Parser) ParseFile(ctx context.Context, r io.Reader, nzbPath string, pro
 		return nil, errors.NewNonRetryableError("NZB file contains no files", nil)
 	}
 
+	SanitizeNzbFilenames(n)
+
 	return p.ParseNzb(ctx, n, nzbPath, progressTracker, ParseOptions{})
+}
+
+// SanitizeNzbFilenames normalizes poster-controlled filenames in place at the
+// nzbparser boundary so every consumer (the pre-parse fast-fail probe, the parser,
+// persisted metadata, and serve-time volume following) sees a canonical name. Call
+// it immediately after nzbparser.Parse and before any code reads NzbFile.Filename.
+// The raw subject remains available on NzbFile.Subject.
+func SanitizeNzbFilenames(n *nzbparser.Nzb) {
+	if n == nil {
+		return
+	}
+	for i := range n.Files {
+		n.Files[i].Filename = nzbtrim.TrimSurroundingQuotes(n.Files[i].Filename)
+	}
 }
 
 // ParseNzb processes an already-parsed *nzbparser.Nzb, performing all network
@@ -122,10 +139,13 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 
 	// PAR2 descriptor matching is only worth network I/O when (a) the NZB actually
 	// contains a PAR2 index AND (b) at least one fetched file has an untrustworthy
-	// name that the descriptors could recover. When every name is already clean,
-	// downloading the PAR2 index and completing files to 16KB would only confirm
-	// what we already trust — skip both entirely.
-	par2MatchingUseful := p.hasPar2IndexCandidate(firstSegmentCache) && anyFileNeedsPar2Matching(firstSegmentCache)
+	// name that the descriptors could recover — either an individually obfuscated name
+	// or a member of a .partNN.rar set whose volumes all have distinct (obfuscated) bases
+	// (hasObfuscatedVolumeSet). When every name is already clean, downloading the PAR2
+	// index and completing files to 16KB would only confirm what we already trust — skip
+	// both entirely.
+	par2MatchingUseful := p.hasPar2IndexCandidate(firstSegmentCache) &&
+		(anyFileNeedsPar2Matching(firstSegmentCache) || hasObfuscatedVolumeSet(firstSegmentCache))
 	if par2MatchingUseful {
 		p.complete16KBReads(ctx, firstSegmentCache, notFoundIDs)
 	}
@@ -135,6 +155,12 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 	// size from "=ybegin size=") lets normalization derive the LAST part's size arithmetically,
 	// eliminating the per-file last-segment fetch that would otherwise drain a full body.
 	firstSegmentSizeCache := make(map[string]firstSegmentYencInfo)
+	// warmFirstSegmentBytes carries each fetched file's decoded first-segment bytes
+	// (keyed by first-segment ID) into the archive analysis phase, so a volume's
+	// header read — which starts at offset 0 — is served from memory instead of
+	// re-fetching a segment already pulled over the wire here. Skipped/missing first
+	// segments contribute nothing; those volumes are read lazily by the analyzer.
+	warmFirstSegmentBytes := make(map[string][]byte)
 	for _, data := range firstSegmentCache {
 		if data != nil && data.File != nil && !data.MissingFirstSegment && len(data.File.Segments) > 0 {
 			if data.Headers.PartSize > 0 {
@@ -142,6 +168,9 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 					PartSize: data.Headers.PartSize,
 					FileSize: data.Headers.FileSize,
 				}
+			}
+			if !data.SkippedFirstSegment && len(data.RawBytes) > 0 {
+				warmFirstSegmentBytes[data.File.Segments[0].ID] = data.RawBytes
 			}
 		}
 	}
@@ -234,7 +263,7 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 
 		subjectHeader := ""
 		if s, err := nzbparser.ParseSubject(data.File.Subject); err == nil {
-			subjectHeader = s.Header
+			subjectHeader = nzbtrim.TrimSurroundingQuotes(s.Header)
 		}
 
 		filesWithFirstSegment = append(filesWithFirstSegment, &fileinfo.NzbFileWithFirstSegment{
@@ -266,7 +295,7 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 	// Process files in parallel using conc pool
 	for _, info := range fileInfos {
 		concPool.Go(func(ctx context.Context) (fileResult, error) {
-			parsedFile, err := p.parseFile(ctx, n.Meta, parsed.Filename, info, firstSegmentSizeCache, nzbStandardPartSize, notFoundIDs, parsed.SegmentIndex)
+			parsedFile, err := p.parseFile(ctx, n.Meta, parsed.Filename, info, firstSegmentSizeCache, warmFirstSegmentBytes, nzbStandardPartSize, notFoundIDs, parsed.SegmentIndex)
 
 			return fileResult{
 				parsedFile: parsedFile,
@@ -337,7 +366,7 @@ func (p *Parser) ParseNzb(ctx context.Context, n *nzbparser.Nzb, nzbPath string,
 // firstSegmentSizeCache contains pre-fetched yEnc info (PartSize + total FileSize) for first segments to avoid redundant fetching.
 // nzbStandardPartSize, when >0, is the yEnc PartSize of a representative middle segment in the NZB;
 // it lets normalization skip the per-file second-segment fetch.
-func (p *Parser) parseFile(ctx context.Context, meta map[string]string, nzbFilename string, info *fileinfo.FileInfo, firstSegmentSizeCache map[string]firstSegmentYencInfo, nzbStandardPartSize int64, notFoundIDs map[string]struct{}, segmentIndex map[string]int64) (*ParsedFile, error) {
+func (p *Parser) parseFile(ctx context.Context, meta map[string]string, nzbFilename string, info *fileinfo.FileInfo, firstSegmentSizeCache map[string]firstSegmentYencInfo, warmFirstSegmentBytes map[string][]byte, nzbStandardPartSize int64, notFoundIDs map[string]struct{}, segmentIndex map[string]int64) (*ParsedFile, error) {
 	if len(info.NzbFile.Segments) == 0 {
 		return nil, fmt.Errorf("file has no segments")
 	}
@@ -528,6 +557,15 @@ func (p *Parser) parseFile(ctx context.Context, meta map[string]string, nzbFilen
 		IsPar2Archive: info.IsPar2Archive,
 		OriginalIndex: info.OriginalIndex,
 		NzbdavID:      nzbdavID,
+	}
+
+	// Attach the warm first-segment bytes (decoded leading payload at offset 0)
+	// so the archive analysis phase can serve this file's header read from memory.
+	// Keyed by the same first-segment ID domain as firstSegmentSizeCache.
+	if len(info.NzbFile.Segments) > 0 {
+		if b, ok := warmFirstSegmentBytes[info.NzbFile.Segments[0].ID]; ok {
+			parsedFile.FirstSegmentBytes = b
+		}
 	}
 
 	return parsedFile, nil
@@ -898,6 +936,44 @@ func needsPar2Matching(d *FirstSegmentData) bool {
 // names we already trust.
 func anyFileNeedsPar2Matching(cache []*FirstSegmentData) bool {
 	return slices.ContainsFunc(cache, needsPar2Matching)
+}
+
+// hasObfuscatedVolumeSet reports whether the NZB contains a multi-volume .partNN.rar set
+// whose volumes each carry a distinct base name — the fingerprint of per-volume filename
+// obfuscation (US8yidqp….part01.rar, BtEPCuoF….part02.rar, …). These random bases defeat
+// the per-file obfuscation heuristic (mixed case with '-'/'_' separators reads as a clean,
+// readable name), so needsPar2Matching never flags them; yet a numbered set in which every
+// volume's base differs is unambiguous, because a real multi-volume set shares one base.
+//
+// When such a set exists, PAR2 descriptors can recover the real, shared volume names
+// (Hash16k → name), letting grouping reassemble the set — so PAR2 matching is worth the
+// network I/O even though no individual filename looks obfuscated. The "all bases distinct"
+// rule keeps the trigger tight: one clean set has a single base, and two clean sets share a
+// few bases across many volumes — neither trips it.
+func hasObfuscatedVolumeSet(cache []*FirstSegmentData) bool {
+	bases := make(map[string]struct{})
+	count := 0
+	for _, d := range cache {
+		if d == nil || d.File == nil || d.MissingFirstSegment {
+			continue
+		}
+		name := d.File.Filename
+		if fileinfo.IsPar2File(name) {
+			continue
+		}
+		// Only the part scheme (.partNN.rar); divergent-base obfuscation in the roll/numeric
+		// schemes is rarer and left out to keep the trigger tight.
+		if scheme, _, ok := rarname.VolumeNumber(name); !ok || scheme != rarname.SchemePart {
+			continue
+		}
+		key, ok := rarname.SetKey(name)
+		if !ok {
+			continue
+		}
+		bases[key] = struct{}{}
+		count++
+	}
+	return count >= 2 && len(bases) == count
 }
 
 // needs16KBCompletion decides whether a file is worth completing up to 16KB

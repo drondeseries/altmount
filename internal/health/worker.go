@@ -915,6 +915,7 @@ const (
 	repairOutcomeCorrupted                        // ARR failed with a generic error; mark file corrupted
 	repairOutcomeDeleted                          // Health record and/or metadata were deleted (zombie)
 	repairOutcomeRegenerated                      // Metadata was successfully regenerated from NZB
+	repairOutcomeDeferred                         // ARR temporarily unreachable; keep repair-pending, do not condemn
 )
 
 // applyRepairOutcome maps a repairOutcome to the corresponding fields on the HealthStatusUpdate.
@@ -935,14 +936,22 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 			errMsg := err.Error()
 			update.ErrorMessage = &errMsg
 		}
+	case repairOutcomeDeferred:
+		// The ARR was only temporarily unreachable. Keep the file in repair_triggered
+		// WITHOUT incrementing repair_retry_count (UpdateTypeRepairTrigger does not bump
+		// the budget) and without condemning it, so the next repair cycle retries and the
+		// file self-heals once the ARR returns. The caller's pre-set ScheduledCheckAt
+		// (repair back-off) is preserved.
+		update.Type = database.UpdateTypeRepairTrigger
+		update.Status = database.HealthStatusRepairTriggered
 	}
 }
 
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
 // It checks LibraryPath first, then LibraryDir, then ImportDir, and falls back to MountPath.
 func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
-	if item.LibraryPath != nil && *item.LibraryPath != "" {
-		return *item.LibraryPath
+	if p, ok := item.EffectiveLibraryPath(); ok {
+		return p
 	}
 	cfg := hw.configGetter()
 	if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
@@ -958,11 +967,12 @@ func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
 // no longer tracked by ARR (zombie or orphan). Errors are logged but not returned because
 // cleanup is best-effort.
 func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.FileHealth) {
-	// Delete library symlink/STRM if it exists
-	if item.LibraryPath != nil && *item.LibraryPath != "" {
-		if err := os.Remove(*item.LibraryPath); err != nil && !os.IsNotExist(err) {
+	// Delete library symlink/STRM if it exists (only for ARR-relinked records; an
+	// import-time placeholder points at the virtual mount, not a real library file).
+	if p, ok := item.EffectiveLibraryPath(); ok {
+		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {
 			slog.ErrorContext(ctx, "Failed to delete library file during zombie cleanup",
-				"path", *item.LibraryPath, "error", err)
+				"path", p, "error", err)
 		}
 	}
 
@@ -1010,7 +1020,7 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 
 	// SPECIAL CASE: If metadata is corrupted AND we don't have a library path,
 	// we try to regenerate the metadata first before triggering a full ARR repair.
-	if metadataErr != nil && (item.LibraryPath == nil || *item.LibraryPath == "") {
+	if metadataErr != nil && !item.IsImported() {
 		slog.InfoContext(ctx, "Metadata corrupted and no library path found - attempting regeneration from NZB", "file_path", filePath)
 		if regenErr := hw.importerService.RegenerateMetadata(ctx, filePath); regenErr == nil {
 			slog.InfoContext(ctx, "Successfully regenerated metadata for corrupted item", "file_path", filePath)
@@ -1050,6 +1060,15 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 			return repairOutcomeCorrupted, err
 		}
 
+		// A temporarily unreachable ARR (network/transport error or 5xx) must NOT condemn
+		// the file. Defer: keep it repair-pending (no retry-count bump, no metadata move)
+		// so it self-heals on the next cycle once the ARR returns.
+		if arrs.IsTemporarilyUnreachable(err) {
+			slog.WarnContext(ctx, "ARR temporarily unreachable during repair trigger; deferring (file kept repair-pending, not condemned)",
+				"file_path", filePath, "path_for_rescan", pathForRescan, "arr_error", err)
+			return repairOutcomeDeferred, err
+		}
+
 		slog.ErrorContext(ctx, "Failed to trigger ARR rescan",
 			"file_path", filePath,
 			"path_for_rescan", pathForRescan,
@@ -1066,7 +1085,7 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// CRITICAL: We only do this if the file has already been imported (has a LibraryPath).
 	// If it hasn't been imported yet, we keep it visible so ARR can see the "Missing File"
 	// or "Empty Folder" and report its own warning, which helps the repair cycle.
-	if item.LibraryPath != nil && *item.LibraryPath != "" {
+	if item.IsImported() {
 		hw.moveMetadataToSafetyFolder(ctx, item)
 	} else {
 		slog.InfoContext(ctx, "Skipping metadata move for corrupted item - file not yet imported by ARR", "file_path", filePath)
@@ -1086,9 +1105,6 @@ func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.
 
 	slog.InfoContext(ctx, "Re-triggering ARR rescan for file in repair", "file_path", filePath, "path_for_rescan", pathForRescan)
 
-	// Ensure metadata is moved to safety folder if the file has now been imported
-	hw.moveMetadataToSafetyFolder(ctx, item)
-
 	err := hw.arrsService.TriggerFileRescan(ctx, pathForRescan, filePath, metadataStr)
 	if err != nil {
 		// See triggerFileRepair: only an ID-confirmed replacement (ErrEpisodeAlreadySatisfied)
@@ -1107,9 +1123,23 @@ func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.
 			return repairOutcomeCorrupted, err
 		}
 
+		// Temporarily unreachable ARR: defer instead of condemning. Note the metadata move
+		// happens only on the success path below, so a deferred outcome leaves the file
+		// visible and untouched until the ARR comes back.
+		if arrs.IsTemporarilyUnreachable(err) {
+			slog.WarnContext(ctx, "ARR temporarily unreachable during repair re-trigger; deferring (file kept repair-pending, not condemned)",
+				"file_path", filePath, "path_for_rescan", pathForRescan, "arr_error", err)
+			return repairOutcomeDeferred, err
+		}
+
 		slog.ErrorContext(ctx, "Failed to re-trigger ARR rescan", "file_path", filePath, "error", err)
 		return repairOutcomeCorrupted, err
 	}
+
+	// ARR rescan re-triggered successfully — only now move the metadata to the safety
+	// folder (if the file has been imported) so a deferred/failed outcome above never
+	// hides a file that was not actually condemned.
+	hw.moveMetadataToSafetyFolder(ctx, item)
 
 	slog.InfoContext(ctx, "Successfully re-triggered ARR rescan", "file_path", filePath)
 	return repairOutcomeTriggered, nil
@@ -1160,11 +1190,8 @@ func (hw *HealthWorker) ensureMetadata(ctx context.Context, item *database.FileH
 
 		slog.DebugContext(ctx, "Missing metadata or episode IDs, attempting discovery during health check", "file_path", item.FilePath, "sf_key", sfKey)
 		relativePath := strings.TrimPrefix(item.FilePath, "complete/")
-		libPath := ""
-		if item.LibraryPath != nil {
-			libPath = *item.LibraryPath
-		}
-		
+		libPath, _ := item.EffectiveLibraryPath()
+
 		metadata, err := hw.arrsService.DiscoverFileMetadata(ctx, item.FilePath, relativePath, nzbName, libPath)
 		if err == nil && metadata != nil {
 			metaBytes, err := json.Marshal(metadata)
@@ -1192,7 +1219,7 @@ func (hw *HealthWorker) ensureMetadata(ctx context.Context, item *database.FileH
 }
 
 func (hw *HealthWorker) moveMetadataToSafetyFolder(ctx context.Context, item *database.FileHealth) {
-	if item.LibraryPath == nil || *item.LibraryPath == "" {
+	if !item.IsImported() {
 		return
 	}
 	cfg := hw.configGetter()
