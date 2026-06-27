@@ -1405,7 +1405,6 @@ func (s *Service) handleProcessingFailure(ctx context.Context, item *database.Im
 func (s *Service) runFailedItemCleanup(ctx context.Context) {
 	// Run once at startup
 	s.cleanupFailedItems(ctx)
-	s.cleanupOldHistory(ctx)
 
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
@@ -1416,7 +1415,6 @@ func (s *Service) runFailedItemCleanup(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.cleanupFailedItems(ctx)
-			s.cleanupOldHistory(ctx)
 		}
 	}
 }
@@ -1460,19 +1458,6 @@ func (s *Service) cleanupFailedItems(ctx context.Context) {
 	s.log.InfoContext(ctx, "Cleaned up stale failed queue items",
 		"count", len(deletedItems),
 		"retention_hours", retentionHours)
-}
-
-// cleanupOldHistory deletes import_history records older than the configured retention period.
-func (s *Service) cleanupOldHistory(ctx context.Context) {
-	cfg := s.configGetter()
-	if cfg.Import.HistoryRetentionDays == nil || *cfg.Import.HistoryRetentionDays <= 0 {
-		return // disabled
-	}
-
-	cutoff := time.Now().Add(-time.Duration(*cfg.Import.HistoryRetentionDays) * 24 * time.Hour)
-	if err := s.database.Repository.DeleteImportHistoryOlderThan(ctx, cutoff); err != nil {
-		s.log.ErrorContext(ctx, "Failed to clean up old import history", "error", err)
-	}
 }
 
 // CancelProcessing cancels a processing queue item by cancelling its context
