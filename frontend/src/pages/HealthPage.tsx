@@ -464,11 +464,28 @@ export function HealthPage() {
 		});
 	}, []);
 
-	const handleSelectAll = async (checked: boolean) => {
-		if (checked && meta?.total) {
-			// Select all items currently visible. The user asked for an option to select all pages,
-			// but a simple "select all X items" across all pages requires fetching all their IDs.
-			// Let's implement that:
+	const handleSelectAll = (checked: boolean) => {
+		if (checked && data) {
+			setSelectedItems(new Set(data.map((item) => item.file_path)));
+		} else {
+			setSelectedItems(new Set());
+		}
+	};
+
+	const handleSelectAllPages = async () => {
+		if (!meta?.total) return;
+
+		const confirmed = await confirmAction(
+			"Select All Pages",
+			`Are you sure you want to select all ${meta.total} matching items across all pages? This might take a moment to fetch.`,
+			{
+				type: "info",
+				confirmText: "Select All",
+				confirmButtonClass: "btn-info",
+			},
+		);
+
+		if (confirmed) {
 			try {
 				const response = await apiClient.getHealth({
 					limit: meta.total,
@@ -476,19 +493,16 @@ export function HealthPage() {
 					status: statusFilter || undefined,
 				});
 				if (response.data) {
-					setSelectedItems(new Set(response.data.map((item: any) => item.file_path)));
-					return;
+					setSelectedItems(new Set(response.data.map((item) => item.file_path)));
 				}
 			} catch (e) {
 				console.error("Failed to fetch all items for select all", e);
+				showToast({
+					title: "Error",
+					message: "Failed to fetch all items",
+					type: "error",
+				});
 			}
-
-			// Fallback to current page
-			if (data) {
-				setSelectedItems(new Set(data.map((item: any) => item.file_path)));
-			}
-		} else {
-			setSelectedItems(new Set());
 		}
 	};
 
@@ -834,6 +848,7 @@ export function HealthPage() {
 											isUnmaskPending={unmaskItem.isPending}
 											onSelectItem={handleSelectItem}
 											onSelectAll={handleSelectAll}
+											onSelectAllPages={handleSelectAllPages}
 											onSort={handleSort}
 											onCancelCheck={handleCancelCheck}
 											onManualCheck={handleManualCheck}
