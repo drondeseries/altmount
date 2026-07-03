@@ -463,9 +463,35 @@ export function HealthPage() {
 		});
 	}, []);
 
-	const handleSelectAll = (checked: boolean) => {
-		if (checked && data) {
-			setSelectedItems(new Set(data.map((item) => item.file_path)));
+	const handleSelectAll = async (checked: boolean) => {
+		if (checked && meta?.total) {
+			// Select all items currently visible. The user asked for an option to select all pages,
+			// but a simple "select all X items" across all pages requires fetching all their IDs.
+			// Let's implement that:
+			try {
+				let url = `/api/health?limit=${meta.total}`;
+				if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
+				if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
+
+				const token = localStorage.getItem('token');
+				const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+				const response = await fetch(url, { headers });
+				if (response.ok) {
+					const allData = await response.json();
+					if (allData.data) {
+						setSelectedItems(new Set(allData.data.map((item: any) => item.file_path)));
+						return;
+					}
+				}
+			} catch (e) {
+				console.error("Failed to fetch all items for select all", e);
+			}
+
+			// Fallback to current page
+			if (data) {
+				setSelectedItems(new Set(data.map((item) => item.file_path)));
+			}
 		} else {
 			setSelectedItems(new Set());
 		}
