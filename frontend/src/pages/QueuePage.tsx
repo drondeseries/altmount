@@ -306,9 +306,32 @@ export function QueuePage() {
 		});
 	}, []);
 
-	const handleSelectAll = (checked: boolean) => {
-		if (checked && enrichedQueueData) {
-			setSelectedItems(new Set(enrichedQueueData.map((item) => item.id)));
+	const handleSelectAll = async (checked: boolean) => {
+		if (checked && meta?.total) {
+			try {
+				let url = `/api/queue?limit=${meta.total}`;
+				if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
+				if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
+
+				const token = localStorage.getItem('token');
+				const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
+
+				const response = await fetch(url, { headers });
+				if (response.ok) {
+					const allData = await response.json();
+					if (allData.data) {
+						setSelectedItems(new Set(allData.data.map((item: any) => item.id)));
+						return;
+					}
+				}
+			} catch (e) {
+				console.error("Failed to fetch all items for select all", e);
+			}
+
+			// Fallback to current page data
+			if (enrichedQueueData) {
+				setSelectedItems(new Set(enrichedQueueData.map((item) => item.id)));
+			}
 		} else {
 			setSelectedItems(new Set());
 		}
