@@ -1,3 +1,4 @@
+import { apiClient } from "../api/client";
 import { useQueryClient } from "@tanstack/react-query";
 import { FileCheck, RefreshCw, RotateCcw, Settings, ShieldCheck, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -469,20 +470,14 @@ export function HealthPage() {
 			// but a simple "select all X items" across all pages requires fetching all their IDs.
 			// Let's implement that:
 			try {
-				let url = `/api/health?limit=${meta.total}`;
-				if (searchTerm) url += `&search=${encodeURIComponent(searchTerm)}`;
-				if (statusFilter) url += `&status=${encodeURIComponent(statusFilter)}`;
-
-				const token = localStorage.getItem('token');
-				const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-
-				const response = await fetch(url, { headers });
-				if (response.ok) {
-					const allData = await response.json();
-					if (allData.data) {
-						setSelectedItems(new Set(allData.data.map((item: any) => item.file_path)));
-						return;
-					}
+				const response = await apiClient.getHealth({
+					limit: meta.total,
+					search: searchTerm || undefined,
+					status: statusFilter || undefined,
+				});
+				if (response.data) {
+					setSelectedItems(new Set(response.data.map((item: any) => item.file_path)));
+					return;
 				}
 			} catch (e) {
 				console.error("Failed to fetch all items for select all", e);
@@ -490,7 +485,7 @@ export function HealthPage() {
 
 			// Fallback to current page
 			if (data) {
-				setSelectedItems(new Set(data.map((item) => item.file_path)));
+				setSelectedItems(new Set(data.map((item: any) => item.file_path)));
 			}
 		} else {
 			setSelectedItems(new Set());
