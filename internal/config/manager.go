@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/go-viper/mapstructure/v2"
 	"github.com/javi11/altmount/internal/utils"
 	"github.com/javi11/nntppool/v4"
 	"github.com/jinzhu/copier"
@@ -392,6 +393,7 @@ type ProviderConfig struct {
 	ProxyURL                 string     `yaml:"proxy_url" mapstructure:"proxy_url" json:"proxy_url,omitempty"`
 	Enabled                  *bool      `yaml:"enabled" mapstructure:"enabled" json:"enabled,omitempty"`
 	IsBackupProvider         *bool      `yaml:"is_backup_provider" mapstructure:"is_backup_provider" json:"is_backup_provider,omitempty"`
+	StorageGroup             string     `yaml:"storage_group" mapstructure:"storage_group" json:"storage_group,omitempty"`
 	SkipPing                 bool       `yaml:"skip_ping" mapstructure:"skip_ping" json:"skip_ping,omitempty"`
 	KeepaliveIntervalSeconds int        `yaml:"keepalive_interval_seconds" mapstructure:"keepalive_interval_seconds" json:"keepalive_interval_seconds,omitempty"`
 	KeepaliveCommand         string     `yaml:"keepalive_command" mapstructure:"keepalive_command" json:"keepalive_command,omitempty"`
@@ -1045,6 +1047,7 @@ func (p *ProviderConfig) ToNNTPProvider() nntppool.Provider {
 		Auth:              nntppool.Auth{Username: p.Username, Password: p.Password},
 		Connections:       p.MaxConnections,
 		Backup:            isBackup,
+		StorageGroup:      p.StorageGroup,
 		Inflight:          inflight,
 		StatInflight:      statInflight,
 		IdleTimeout:       60 * time.Second,
@@ -1133,6 +1136,7 @@ func providersFieldsEqual(a, b ProviderConfig) bool {
 		a.UserAgent == b.UserAgent &&
 		a.QuotaBytes == b.QuotaBytes &&
 		a.QuotaPeriodHours == b.QuotaPeriodHours &&
+		a.StorageGroup == b.StorageGroup &&
 		boolPtrEqual(a.Enabled, b.Enabled) &&
 		boolPtrEqual(a.IsBackupProvider, b.IsBackupProvider)
 }
@@ -1197,6 +1201,7 @@ func (c *Config) ProvidersEqual(other *Config) bool {
 			oldProvider.TLS != newProvider.TLS ||
 			oldProvider.InsecureTLS != newProvider.InsecureTLS ||
 			oldProvider.ProxyURL != newProvider.ProxyURL ||
+			oldProvider.StorageGroup != newProvider.StorageGroup ||
 			*oldProvider.Enabled != *newProvider.Enabled ||
 			*oldProvider.IsBackupProvider != *newProvider.IsBackupProvider {
 			return false // Provider modified
@@ -1347,6 +1352,8 @@ func (m *Manager) ReloadConfig() error {
 	if err := viper.ReadInConfig(); err != nil {
 		return fmt.Errorf("error reading config file %s: %w", m.configFile, err)
 	}
+
+	warnUnknownConfigKeys()
 
 	// Create default config and unmarshal into it
 	config := DefaultConfig()
@@ -1766,6 +1773,23 @@ func SaveToFile(config *Config, filename string) error {
 }
 
 // LoadConfig loads configuration from file and merges with defaults
+// warnUnknownConfigKeys logs config keys that do not map to any field on Config.
+// These are almost always settings removed or renamed in a past release: viper
+// ignores them silently, so a stale key looks live while having no effect.
+//
+// This warns rather than fails — rejecting unknown keys would break upgrades for
+// anyone whose config still carries a retired setting.
+func warnUnknownConfigKeys() {
+	probe := DefaultConfig()
+	err := viper.Unmarshal(probe, func(dc *mapstructure.DecoderConfig) {
+		dc.ErrorUnused = true
+	})
+	if err != nil {
+		slog.Warn("Configuration contains keys this version does not use; they have no effect and can be removed",
+			"detail", err)
+	}
+}
+
 func LoadConfig(configFile string) (*Config, error) {
 	config := DefaultConfig()
 
@@ -1807,6 +1831,8 @@ func LoadConfig(configFile string) (*Config, error) {
 			return nil, fmt.Errorf("error reading config file: %w", err)
 		}
 	}
+
+	warnUnknownConfigKeys()
 
 	// Unmarshal the config
 	if err := viper.Unmarshal(config); err != nil {
