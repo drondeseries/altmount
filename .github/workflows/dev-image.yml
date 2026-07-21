@@ -6,6 +6,7 @@ on:
       - main
     paths-ignore:
       - 'docs/**'
+  workflow_dispatch: # Allow triggering from sync-fork after merge-upstream (which doesn't fire push events)
 
 env:
   REGISTRY: ghcr.io

@@ -11,11 +11,48 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: write
+    outputs:
+      synced: ${{ steps.sync.outputs.synced }}
     steps:
       - name: Sync Fork
+        id: sync
+        run: |
+          RESPONSE=$(curl -s -o /tmp/sync_response.json -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            https://api.github.com/repos/${{ github.repository }}/merge-upstream \
+            -d '{"branch":"main"}')
+          cat /tmp/sync_response.json
+          # 200 = already up-to-date, 409 = conflict, others = error
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "204" ]; then
+            MERGE_TYPE=$(cat /tmp/sync_response.json | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('merge_type',''))" 2>/dev/null || echo "")
+            if [ "$MERGE_TYPE" = "none" ]; then
+              echo "Already up to date, skipping image build."
+              echo "synced=false" >> $GITHUB_OUTPUT
+            else
+              echo "Sync successful (new commits merged)."
+              echo "synced=true" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "Sync failed or already up to date (HTTP $RESPONSE)."
+            echo "synced=false" >> $GITHUB_OUTPUT
+          fi
+
+  trigger-image-build:
+    name: Trigger Dev Image Build
+    runs-on: ubuntu-latest
+    needs: sync
+    if: needs.sync.outputs.synced == 'true'
+    permissions:
+      actions: write
+    steps:
+      - name: Dispatch dev-image workflow
         run: |
           curl -X POST \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Accept: application/vnd.github.v3+json" \
-            https://api.github.com/repos/${{ github.repository }}/merge-upstream \
-            -d '{"branch":"main"}'
+            https://api.github.com/repos/${{ github.repository }}/actions/workflows/dev-image.yml/dispatches \
+            -d '{"ref":"main"}'
+          echo "✅ Dispatched dev-image.yml build on main"
