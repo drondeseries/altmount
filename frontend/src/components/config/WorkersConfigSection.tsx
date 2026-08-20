@@ -28,7 +28,7 @@ export function ImportConfigSection({
 
 	const handleInputChange = (
 		field: keyof ImportConfig,
-		value: number | boolean | string | string[],
+		value: number | boolean | string | string[] | null,
 	) => {
 		const newData = { ...formData, [field]: value };
 		setFormData(newData);
@@ -294,6 +294,32 @@ export function ImportConfigSection({
 								/>
 								<p className="label mt-2 min-w-0 max-w-full whitespace-normal break-words text-base-content/70 text-xs">
 									Absolute path for strategy output.
+								</p>
+							</fieldset>
+						)}
+
+						{formData.import_strategy === "SYMLINK" && (
+							<fieldset className="fieldset min-w-0">
+								<legend className="fieldset-legend font-semibold">Pin Symlink Timestamp</legend>
+								<input
+									type="datetime-local"
+									className="input input-bordered w-full min-w-0 max-w-full bg-base-100"
+									value={
+										formData.pin_symlink_timestamp
+											? formData.pin_symlink_timestamp.slice(0, 16)
+											: ""
+									}
+									disabled={isReadOnly}
+									onChange={(e) =>
+										handleInputChange(
+											"pin_symlink_timestamp",
+											e.target.value ? `${e.target.value}:00Z` : null,
+										)
+									}
+								/>
+								<p className="label mt-2 min-w-0 max-w-full whitespace-normal break-words text-base-content/70 text-xs leading-relaxed">
+									Fix all symlink modification times to this date. Prevents Plex/Jellyfin from
+									re-scanning files as new. Leave empty to disable.
 								</p>
 							</fieldset>
 						)}

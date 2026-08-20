@@ -1445,6 +1445,15 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 			continue
 		}
 
+		// Pin the symlink timestamp if configured
+		if cfg.Import.PinSymlinkTimestamp != nil && cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+			if err := utils.PinSymlinkTime(libraryPath, *cfg.Import.PinSymlinkTimestamp); err != nil {
+				slog.WarnContext(ctx, "Failed to pin symlink timestamp",
+					"library_path", libraryPath,
+					"error", err)
+			}
+		}
+
 		slog.InfoContext(ctx, "Library file recreated",
 			"file_path", file.FilePath,
 			"library_path", libraryPath,
