@@ -10,6 +10,14 @@ interface ImportConfigSectionProps {
 	isUpdating?: boolean;
 }
 
+function toDateTimeLocalValue(timestamp: string | null | undefined): string {
+	if (!timestamp) return "";
+	const date = new Date(timestamp);
+	if (Number.isNaN(date.getTime())) return "";
+	const pad = (value: number) => String(value).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
 export function ImportConfigSection({
 	config,
 	onUpdate,
@@ -304,16 +312,12 @@ export function ImportConfigSection({
 								<input
 									type="datetime-local"
 									className="input input-bordered w-full min-w-0 max-w-full bg-base-100"
-									value={
-										formData.pin_symlink_timestamp
-											? formData.pin_symlink_timestamp.slice(0, 16)
-											: ""
-									}
+									value={toDateTimeLocalValue(formData.pin_symlink_timestamp)}
 									disabled={isReadOnly}
 									onChange={(e) =>
 										handleInputChange(
 											"pin_symlink_timestamp",
-											e.target.value ? `${e.target.value}:00Z` : null,
+											e.target.value ? new Date(e.target.value).toISOString() : null,
 										)
 									}
 								/>

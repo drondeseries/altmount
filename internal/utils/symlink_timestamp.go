@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"os"
 	"time"
 )
 
@@ -20,7 +19,7 @@ func PinSymlinkTime(symlinkPath, timestamp string) error {
 		return fmt.Errorf("invalid pin_symlink_timestamp value %q: %w", timestamp, err)
 	}
 
-	if err := os.Chtimes(symlinkPath, t, t); err != nil {
+	if err := setSymlinkTimes(symlinkPath, t); err != nil {
 		return fmt.Errorf("failed to set timestamp on %s: %w", symlinkPath, err)
 	}
 
