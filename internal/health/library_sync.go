@@ -1190,6 +1190,7 @@ func updateSymlinkForMountChange(
 	currentTarget string,
 	oldMountPath string,
 	newMountPath string,
+	pinTimestamp *string,
 ) (string, bool, error) {
 	// Extract relative path within the mount
 	relativePath := strings.TrimPrefix(currentTarget, oldMountPath)
@@ -1220,6 +1221,15 @@ func updateSymlinkForMountChange(
 			"new_target", newTarget,
 			"error", err)
 		return currentTarget, false, err
+	}
+
+	// Pin the symlink timestamp if configured
+	if pinTimestamp != nil {
+		if err := utils.PinSymlinkTime(symlinkPath, *pinTimestamp); err != nil {
+			slog.WarnContext(ctx, "Failed to pin symlink timestamp",
+				"path", symlinkPath,
+				"error", err)
+		}
 	}
 
 	slog.InfoContext(ctx, "Updated symlink to new mount path",
@@ -1291,7 +1301,7 @@ func (lsw *LibrarySyncWorker) getAllLibraryFiles(ctx context.Context, oldMountPa
 
 			// Update symlink if it points to the old mount path
 			if shouldUpdateSymlinks && strings.HasPrefix(cleanTarget, oldMountPathClean) {
-				newTarget, updated, err := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean)
+				newTarget, updated, err := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean, cfg.Import.PinSymlinkTimestamp)
 				if err != nil {
 					return nil
 				}
@@ -1464,7 +1474,7 @@ func (lsw *LibrarySyncWorker) getAllImportDirFiles(ctx context.Context, oldMount
 
 			// Update symlink if it points to the old mount path
 			if shouldUpdateSymlinks && strings.HasPrefix(cleanTarget, oldMountPathClean) {
-				newTarget, updated, _ := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean)
+				newTarget, updated, _ := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean, cfg.Import.PinSymlinkTimestamp)
 				if updated {
 					symlinkUpdates++
 					cleanTarget = newTarget
