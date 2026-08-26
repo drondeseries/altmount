@@ -1276,7 +1276,7 @@ func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.
 	if delMetaErr := hw.metadataService.DeleteFileMetadata(ctx, relativePath); delMetaErr != nil {
 		slog.ErrorContext(ctx, "Failed to delete metadata during cleanup", "file_path", item.FilePath, "error", delMetaErr)
 	} else {
-		hw.NotifyRcloneVFS(item.FilePath)
+		hw.NotifyRcloneVFSForget(item.FilePath)
 	}
 }
 
@@ -1519,7 +1519,7 @@ func (hw *HealthWorker) moveMetadataToSafetyFolder(ctx context.Context, item *da
 	if moveErr := hw.metadataService.MoveToCorrupted(ctx, relativePath); moveErr != nil {
 		slog.WarnContext(ctx, "Failed to move corrupted metadata file", "error", moveErr)
 	} else {
-		hw.NotifyRcloneVFS(item.FilePath)
+		hw.NotifyRcloneVFSForget(item.FilePath)
 	}
 }
 
@@ -1527,6 +1527,16 @@ func (hw *HealthWorker) moveMetadataToSafetyFolder(ctx context.Context, item *da
 func (hw *HealthWorker) NotifyRcloneVFS(filePath string) {
 	if hw != nil && hw.healthChecker != nil {
 		hw.healthChecker.NotifyRcloneVFS(filePath)
+	}
+}
+
+// NotifyRcloneVFSForget notifies rclone VFS to forget the directory containing
+// filePath without a following refresh. Use when the file was deleted or moved
+// away: the next client access re-lists lazily, avoiding an unrequested eager
+// re-enumeration of potentially large directories.
+func (hw *HealthWorker) NotifyRcloneVFSForget(filePath string) {
+	if hw != nil && hw.healthChecker != nil {
+		hw.healthChecker.NotifyRcloneVFSForget(filePath)
 	}
 }
 
