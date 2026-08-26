@@ -889,6 +889,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("import verify_content_timeout_seconds must be greater than 0")
 	}
 
+	// Validate pin symlink timestamp if configured
+	if c.Import.PinSymlinkTimestamp != nil && *c.Import.PinSymlinkTimestamp != "" {
+		if _, err := time.Parse(time.RFC3339, *c.Import.PinSymlinkTimestamp); err != nil {
+			return fmt.Errorf("pin_symlink_timestamp must be a valid RFC3339 timestamp (e.g. 2026-08-21T14:30:00Z): %w", err)
+		}
+	}
+
 	// Validate log level (both old and new config)
 	if c.Log.Level != "" {
 		validLevels := []string{"debug", "info", "warn", "error"}

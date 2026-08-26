@@ -41,7 +41,7 @@ func stableInode(path string) uint64 {
 		return 1
 	}
 	ino := hashPath(path)
-	if ino <= 1 {
+	if ino <= 1 || ino == ^uint64(0) {
 		return 2
 	}
 	return ino

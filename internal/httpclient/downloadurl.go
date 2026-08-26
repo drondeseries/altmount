@@ -75,7 +75,7 @@ func SafeDownloadCheckRedirect(maxRedirects int) func(req *http.Request, via []*
 		}
 		if len(via) > 0 {
 			prev := via[len(via)-1]
-			if !strings.EqualFold(prev.URL.Hostname(), req.URL.Hostname()) {
+			if !strings.EqualFold(prev.URL.Scheme, req.URL.Scheme) || !strings.EqualFold(prev.URL.Host, req.URL.Host) {
 				req.Header.Del("X-Api-Key")
 				req.Header.Del("Authorization")
 			}

@@ -256,9 +256,9 @@ export const HealthItemCard = memo(function HealthItemCard({
 															MovieID: {meta.movie.id}
 														</span>
 													)}
-													{meta.series?.tvdbId && (
+													{(meta.series?.tvdbId || meta.tvdbId) && (
 														<span className="badge badge-ghost badge-xs" title="TVDB ID">
-															TVDBID: {meta.series.tvdbId}
+															TVDBID: {meta.series?.tvdbId || meta.tvdbId}
 														</span>
 													)}
 													{meta.episodeFile?.id && (
@@ -266,9 +266,9 @@ export const HealthItemCard = memo(function HealthItemCard({
 															FileID: {meta.episodeFile.id}
 														</span>
 													)}
-													{meta.movie?.tmdbId && (
+													{(meta.movie?.tmdbId || meta.tmdbId) && (
 														<span className="badge badge-ghost badge-xs" title="TMDB ID">
-															TMDBID: {meta.movie.tmdbId}
+															TMDBID: {meta.movie?.tmdbId || meta.tmdbId}
 														</span>
 													)}
 													{meta.movieFile?.id && (

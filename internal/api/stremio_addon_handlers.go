@@ -1868,6 +1868,26 @@ type prowlarrIndexersRequest struct {
 //	@Success		200		{object}	APIResponse
 //	@Failure		400		{object}	APIResponse
 //	@Security		BearerAuth
+func isSameOrigin(urlStr1, urlStr2 string) bool {
+	u1, err1 := url.Parse(strings.TrimSpace(urlStr1))
+	u2, err2 := url.Parse(strings.TrimSpace(urlStr2))
+	if err1 != nil || err2 != nil || u1.Host == "" || u2.Host == "" {
+		return false
+	}
+	return strings.EqualFold(u1.Scheme, u2.Scheme) && strings.EqualFold(u1.Host, u2.Host)
+}
+
+//	@Summary		List available Prowlarr indexers
+//	@Description	Queries the configured Prowlarr instance and returns all enabled indexers
+//	@Tags			Stremio
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
+//	@Success		200		{object}	APIResponse
+//	@Failure		400		{object}	APIResponse
+//	@Failure		500		{object}	APIResponse
+//	@Failure		503		{object}	APIResponse
+//	@Security		BearerAuth
 //	@Router			/prowlarr/indexers [post]
 func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	if s.configManager == nil {
@@ -1879,20 +1899,25 @@ func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	_ = c.BodyParser(&req)
 
 	cfg := s.configManager.GetConfig()
+	storedHost := cfg.Stremio.Indexers.Prowlarr.Host
+	if storedHost == "" {
+		storedHost = cfg.Stremio.Prowlarr.Host
+	}
+	storedKey := cfg.Stremio.Indexers.Prowlarr.APIKey
+	if storedKey == "" {
+		storedKey = cfg.Stremio.Prowlarr.APIKey
+	}
+
 	host := strings.TrimSpace(req.Host)
 	apiKey := strings.TrimSpace(req.APIKey)
-	// Fall back to the stored Prowlarr configuration so masked credentials
-	// work without re-entry: the per-indexer section is authoritative, the
-	// legacy stremio.prowlarr section is the fallback.
+
+	// Fall back to the stored Prowlarr configuration when fields are empty or
+	// when host matches the stored host (for masked credentials).
 	if host == "" {
-		if host = cfg.Stremio.Indexers.Prowlarr.Host; host == "" {
-			host = cfg.Stremio.Prowlarr.Host
-		}
+		host = storedHost
 	}
-	if apiKey == "" {
-		if apiKey = cfg.Stremio.Indexers.Prowlarr.APIKey; apiKey == "" {
-			apiKey = cfg.Stremio.Prowlarr.APIKey
-		}
+	if apiKey == "" && (req.Host == "" || isSameOrigin(req.Host, storedHost)) {
+		apiKey = storedKey
 	}
 
 	if host == "" || apiKey == "" {
@@ -1923,15 +1948,17 @@ func (s *Server) handleTestNewsnabIndexer(c *fiber.Ctx) error {
 	reqURL := strings.TrimSpace(req.URL)
 
 	// A masked stored API key arrives empty; when the request identifies a
-	// configured indexer, fall back to its stored credentials so testing an
-	// existing indexer does not require re-typing the key.
+	// configured indexer, fall back to its stored credentials only if the URL
+	// is empty or matches the stored indexer origin.
 	if strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(req.ID) != "" {
 		for _, n := range s.configManager.GetConfig().Stremio.Indexers.Newsnab {
 			if n.ID == strings.TrimSpace(req.ID) {
 				if reqURL == "" {
 					reqURL = n.URL
+					req.APIKey = n.APIKey
+				} else if isSameOrigin(reqURL, n.URL) {
+					req.APIKey = n.APIKey
 				}
-				req.APIKey = n.APIKey
 				break
 			}
 		}

@@ -1440,9 +1440,21 @@ func (hw *HealthWorker) ensureMetadata(ctx context.Context, item *database.FileH
 	if item.Metadata == nil || *item.Metadata == "" {
 		needsDiscovery = true
 	} else {
-		var dbMeta model.WebhookMetadata
-		if err := json.Unmarshal([]byte(*item.Metadata), &dbMeta); err == nil {
-			if dbMeta.Series != nil && len(dbMeta.Episodes) == 0 {
+		var rawMap map[string]interface{}
+		if err := json.Unmarshal([]byte(*item.Metadata), &rawMap); err != nil {
+			needsDiscovery = true
+		} else {
+			_, hasTMDB := rawMap["tmdbId"]
+			_, hasTVDB := rawMap["tvdbId"]
+			var dbMeta model.WebhookMetadata
+			_ = json.Unmarshal([]byte(*item.Metadata), &dbMeta)
+			if dbMeta.Movie != nil || hasTMDB {
+				needsDiscovery = false
+			} else if dbMeta.Series != nil {
+				if len(dbMeta.Episodes) == 0 {
+					needsDiscovery = true
+				}
+			} else if !hasTVDB {
 				needsDiscovery = true
 			}
 		}
@@ -1544,5 +1556,12 @@ func (hw *HealthWorker) NotifyRcloneVFSForget(filePath string) {
 func (hw *HealthWorker) NotifyRcloneVFSDirs(dirs []string) {
 	if hw != nil && hw.healthChecker != nil {
 		hw.healthChecker.NotifyRcloneVFSDirs(dirs)
+	}
+}
+
+// NotifyRcloneVFSDirsForget notifies rclone VFS to forget the specified directories without a following refresh.
+func (hw *HealthWorker) NotifyRcloneVFSDirsForget(dirs []string) {
+	if hw != nil && hw.healthChecker != nil {
+		hw.healthChecker.NotifyRcloneVFSDirsForget(dirs)
 	}
 }

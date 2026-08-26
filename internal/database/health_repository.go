@@ -252,7 +252,7 @@ func (r *HealthRepository) GetUnhealthyFiles(ctx context.Context, limit int, str
 		  AND (
 			  ? = 'NONE' 
 			  OR status = 'pending'
-			  OR (metadata IS NOT NULL AND metadata != '')
+			  OR (metadata IS NOT NULL AND CAST(metadata AS text) != '')
 			  OR (library_path IS NOT NULL AND (library_path LIKE ? ESCAPE '!' OR library_path LIKE ? ESCAPE '!'))
 			  OR (last_error LIKE '%failed to unmarshal metadata%')
 			  OR (last_error LIKE '%failed to read file metadata%')
@@ -2450,18 +2450,74 @@ func (r *HealthRepository) matchMetadata(dbMeta, webMeta *model.WebhookMetadata)
 	return false
 }
 
+func hasMatchingTMDBID(metadataStr string, targetID int) bool {
+	if metadataStr == "" || targetID <= 0 {
+		return false
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
+		return false
+	}
+	if idVal, ok := data["tmdbId"].(float64); ok && int(idVal) == targetID {
+		return true
+	}
+	if idVal, ok := data["tmdb_id"].(float64); ok && int(idVal) == targetID {
+		return true
+	}
+	if movie, ok := data["movie"].(map[string]interface{}); ok {
+		if idVal, ok := movie["tmdbId"].(float64); ok && int(idVal) == targetID {
+			return true
+		}
+		if idVal, ok := movie["tmdb_id"].(float64); ok && int(idVal) == targetID {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMatchingTVDBID(metadataStr string, targetID int) bool {
+	if metadataStr == "" || targetID <= 0 {
+		return false
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
+		return false
+	}
+	if idVal, ok := data["tvdbId"].(float64); ok && int(idVal) == targetID {
+		return true
+	}
+	if idVal, ok := data["tvdb_id"].(float64); ok && int(idVal) == targetID {
+		return true
+	}
+	if series, ok := data["series"].(map[string]interface{}); ok {
+		if idVal, ok := series["tvdbId"].(float64); ok && int(idVal) == targetID {
+			return true
+		}
+		if idVal, ok := series["tvdb_id"].(float64); ok && int(idVal) == targetID {
+			return true
+		}
+	}
+	return false
+}
+
 // FindHealthyFilesForMovie returns healthy library files matching a movie by TMDB ID or title/year.
 // It first searches metadata by TMDB ID; if no matches are found, it falls back to title and year search.
 func (r *HealthRepository) FindHealthyFilesForMovie(ctx context.Context, title string, year string, tmdbID int) ([]*FileHealth, error) {
 	// 1. Try TMDB ID if available
 	if tmdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND metadata LIKE ? ORDER BY id DESC LIMIT 50"
+		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT 50"
 		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tmdbId":%d%%`, tmdbID))
 		if err == nil {
 			var results []*FileHealth
 			for rows.Next() {
 				if h, scanErr := scanFileHealth(rows); scanErr == nil && h != nil {
-					results = append(results, h)
+					metaStr := ""
+					if h.Metadata != nil {
+						metaStr = *h.Metadata
+					}
+					if hasMatchingTMDBID(metaStr, tmdbID) {
+						results = append(results, h)
+					}
 				} else if scanErr != nil {
 					rows.Close()
 					return nil, fmt.Errorf("failed to scan movie health row: %w", scanErr)
@@ -2544,13 +2600,19 @@ func buildTitleLikePattern(title string) string {
 func (r *HealthRepository) FindHealthyFilesForSeries(ctx context.Context, seriesTitle string, tvdbID int) ([]*FileHealth, error) {
 	// 1. Try TVDB ID if available
 	if tvdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND metadata LIKE ? ORDER BY id DESC LIMIT 100"
+		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT 100"
 		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tvdbId":%d%%`, tvdbID))
 		if err == nil {
 			var results []*FileHealth
 			for rows.Next() {
 				if h, scanErr := scanFileHealth(rows); scanErr == nil && h != nil {
-					results = append(results, h)
+					metaStr := ""
+					if h.Metadata != nil {
+						metaStr = *h.Metadata
+					}
+					if hasMatchingTVDBID(metaStr, tvdbID) {
+						results = append(results, h)
+					}
 				} else if scanErr != nil {
 					rows.Close()
 					return nil, fmt.Errorf("failed to scan series health row: %w", scanErr)

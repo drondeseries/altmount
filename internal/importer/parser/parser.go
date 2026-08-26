@@ -1499,14 +1499,14 @@ func extractNzbPassword(n *nzbparser.Nzb, nzbPath string) string {
 	}
 	// 4. Check NZB file on disk if available (for <meta type="password"> outside <head>)
 	if nzbPath != "" {
-		if data, err := os.ReadFile(nzbPath); err == nil && len(data) > 0 {
-			limit := len(data)
-			if limit > 64*1024 {
-				limit = 64 * 1024
-			}
-			if m := passwordMetaRegex.FindSubmatch(data[:limit]); len(m) > 1 {
-				if trimmed := strings.TrimSpace(string(m[1])); trimmed != "" {
-					return trimmed
+		if f, err := os.Open(nzbPath); err == nil {
+			data, err := io.ReadAll(io.LimitReader(f, 64*1024))
+			f.Close()
+			if err == nil && len(data) > 0 {
+				if m := passwordMetaRegex.FindSubmatch(data); len(m) > 1 {
+					if trimmed := strings.TrimSpace(string(m[1])); trimmed != "" {
+						return trimmed
+					}
 				}
 			}
 		}
@@ -1516,23 +1516,35 @@ func extractNzbPassword(n *nzbparser.Nzb, nzbPath string) string {
 
 // propagateArchiveType sets the archive-type flag on non-PAR2 files that are
 // archive parts (including split continuation volumes with numeric or extensionless names).
-// Non-archive sidecars (.txt, .nfo, .sfv, etc.) are excluded so they are processed as regular files.
+// Known video, subtitle, audio, and sidecar files are excluded so they are processed as regular files.
 func (p *Parser) propagateArchiveType(parsed *ParsedNzb) {
 	switch parsed.Type {
 	case NzbType7zArchive:
 		for i := range parsed.Files {
 			f := &parsed.Files[i]
-			if !f.IsPar2Archive && !fileinfo.IsPar2File(f.Filename) && !isPar2SidecarExtension(f.Filename) {
+			if !f.IsPar2Archive && !fileinfo.IsPar2File(f.Filename) && !isPar2SidecarExtension(f.Filename) &&
+				!fileinfo.IsVideoFile(f.Filename) && !isSubtitleOrAudioExtension(f.Filename) {
 				f.Is7zArchive = true
 			}
 		}
 	case NzbTypeRarArchive:
 		for i := range parsed.Files {
 			f := &parsed.Files[i]
-			if !f.IsPar2Archive && !fileinfo.IsPar2File(f.Filename) && !isPar2SidecarExtension(f.Filename) {
+			if !f.IsPar2Archive && !fileinfo.IsPar2File(f.Filename) && !isPar2SidecarExtension(f.Filename) &&
+				!fileinfo.IsVideoFile(f.Filename) && !isSubtitleOrAudioExtension(f.Filename) {
 				f.IsRarArchive = true
 			}
 		}
+	}
+}
+
+func isSubtitleOrAudioExtension(filename string) bool {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".srt", ".ass", ".ssa", ".vtt", ".sub", ".idx", ".mp3", ".flac", ".m4a", ".aac", ".wav", ".ogg", ".opus":
+		return true
+	default:
+		return false
 	}
 }
 

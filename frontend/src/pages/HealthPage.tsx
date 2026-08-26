@@ -729,8 +729,7 @@ export function HealthPage() {
 									<Trash2 className="h-4 w-4" /> Cleanup Records
 								</button>
 							</li>
-							{(config?.import?.import_strategy === "SYMLINK" ||
-								!!config?.import?.pin_symlink_timestamp) && (
+							{!!config?.import?.pin_symlink_timestamp && (
 								<li>
 									<button
 										type="button"

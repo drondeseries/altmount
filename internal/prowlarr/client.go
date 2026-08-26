@@ -509,7 +509,9 @@ func (c *Client) DownloadNZB(ctx context.Context, downloadURL string) ([]byte, e
 	}
 
 	prowlarrHostURL, _ := url.Parse(c.host)
-	isProwlarrHost := prowlarrHostURL != nil && prowlarrHostURL.Hostname() != "" && strings.EqualFold(prowlarrHostURL.Hostname(), reqURL.Hostname())
+	isProwlarrHost := prowlarrHostURL != nil && prowlarrHostURL.Host != "" &&
+		strings.EqualFold(prowlarrHostURL.Scheme, reqURL.Scheme) &&
+		strings.EqualFold(prowlarrHostURL.Host, reqURL.Host)
 
 	if !isProwlarrHost {
 		if err := httpclient.ValidateDownloadURL(downloadURL); err != nil {

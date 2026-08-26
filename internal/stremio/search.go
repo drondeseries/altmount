@@ -57,7 +57,7 @@ type SearchCoordinator struct {
 var newsnabClientPool sync.Map
 
 func cachedNewsnabClient(cfg newsnab.IndexerConfig, httpClient *http.Client) *newsnab.Client {
-	key := cfg.Name + "|" + cfg.URL + "|" + cfg.APIKey
+	key := fmt.Sprintf("%s|%s|%s|%s|%d|%v", cfg.ID, cfg.Name, cfg.URL, cfg.APIKey, cfg.TimeoutSeconds, cfg.Categories)
 	if v, ok := newsnabClientPool.Load(key); ok {
 		return v.(*newsnab.Client)
 	}
@@ -354,12 +354,24 @@ func (sc *SearchCoordinator) SearchInspect(ctx context.Context, params SearchPar
 
 	aggregated := runSearchQueries(searchCtx, sc.idQueries(params, provider, userAgent))
 	tagProwlarrProvenance(aggregated, true)
-	if len(aggregated) == 0 {
+
+	// Check if ID search yielded any active (non-excluded) results
+	hasActiveIDResults := false
+	for _, rel := range dedupeResults(aggregated) {
+		eval := EvaluateRelease(rel.Title, &sc.config.Scoring)
+		if !eval.Excluded && mediaMismatchReason(rel, params) == "" {
+			hasActiveIDResults = true
+			break
+		}
+	}
+
+	if !hasActiveIDResults {
 		if titleQueries := sc.titleQueries(params, provider, userAgent); len(titleQueries) > 0 {
-			slog.DebugContext(searchCtx, "ID search returned nothing, falling back to title search",
+			slog.DebugContext(searchCtx, "ID search returned no valid matching results, falling back to title search",
 				"title", params.Title)
-			aggregated = runSearchQueries(searchCtx, titleQueries)
-			tagProwlarrProvenance(aggregated, false)
+			titleResults := runSearchQueries(searchCtx, titleQueries)
+			tagProwlarrProvenance(titleResults, false)
+			aggregated = append(aggregated, titleResults...)
 		}
 	}
 

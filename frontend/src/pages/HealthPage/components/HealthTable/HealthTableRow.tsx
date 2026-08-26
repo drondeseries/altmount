@@ -154,9 +154,9 @@ export const HealthTableRow = memo(function HealthTableRow({
 									MovieID: {parsedMetadata.movie.id}
 								</span>
 							)}
-							{parsedMetadata.series?.tvdbId && (
+							{(parsedMetadata.series?.tvdbId || parsedMetadata.tvdbId) && (
 								<span className="badge badge-ghost badge-xs" title="TVDB ID">
-									TVDBID: {parsedMetadata.series.tvdbId}
+									TVDBID: {parsedMetadata.series?.tvdbId || parsedMetadata.tvdbId}
 								</span>
 							)}
 							{parsedMetadata.episodeFile?.id && (
@@ -164,9 +164,9 @@ export const HealthTableRow = memo(function HealthTableRow({
 									FileID: {parsedMetadata.episodeFile.id}
 								</span>
 							)}
-							{parsedMetadata.movie?.tmdbId && (
+							{(parsedMetadata.movie?.tmdbId || parsedMetadata.tmdbId) && (
 								<span className="badge badge-ghost badge-xs" title="TMDB ID">
-									TMDBID: {parsedMetadata.movie.tmdbId}
+									TMDBID: {parsedMetadata.movie?.tmdbId || parsedMetadata.tmdbId}
 								</span>
 							)}
 							{parsedMetadata.movieFile?.id && (
