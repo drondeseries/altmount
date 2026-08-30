@@ -144,6 +144,10 @@ func runMigrations(db *sql.DB, d Dialect) error {
 
 	fixDevBranchMigrationConflict(db, d)
 
+	if err := repairMigration030IndexerSchema(db, d); err != nil {
+		return fmt.Errorf("failed to repair migration 030 indexer schema: %w", err)
+	}
+
 	if err := goose.Up(db, migrationsDir); err != nil {
 		return fmt.Errorf("failed to run migrations: %w", err)
 	}
@@ -324,6 +328,141 @@ func ensureSchemaIntegrity(db *sql.DB, d Dialect) {
 			db.Exec("DROP INDEX IF EXISTS idx_import_history_trim_vpath;")
 		}
 	}
+}
+
+// repairMigration030IndexerSchema heals databases that record migration 030
+// (indexer_import_stats) as applied while the schema it created is missing or partial.
+//
+// Users hit this when moving between release and dev images whose migration
+// numbering collided or diverged: goose then believes 030 is applied and skips
+// it, but the indexer columns (and/or the indexer_import_stats table) never appear.
+// Later migrations that reference those columns fail at startup, e.g.
+// 033_add_degraded_status.sql rebuilding file_health with "no such column: indexer".
+//
+// The repair is gated on migration 030 being recorded as applied, so fresh
+// databases -- where goose will run 030 itself -- and fully migrated databases
+// are left untouched. Every statement is fully idempotent: columns and tables are only
+// created when absent, and indexes are created with IF NOT EXISTS. Indexes are repaired
+// even if columns already exist, and historical indexer_import_stats schemas lacking
+// download_id are upgraded before index creation. A failure aborts startup with
+// an explicit error instead of being swallowed by ensureSchemaIntegrity (which
+// runs too late, after migration 033 has already failed).
+func repairMigration030IndexerSchema(db *sql.DB, d Dialect) error {
+	applied, err := migrationApplied(db, d, 30)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return nil
+	}
+
+	// Restore the indexer columns and ensure indexes exist across all active tables.
+	for _, table := range []string{"import_queue", "import_history", "file_health"} {
+		if !hasColumn(db, d, table, "indexer") {
+			column := fmt.Sprintf("ALTER TABLE %s ADD COLUMN indexer %s DEFAULT NULL;", table, indexerColumnType(d))
+			if _, err := db.Exec(column); err != nil {
+				return fmt.Errorf("failed to add indexer column to %s: %w", table, err)
+			}
+		}
+
+		indexName := fmt.Sprintf("idx_%s_indexer", table)
+		indexQuery := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s(indexer);", indexName, table)
+		if _, err := db.Exec(indexQuery); err != nil {
+			return fmt.Errorf("failed to create indexer index on %s: %w", table, err)
+		}
+	}
+
+	// Restore the indexer_import_stats table migration 030 creates.
+	if !hasTable(db, d, "indexer_import_stats") {
+		if _, err := db.Exec(indexerImportStatsCreate(d)); err != nil {
+			return fmt.Errorf("failed to create indexer_import_stats table: %w", err)
+		}
+	}
+
+	// Ensure download_id column exists (handles early historical migration-030 variants).
+	if !hasColumn(db, d, "indexer_import_stats", "download_id") {
+		if _, err := db.Exec("ALTER TABLE indexer_import_stats ADD COLUMN download_id TEXT DEFAULT NULL;"); err != nil {
+			return fmt.Errorf("failed to add download_id column to indexer_import_stats: %w", err)
+		}
+	}
+
+	indexerStatsIndexes := []struct {
+		name   string
+		column string
+	}{
+		{"idx_indexer_stats_name", "indexer"},
+		{"idx_indexer_stats_created", "created_at"},
+		{"idx_indexer_stats_download_id", "download_id"},
+	}
+	for _, index := range indexerStatsIndexes {
+		indexQuery := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON indexer_import_stats(%s);", index.name, index.column)
+		if _, err := db.Exec(indexQuery); err != nil {
+			return fmt.Errorf("failed to create indexer_import_stats index %s: %w", index.name, err)
+		}
+	}
+
+	return nil
+}
+
+// migrationApplied reports whether goose records the given migration version as applied.
+func migrationApplied(db *sql.DB, d Dialect, version int) (bool, error) {
+	if !hasTable(db, d, "goose_db_version") {
+		return false, nil
+	}
+
+	if d == DialectPostgres {
+		var applied bool
+		if err := db.QueryRow(
+			"SELECT EXISTS (SELECT 1 FROM goose_db_version WHERE version_id = $1 AND is_applied = true)",
+			version,
+		).Scan(&applied); err != nil {
+			return false, err
+		}
+		return applied, nil
+	}
+
+	var count int
+	if err := db.QueryRow(
+		"SELECT COUNT(*) FROM goose_db_version WHERE version_id = ? AND is_applied = 1",
+		version,
+	).Scan(&count); err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// indexerColumnType returns the dialect-appropriate type for the indexer column,
+// matching the column definitions used by migration 030.
+func indexerColumnType(d Dialect) string {
+	if d == DialectPostgres {
+		return "VARCHAR(255)"
+	}
+	return "TEXT"
+}
+
+// indexerImportStatsCreate returns the dialect-specific CREATE TABLE statement
+// for indexer_import_stats, replicating migration 030.
+func indexerImportStatsCreate(d Dialect) string {
+	if d == DialectPostgres {
+		return `
+			CREATE TABLE indexer_import_stats (
+				id SERIAL PRIMARY KEY,
+				indexer VARCHAR(255) NOT NULL,
+				status VARCHAR(50) NOT NULL CHECK(status IN ('success', 'failed')),
+				error_message TEXT DEFAULT NULL,
+				download_id TEXT DEFAULT NULL,
+				created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+			);`
+	}
+	return `
+		CREATE TABLE indexer_import_stats (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			indexer TEXT NOT NULL,
+			status TEXT NOT NULL CHECK(status IN ('success', 'failed')),
+			error_message TEXT DEFAULT NULL,
+			download_id TEXT DEFAULT NULL,
+			created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+		);`
 }
 
 // fixDevBranchMigrationConflict fixes an issue for users who applied the metadata migration as version 26
