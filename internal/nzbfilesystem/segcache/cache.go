@@ -43,7 +43,6 @@ type SegmentCache struct {
 	logger    *slog.Logger
 	totalSize int64
 	dirty     atomic.Bool
-	evicting  atomic.Bool
 	ready     chan struct{}
 	readyOnce sync.Once
 }
@@ -151,37 +150,16 @@ func (c *SegmentCache) Put(messageID string, data []byte) error {
 
 	c.dirty.Store(true)
 
-	c.evictIfOver()
-
 	return nil
-}
-
-// evictLowWaterPercent is how far below MaxSizeBytes a sweep drives the cache,
-// so a stream at line rate does not re-trigger a sweep on every Put.
-const evictLowWaterPercent = 95
-
-func (c *SegmentCache) evictIfOver() {
-	c.mu.Lock()
-	over := c.totalSize > c.config.MaxSizeBytes
-	c.mu.Unlock()
-	if !over || !c.evicting.CompareAndSwap(false, true) {
-		return
-	}
-	defer c.evicting.Store(false)
-	c.evictTo(c.config.MaxSizeBytes * evictLowWaterPercent / 100)
 }
 
 // Evict removes the oldest entries (by LastAccess) until total size is within MaxSizeBytes.
 func (c *SegmentCache) Evict() {
 	c.waitReady()
-	c.evictTo(c.config.MaxSizeBytes)
-}
-
-func (c *SegmentCache) evictTo(target int64) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if c.totalSize <= c.config.MaxSizeBytes {
-		c.mu.Unlock()
 		return
 	}
 
@@ -199,26 +177,18 @@ func (c *SegmentCache) evictTo(target int64) {
 		return sorted[i].e.LastAccess.Before(sorted[j].e.LastAccess)
 	})
 
-	victims := make([]string, 0, len(sorted))
-	freed := int64(0)
+	removed := false
 	for _, pair := range sorted {
-		if c.totalSize <= target {
+		if c.totalSize <= c.config.MaxSizeBytes {
 			break
 		}
-		victims = append(victims, pair.e.DataPath)
+		_ = os.Remove(pair.e.DataPath)
 		c.totalSize -= pair.e.Size
-		freed += pair.e.Size
 		delete(c.items, pair.id)
+		removed = true
 	}
-	remaining := c.totalSize
-	c.mu.Unlock()
-
-	for _, p := range victims {
-		_ = os.Remove(p)
-	}
-	if len(victims) > 0 {
+	if removed {
 		c.dirty.Store(true)
-		c.logger.Info("segcache: evicted segments", "count", len(victims), "freed_bytes", freed, "total_bytes", remaining)
 	}
 }
 
@@ -325,27 +295,20 @@ func (c *SegmentCache) LoadCatalog() {
 		return
 	}
 
+	var totalSize int64
 	valid := make(map[string]*cacheEntry, len(items))
 
 	for id, e := range items {
 		if _, statErr := os.Stat(e.DataPath); statErr == nil {
 			valid[id] = e
+			totalSize += e.Size
 		}
 	}
 
-	// Merge rather than replace: a Put that escaped waitReady via the hydration
-	// timeout may already have inserted entries, and those are fresher than the
-	// catalog's. Replacing the map would orphan their .seg files.
 	c.mu.Lock()
-	for id, e := range valid {
-		if _, exists := c.items[id]; !exists {
-			c.items[id] = e
-			c.totalSize += e.Size
-		}
-	}
-	loaded := len(c.items)
-	total := c.totalSize
+	c.items = valid
+	c.totalSize = totalSize
 	c.mu.Unlock()
 
-	c.logger.Info("segcache: catalog loaded", "items", loaded, "total_bytes", total)
+	c.logger.Info("segcache: catalog loaded", "items", len(valid), "total_bytes", totalSize)
 }
