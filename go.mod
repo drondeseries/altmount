@@ -46,7 +46,11 @@ require (
 	golang.org/x/crypto v0.46.0
 	golang.org/x/net v0.48.0
 	golang.org/x/sync v0.19.0
+<<<<<<< HEAD
 	golang.org/x/sys v0.41.0
+=======
+	golang.org/x/sys v0.41.0
+>>>>>>> d06bee95 (feat(stremio): universal caps-driven queries, redirect hops, and library stream fallback)
 	golang.org/x/term v0.38.0
 	golang.org/x/text v0.32.0
 	golift.io/starr v1.2.0
