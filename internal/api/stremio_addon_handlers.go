@@ -1617,12 +1617,13 @@ func (s *Server) enqueueStremioRelease(
 			category := "Movies"
 			tmdbID := 0
 			tvdbID := 0
-			if streamType == "series" {
+			switch streamType {
+			case "series":
 				category = "TV"
 				if tvdbIDStr, _, _ := resolveSeriesMetadataFromIMDb(workCtx, imdbID); tvdbIDStr != "" {
 					tvdbID, _ = strconv.Atoi(tvdbIDStr)
 				}
-			} else if streamType == "movie" {
+			case "movie":
 				tmdbID, _, _, _ = resolveMovieMetadataFromIMDb(workCtx, imdbID)
 			}
 			stremioDownloadID := stremioDownloadIDPrefix + uuid.NewString()

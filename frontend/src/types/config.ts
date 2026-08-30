@@ -244,6 +244,7 @@ export interface ImportConfig {
 	filter_sample_files?: boolean;
 	failed_item_retention_hours?: number | null;
 	history_retention_days?: number | null;
+	pin_symlink_timestamp?: string | null;
 	verify_content?: boolean; // Probe each media file's header for a valid container signature before reporting import success
 	verify_content_timeout_seconds?: number; // Per-file content probe timeout (default 15s)
 }
