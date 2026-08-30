@@ -24,6 +24,7 @@ import (
 const MountProvider = "altmount"
 const DefaultCategoryName = "Default"
 const DefaultCategoryDir = "complete"
+const DefaultSABnzbdUserAgent = "SABnzbd/4.4.1"
 
 // MountType represents the active mount system
 type MountType string
@@ -576,6 +577,7 @@ type SABnzbdConfig struct {
 	Enabled               *bool             `yaml:"enabled" mapstructure:"enabled" json:"enabled"`
 	CompleteDir           string            `yaml:"complete_dir" mapstructure:"complete_dir" json:"complete_dir"`
 	DownloadClientBaseURL string            `yaml:"download_client_base_url" mapstructure:"download_client_base_url" json:"download_client_base_url,omitempty"`
+	UserAgent             string            `yaml:"user_agent" mapstructure:"user_agent" json:"user_agent,omitempty"`
 	Categories            []SABnzbdCategory `yaml:"categories" mapstructure:"categories" json:"categories"`
 	// HistoryRetentionMinutes controls how far back the SABnzbd-emulating history
 	// endpoint looks into import_history when *arr clients poll without a specific
@@ -1865,6 +1867,7 @@ func DefaultConfig(configDir ...string) *Config {
 			Enabled:               &sabnzbdEnabled,
 			CompleteDir:           "/complete",
 			DownloadClientBaseURL: "",
+			UserAgent:             DefaultSABnzbdUserAgent,
 			Categories: []SABnzbdCategory{
 				{
 					Name:     "Movies",

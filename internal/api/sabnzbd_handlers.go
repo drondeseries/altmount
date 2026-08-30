@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -445,20 +444,54 @@ func (s *Server) handleSABnzbdAddFile(c *fiber.Ctx) error {
 
 // handleSABnzbdAddUrl handles adding NZB from URL
 func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
-	nzbUrl := c.Query("name")
-	log.Printf("Received NZB download request for URL: %s", nzbUrl)
+	nzbUrl := qf(c, "name")
+	slog.InfoContext(c.Context(), "Received NZB download request for URL", "url", nzbUrl)
 
 	if nzbUrl == "" {
 		return s.writeSABnzbdErrorFiber(c, "URL parameter 'name' required")
 	}
 
-	// Download NZB file from URL using a proper HTTP client with a User-Agent header.
+	if s.queueRepo != nil {
+		if item, err := s.queueRepo.GetQueueItemBySourceURL(c.Context(), nzbUrl); err == nil && item != nil {
+			respID := strconv.FormatInt(item.ID, 10)
+			if item.DownloadID != nil && *item.DownloadID != "" {
+				respID = *item.DownloadID
+			}
+			slog.InfoContext(c.Context(), "Skipping duplicate NZB download from URL (already in queue)", "url", nzbUrl, "download_id", respID)
+			return s.writeSABnzbdResponseFiber(c, SABnzbdAddResponse{
+				Status: true,
+				NzoIds: []string{respID},
+			})
+		}
+		if hist, err := s.queueRepo.GetImportHistoryBySourceURL(c.Context(), nzbUrl); err == nil && hist != nil {
+			respID := strconv.FormatInt(hist.ID, 10)
+			if hist.DownloadID != nil && *hist.DownloadID != "" {
+				respID = *hist.DownloadID
+			}
+			slog.InfoContext(c.Context(), "Skipping duplicate NZB download from URL (already in history)", "url", nzbUrl, "download_id", respID)
+			return s.writeSABnzbdResponseFiber(c, SABnzbdAddResponse{
+				Status: true,
+				NzoIds: []string{respID},
+			})
+		}
+	}
+
+	// Download NZB file from URL using a proper HTTP client with a forwarded User-Agent header.
 	// Some indexers (e.g. NZBHydra2) return 403 on redirect if User-Agent is missing.
 	req, err := http.NewRequestWithContext(c.Context(), http.MethodGet, nzbUrl, nil)
 	if err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to build NZB download request")
 	}
-	req.Header.Set("User-Agent", "altmount")
+	ua := c.Get("User-Agent")
+	if ua == "" {
+		if s.configManager != nil {
+			ua = s.configManager.GetConfig().SABnzbd.UserAgent
+		}
+		if ua == "" {
+			ua = config.DefaultSABnzbdUserAgent
+		}
+	}
+	req.Header.Set("User-Agent", ua)
 	resp, err := httpclient.NewLong().Do(req)
 	if err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to download NZB from URL")
@@ -486,7 +519,7 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 
 	// Create temporary file with category path
 	tempDir := os.TempDir()
-	uploadDir := filepath.Join(tempDir, "altmount-uploads")
+	uploadDir := filepath.Join(tempDir, "altmount-uploads", uuid.New().String())
 	if err := os.MkdirAll(uploadDir, 0755); err != nil {
 		return s.writeSABnzbdErrorFiber(c, "Failed to create upload directory")
 	}
@@ -549,6 +582,7 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 
 	// Capture additional metadata from query parameters
 	metadata := make(map[string]string)
+	metadata["source_url"] = nzbUrl
 	if series := c.Query("series"); series != "" {
 		metadata["series_title"] = series
 	}
@@ -575,7 +609,7 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 
 	// Generate or extract stable download ID for tracking
 	// Some indexers provide a GUID in the 'nzbname' or 'name' parameter
-	downloadID := c.Query("nzbname")
+	downloadID := qf(c, "nzbname")
 	if downloadID == "" {
 		// Use filename (without extension) as a fallback ID if it looks like a GUID
 		downloadID = strings.TrimSuffix(filename, filepath.Ext(filename))

@@ -316,6 +316,7 @@ export interface SABnzbdConfig {
 	enabled: boolean;
 	complete_dir: string;
 	download_client_base_url?: string;
+	user_agent?: string;
 	categories: SABnzbdCategory[];
 	history_retention_minutes: number;
 	fallback_host?: string;
@@ -525,6 +526,7 @@ export interface ProviderUpdateRequest {
 export interface SABnzbdUpdateRequest {
 	enabled?: boolean;
 	complete_dir?: string;
+	user_agent?: string;
 	categories?: SABnzbdCategory[];
 	history_retention_minutes?: number;
 	fallback_host?: string;

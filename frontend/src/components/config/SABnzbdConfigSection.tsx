@@ -257,6 +257,22 @@ export function SABnzbdConfigSection({
 										How far back the emulated history goes when polled by Arrs.
 									</p>
 								</fieldset>
+
+								<fieldset className="fieldset">
+									<legend className="fieldset-legend font-semibold">Fallback User-Agent</legend>
+									<input
+										type="text"
+										className="input input-bordered w-full bg-base-100 font-mono text-sm"
+										value={formData.user_agent ?? ""}
+										readOnly={isReadOnly}
+										placeholder="SABnzbd/4.4.1"
+										onChange={(e) => updateFormData({ user_agent: e.target.value })}
+									/>
+									<p className="label break-words text-base-content/70 text-xs">
+										Used when downloading NZBs from URLs if client User-Agent is absent. Defaults to{" "}
+										<code>SABnzbd/4.4.1</code>.
+									</p>
+								</fieldset>
 							</div>
 						</div>
 

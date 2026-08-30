@@ -389,6 +389,33 @@ func (r *Repository) GetQueueItemByDownloadID(ctx context.Context, downloadID st
 	return &item, nil
 }
 
+// GetQueueItemBySourceURL retrieves a queue item by its source_url stored in metadata
+func (r *Repository) GetQueueItemBySourceURL(ctx context.Context, sourceURL string) (*ImportQueueItem, error) {
+	query := fmt.Sprintf(`
+		SELECT id, download_id, nzb_path, relative_path, category, priority, status, created_at, updated_at,
+		       started_at, completed_at, retry_count, max_retries, error_message, batch_id, metadata, file_size, storage_path, target_path, indexer
+		FROM import_queue
+		WHERE %s = ?
+		LIMIT 1
+	`, r.dialect.JSONExtract("metadata", "source_url"))
+
+	var item ImportQueueItem
+	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(
+		&item.ID, &item.DownloadID, &item.NzbPath, &item.RelativePath, &item.Category, &item.Priority, &item.Status,
+		&item.CreatedAt, &item.UpdatedAt, &item.StartedAt, &item.CompletedAt,
+		&item.RetryCount, &item.MaxRetries, &item.ErrorMessage, &item.BatchID, &item.Metadata, &item.FileSize, &item.StoragePath, &item.TargetPath, &item.Indexer,
+	)
+
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get queue item by source_url: %w", err)
+	}
+
+	return &item, nil
+}
+
 // UpdateQueueItemIndexerByDownloadID updates the indexer for a queue item by its DownloadID
 func (r *Repository) UpdateQueueItemIndexerByDownloadID(ctx context.Context, downloadID string, indexer string) error {
 	query := `UPDATE import_queue SET indexer = ?, updated_at = datetime('now') WHERE download_id = ?`
@@ -1109,16 +1136,38 @@ func (r *Repository) UpdateQueueItemsPriorityBulk(ctx context.Context, ids []int
 // AddImportHistory records a successful file import in the persistent history table
 func (r *Repository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
 	query := `
-		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, indexer, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, metadata, indexer, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		history.DownloadID, history.NzbID, history.NzbName, history.FileName, history.FileSize,
-		history.VirtualPath, history.Category, history.Indexer)
+		history.VirtualPath, history.Category, history.Metadata, history.Indexer)
 	if err != nil {
 		return fmt.Errorf("failed to add import history: %w", err)
 	}
 	return nil
+}
+
+// GetImportHistoryBySourceURL retrieves an import history item by its source_url stored in metadata
+func (r *Repository) GetImportHistoryBySourceURL(ctx context.Context, sourceURL string) (*ImportHistory, error) {
+	query := fmt.Sprintf(`
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.indexer, h.completed_at
+		FROM import_history h
+		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
+		WHERE %s = ?
+		LIMIT 1
+	`, r.dialect.JSONExtract("h.metadata", "source_url"))
+
+	var h ImportHistory
+	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.Indexer, &h.CompletedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get import history by source_url: %w", err)
+	}
+
+	return &h, nil
 }
 
 // GetImportHistoryByDownloadID retrieves an import history item by its DownloadID

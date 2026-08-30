@@ -522,6 +522,28 @@ func (r *QueueRepository) ListImportHistory(ctx context.Context, limit int) ([]*
 	return history, nil
 }
 
+// GetImportHistoryBySourceURL retrieves an import history item by its source_url stored in metadata
+func (r *QueueRepository) GetImportHistoryBySourceURL(ctx context.Context, sourceURL string) (*ImportHistory, error) {
+	query := fmt.Sprintf(`
+		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.indexer, h.completed_at
+		FROM import_history h
+		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
+		WHERE %s = ?
+		LIMIT 1
+	`, r.dialect.JSONExtract("h.metadata", "source_url"))
+
+	var h ImportHistory
+	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.Indexer, &h.CompletedAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to get import history by source_url: %w", err)
+	}
+
+	return &h, nil
+}
+
 // IncrementRetryCountAndResetStatus increments the retry count and resets the status to pending
 func (r *QueueRepository) IncrementRetryCountAndResetStatus(ctx context.Context, id int64, errorMessage *string) (bool, error) {
 	query := `
@@ -790,6 +812,31 @@ func (r *QueueRepository) GetQueueItemByDownloadID(ctx context.Context, download
 			return nil, nil // Item not found
 		}
 		return nil, fmt.Errorf("failed to get queue item by download_id: %w", err)
+	}
+
+	return &item, nil
+}
+
+// GetQueueItemBySourceURL retrieves a queue item by its source_url stored in metadata
+func (r *QueueRepository) GetQueueItemBySourceURL(ctx context.Context, sourceURL string) (*ImportQueueItem, error) {
+	query := fmt.Sprintf(`
+		SELECT id, download_id, nzb_path, relative_path, category, priority, status, created_at, updated_at,
+		       started_at, completed_at, retry_count, max_retries, error_message, batch_id, metadata, file_size, storage_path, target_path, skip_arr_notification, skip_post_import_links, indexer
+		FROM import_queue WHERE %s = ?
+		LIMIT 1
+	`, r.dialect.JSONExtract("metadata", "source_url"))
+
+	var item ImportQueueItem
+	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(
+		&item.ID, &item.DownloadID, &item.NzbPath, &item.RelativePath, &item.Category, &item.Priority, &item.Status,
+		&item.CreatedAt, &item.UpdatedAt, &item.StartedAt, &item.CompletedAt,
+		&item.RetryCount, &item.MaxRetries, &item.ErrorMessage, &item.BatchID, &item.Metadata, &item.FileSize, &item.StoragePath, &item.TargetPath, &item.SkipArrNotification, &item.SkipPostImportLinks, &item.Indexer,
+	)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, nil // Item not found
+		}
+		return nil, fmt.Errorf("failed to get queue item by source_url: %w", err)
 	}
 
 	return &item, nil
