@@ -522,18 +522,18 @@ func (r *QueueRepository) ListImportHistory(ctx context.Context, limit int) ([]*
 	return history, nil
 }
 
-// GetImportHistoryBySourceURL retrieves an import history item by its source_url stored in metadata
+// GetImportHistoryBySourceURL retrieves an import history item by its source_url or resolved_url stored in metadata
 func (r *QueueRepository) GetImportHistoryBySourceURL(ctx context.Context, sourceURL string) (*ImportHistory, error) {
 	query := fmt.Sprintf(`
 		SELECT h.id, h.download_id, h.nzb_id, h.nzb_name, h.file_name, h.file_size, h.virtual_path, f.library_path, h.category, h.metadata, h.indexer, h.completed_at
 		FROM import_history h
 		LEFT JOIN file_health f ON TRIM(h.virtual_path, '/') = TRIM(f.file_path, '/')
-		WHERE %s = ?
+		WHERE %s = ? OR %s = ?
 		LIMIT 1
-	`, r.dialect.JSONExtract("h.metadata", "source_url"))
+	`, r.dialect.JSONExtract("h.metadata", "source_url"), r.dialect.JSONExtract("h.metadata", "resolved_url"))
 
 	var h ImportHistory
-	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.Indexer, &h.CompletedAt)
+	err := r.db.QueryRowContext(ctx, query, sourceURL, sourceURL).Scan(&h.ID, &h.DownloadID, &h.NzbID, &h.NzbName, &h.FileName, &h.FileSize, &h.VirtualPath, &h.LibraryPath, &h.Category, &h.Metadata, &h.Indexer, &h.CompletedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return nil, nil
@@ -817,17 +817,17 @@ func (r *QueueRepository) GetQueueItemByDownloadID(ctx context.Context, download
 	return &item, nil
 }
 
-// GetQueueItemBySourceURL retrieves a queue item by its source_url stored in metadata
+// GetQueueItemBySourceURL retrieves a queue item by its source_url or resolved_url stored in metadata
 func (r *QueueRepository) GetQueueItemBySourceURL(ctx context.Context, sourceURL string) (*ImportQueueItem, error) {
 	query := fmt.Sprintf(`
 		SELECT id, download_id, nzb_path, relative_path, category, priority, status, created_at, updated_at,
 		       started_at, completed_at, retry_count, max_retries, error_message, batch_id, metadata, file_size, storage_path, target_path, skip_arr_notification, skip_post_import_links, indexer
-		FROM import_queue WHERE %s = ?
+		FROM import_queue WHERE %s = ? OR %s = ?
 		LIMIT 1
-	`, r.dialect.JSONExtract("metadata", "source_url"))
+	`, r.dialect.JSONExtract("metadata", "source_url"), r.dialect.JSONExtract("metadata", "resolved_url"))
 
 	var item ImportQueueItem
-	err := r.db.QueryRowContext(ctx, query, sourceURL).Scan(
+	err := r.db.QueryRowContext(ctx, query, sourceURL, sourceURL).Scan(
 		&item.ID, &item.DownloadID, &item.NzbPath, &item.RelativePath, &item.Category, &item.Priority, &item.Status,
 		&item.CreatedAt, &item.UpdatedAt, &item.StartedAt, &item.CompletedAt,
 		&item.RetryCount, &item.MaxRetries, &item.ErrorMessage, &item.BatchID, &item.Metadata, &item.FileSize, &item.StoragePath, &item.TargetPath, &item.SkipArrNotification, &item.SkipPostImportLinks, &item.Indexer,

@@ -502,6 +502,38 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 		return s.writeSABnzbdErrorFiber(c, fmt.Sprintf("Failed to download NZB: HTTP %d", resp.StatusCode))
 	}
 
+	// Capture the final resolved URL after all redirects (e.g. from Prowlarr proxy to indexer)
+	resolvedURL := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		resolvedURL = resp.Request.URL.String()
+	}
+
+	// If redirected, check if the resolved destination URL is already tracked in queue or history
+	if resolvedURL != "" && resolvedURL != nzbUrl && s.queueRepo != nil {
+		if item, err := s.queueRepo.GetQueueItemBySourceURL(c.Context(), resolvedURL); err == nil && item != nil {
+			respID := strconv.FormatInt(item.ID, 10)
+			if item.DownloadID != nil && *item.DownloadID != "" {
+				respID = *item.DownloadID
+			}
+			slog.InfoContext(c.Context(), "Skipping duplicate NZB download from redirected URL (already in queue)", "resolved_url", resolvedURL, "download_id", respID)
+			return s.writeSABnzbdResponseFiber(c, SABnzbdAddResponse{
+				Status: true,
+				NzoIds: []string{respID},
+			})
+		}
+		if hist, err := s.queueRepo.GetImportHistoryBySourceURL(c.Context(), resolvedURL); err == nil && hist != nil {
+			respID := strconv.FormatInt(hist.ID, 10)
+			if hist.DownloadID != nil && *hist.DownloadID != "" {
+				respID = *hist.DownloadID
+			}
+			slog.InfoContext(c.Context(), "Skipping duplicate NZB download from redirected URL (already in history)", "resolved_url", resolvedURL, "download_id", respID)
+			return s.writeSABnzbdResponseFiber(c, SABnzbdAddResponse{
+				Status: true,
+				NzoIds: []string{respID},
+			})
+		}
+	}
+
 	// Get and validate category from query or form parameters
 	category := qf(c, "cat")
 	if category == "" {
@@ -583,6 +615,9 @@ func (s *Server) handleSABnzbdAddUrl(c *fiber.Ctx) error {
 	// Capture additional metadata from query parameters
 	metadata := make(map[string]string)
 	metadata["source_url"] = nzbUrl
+	if resolvedURL != "" && resolvedURL != nzbUrl {
+		metadata["resolved_url"] = resolvedURL
+	}
 	if series := c.Query("series"); series != "" {
 		metadata["series_title"] = series
 	}

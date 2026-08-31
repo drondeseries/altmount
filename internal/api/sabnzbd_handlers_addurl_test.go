@@ -189,3 +189,62 @@ func TestHandleSABnzbdAddUrl_UserAgentConfiguredFallback(t *testing.T) {
 
 	assert.Equal(t, "CustomUserAgent/1.0", receivedUA)
 }
+
+func TestHandleSABnzbdAddUrl_SkipsDuplicateRedirectedURL(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "test.db")
+	db, err := database.NewDB(database.Config{Type: "sqlite", DatabasePath: dbPath})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = db.Close() })
+
+	repo := database.NewRepository(db.Connection(), db.Dialect())
+
+	var mockIndexer *httptest.Server
+	mockIndexer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/prowlarr/download" {
+			http.Redirect(w, r, mockIndexer.URL+"/indexer/actual-release.nzb?id=9999", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("<nzb></nzb>"))
+	}))
+	defer mockIndexer.Close()
+
+	actualResolvedURL := mockIndexer.URL + "/indexer/actual-release.nzb?id=9999"
+	downloadID := "redirect-guid-9999"
+	metadata := `{"source_url":"http://prowlarr:9696/download?old=1","resolved_url":"` + actualResolvedURL + `"}`
+	item := &database.ImportQueueItem{
+		DownloadID: &downloadID,
+		NzbPath:    "/tmp/test.nzb",
+		Status:     database.QueueStatusPending,
+		Priority:   database.QueuePriorityNormal,
+		Metadata:   &metadata,
+	}
+	require.NoError(t, repo.AddToQueue(context.Background(), item))
+
+	server := &Server{
+		queueRepo: repo,
+	}
+	app := fiber.New()
+	app.Get("/api", server.handleSABnzbdAddUrl)
+
+	// Sending a NEW proxy link which redirects to the same underlying indexer URL
+	newProxyURL := mockIndexer.URL + "/prowlarr/download?new_token=xyz"
+	req := httptest.NewRequest(http.MethodGet, "/api?name="+newProxyURL, nil)
+
+	resp, err := app.Test(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	bodyBytes, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+
+	var addResp SABnzbdAddResponse
+	require.NoError(t, json.Unmarshal(bodyBytes, &addResp))
+
+	assert.True(t, addResp.Status)
+	require.Len(t, addResp.NzoIds, 1)
+	assert.Equal(t, downloadID, addResp.NzoIds[0])
+}
