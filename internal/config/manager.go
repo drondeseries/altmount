@@ -30,6 +30,19 @@ const DefaultSABnzbdUserAgent = "SABnzbd/4.4.1"
 type MountType string
 
 const (
+	// defaultMinConnectionsAlive keeps a couple of sockets warm so a stream
+	// started after an idle period does not pay TCP + TLS + AUTHINFO first.
+	// A negative min_connections_alive opts out entirely.
+	defaultMinConnectionsAlive = 2
+	// providerIdleTimeout stays under the idle cut most providers apply while
+	// keeping warm connections through short pauses.
+	providerIdleTimeout = 2 * time.Minute
+	// providerReconnectDelay lets a provider dropped after a 502 rejoin the
+	// pool instead of staying out until restart.
+	providerReconnectDelay = 30 * time.Second
+)
+
+const (
 	MountTypeNone           MountType = "none"
 	MountTypeRClone         MountType = "rclone"
 	MountTypeFuse           MountType = "fuse"
@@ -66,6 +79,11 @@ type Config struct {
 	MountPath       string           `yaml:"mount_path" mapstructure:"mount_path" json:"mount_path"`
 	MountType       MountType        `yaml:"mount_type" mapstructure:"mount_type" json:"mount_type"`
 	ProfilerEnabled bool             `yaml:"profiler_enabled" mapstructure:"profiler_enabled" json:"profiler_enabled" default:"false"`
+	// MemoryLimitMB is the Go soft memory limit. Unset or 0 derives it from
+	// the budgets that allocate (see SoftMemoryLimit); a positive value pins
+	// it; a negative value leaves the runtime default. GOMEMLIMIT in the
+	// environment always takes precedence.
+	MemoryLimitMB *int `yaml:"memory_limit_mb" mapstructure:"memory_limit_mb" json:"memory_limit_mb"`
 }
 
 // Par2RepairConfig configures background PAR2 repair of missing usenet
@@ -201,6 +219,55 @@ type SegmentCacheConfig struct {
 	// eviction. Set to 0 to disable expiry (cache forever, bounded only by
 	// MaxSizeGB via LRU eviction). Left unset (nil) it defaults to 24 hours.
 	ExpiryHours *int `yaml:"expiry_hours" mapstructure:"expiry_hours" json:"expiry_hours"`
+	// MemoryMB bounds the in-memory tier of decoded articles that sits in
+	// front of the disk cache and is on even when the disk cache is off.
+	// Left unset (nil) it defaults to 256; an explicit 0 disables it.
+	MemoryMB *int `yaml:"memory_mb" mapstructure:"memory_mb" json:"memory_mb"`
+}
+
+// defaultSegmentCacheMemoryMB is the memory tier size when memory_mb is unset.
+const defaultSegmentCacheMemoryMB = 256
+
+// MemoryBytes is the memory tier budget in bytes (0 = disabled).
+func (c SegmentCacheConfig) MemoryBytes() int64 {
+	if c.MemoryMB == nil {
+		return int64(defaultSegmentCacheMemoryMB) << 20
+	}
+	return int64(max(*c.MemoryMB, 0)) << 20
+}
+
+// softMemoryHeadroomMB is what the process needs above the configured
+// budgets: read-ahead windows, connection buffers, metadata, and the runtime.
+const softMemoryHeadroomMB = 256
+
+// SoftMemoryLimit is the Go soft memory limit to apply, or 0 to leave the
+// runtime alone. Without a limit the collector lets the heap reach twice the
+// live set, so a 256 MB memory tier costs 600+ MB of RSS. The automatic value
+// adds every budget that holds live heap (memory tier, PAR2 solver per
+// concurrent job) plus headroom, so the limit stays above the live set and the
+// collector never has to run back to back. A soft limit is only useful while
+// the memory tier is on: with it off the heap is small and bursty.
+func (c *Config) SoftMemoryLimit(gomemlimit string) int64 {
+	if gomemlimit != "" {
+		return 0
+	}
+	if c.MemoryLimitMB != nil && *c.MemoryLimitMB != 0 {
+		if *c.MemoryLimitMB < 0 {
+			return 0
+		}
+		return int64(*c.MemoryLimitMB) << 20
+	}
+	cache := c.SegmentCache.MemoryBytes()
+	if cache == 0 {
+		return 0
+	}
+	// Repair solvers only allocate when the feature is on; a disabled repair
+	// service must not raise the ceiling the collector works under.
+	var par2 int64
+	if c.Par2Repair.Enabled != nil && *c.Par2Repair.Enabled {
+		par2 = int64(max(c.Par2Repair.MaxMemoryMB, 0)) * int64(max(c.Par2Repair.MaxConcurrentJobs, 1))
+	}
+	return cache + (par2+softMemoryHeadroomMB)<<20
 }
 
 // WebDAVConfig represents WebDAV server configuration
@@ -697,7 +764,12 @@ type ProviderConfig struct {
 	// existence checks). Its pool-wide aggregate (connections × depth, clamped to 4096)
 	// determines how much an idle-pool health sweep can widen: measured 24x sweep
 	// throughput improvement. While a stream is active the sweep is capped lower regardless.
-	StatInflightRequests     int        `yaml:"stat_inflight_requests" mapstructure:"stat_inflight_requests" json:"stat_inflight_requests"`
+	StatInflightRequests int `yaml:"stat_inflight_requests" mapstructure:"stat_inflight_requests" json:"stat_inflight_requests"`
+	// StreamInflightRequests caps streaming (priority-lane) bodies in flight
+	// per connection, so a playback read never queues behind a connection's
+	// worth of read-ahead. 0 defaults to 4; values above inflight_requests
+	// are capped to it.
+	StreamInflightRequests   int        `yaml:"stream_inflight_requests" mapstructure:"stream_inflight_requests" json:"stream_inflight_requests,omitempty"`
 	TLS                      bool       `yaml:"tls" mapstructure:"tls" json:"tls"`
 	InsecureTLS              bool       `yaml:"insecure_tls" mapstructure:"insecure_tls" json:"insecure_tls"`
 	ProxyURL                 string     `yaml:"proxy_url" mapstructure:"proxy_url" json:"proxy_url,omitempty"`
@@ -1012,6 +1084,12 @@ func (c *Config) Validate() error {
 	if c.SegmentCache.ExpiryHours == nil {
 		defaultExpiryHours := 24
 		c.SegmentCache.ExpiryHours = &defaultExpiryHours
+	}
+	if c.SegmentCache.MemoryMB == nil {
+		memoryMB := defaultSegmentCacheMemoryMB
+		c.SegmentCache.MemoryMB = &memoryMB
+	} else if *c.SegmentCache.MemoryMB < 0 {
+		return fmt.Errorf("segment_cache memory_mb must be 0 or greater")
 	}
 
 	if c.Import.MaxProcessorWorkers <= 0 {
@@ -1423,7 +1501,21 @@ func (p *ProviderConfig) ToNNTPProvider() nntppool.Provider {
 		tlsCfg = &tls.Config{
 			InsecureSkipVerify: p.InsecureTLS,
 			ServerName:         p.Host,
+			// One cached session per connection the allowance permits, so every
+			// reconnect after the first is a resumption handshake.
+			ClientSessionCache: tls.NewLRUClientSessionCache(max(p.MaxConnections, 1)),
 		}
+	}
+
+	minConns := p.MinConnectionsAlive
+	switch {
+	case minConns < 0:
+		minConns = 0
+	case minConns == 0:
+		minConns = defaultMinConnectionsAlive
+	}
+	if minConns > p.MaxConnections {
+		minConns = p.MaxConnections
 	}
 
 	inflight := p.InflightRequests
@@ -1436,17 +1528,30 @@ func (p *ProviderConfig) ToNNTPProvider() nntppool.Provider {
 		statInflight = 100
 	}
 
+	// Streaming bodies per connection default to the full pipeline depth.
+	// A tighter cap shortens how long a seek waits behind read-ahead on its
+	// connection, but providers that reward deep pipelines lose sequential
+	// throughput to it: capped at 4 a 15-connection account measured about
+	// 20% below the uncapped pipeline. Users who want the bounded wait set
+	// stream_inflight_requests explicitly.
+	streamInflight := p.StreamInflightRequests
+	if streamInflight <= 0 || streamInflight > inflight {
+		streamInflight = inflight
+	}
+
 	return nntppool.Provider{
 		Host:              host,
 		TLSConfig:         tlsCfg,
 		Auth:              nntppool.Auth{Username: p.Username, Password: p.Password},
 		Connections:       p.MaxConnections,
-		MinConnections:    p.MinConnectionsAlive,
+		MinConnections:    minConns,
 		Backup:            isBackup,
 		StorageGroup:      p.StorageGroup,
 		Inflight:          inflight,
 		StatInflight:      statInflight,
-		IdleTimeout:       60 * time.Second,
+		StreamInflight:    streamInflight,
+		IdleTimeout:       providerIdleTimeout,
+		ReconnectDelay:    providerReconnectDelay,
 		SkipPing:          p.SkipPing,
 		KeepaliveInterval: time.Duration(p.KeepaliveIntervalSeconds) * time.Second,
 		KeepaliveCommand:  p.KeepaliveCommand,
@@ -2002,7 +2107,7 @@ func DefaultConfig(configDir ...string) *Config {
 			MaxProcessorWorkers:            2, // Default: 2 processor workers
 			QueueProcessingIntervalSeconds: 5, // Default: check for work every 5 seconds
 			AllowedFileExtensions: []string{ // Default: common media extensions
-				".mkv", ".mp4", ".avi", ".ts", ".m4v", ".mov", ".wmv", ".mpg", ".mpeg",
+				".mkv", ".mp4", ".avi", ".ts", ".m2ts", ".vob", ".m4v", ".mov", ".wmv", ".mpg", ".mpeg",
 				".xvid", ".rm", ".rmvb", ".asf", ".asx", ".wtv", ".mk3d", ".dvr-ms",
 				".mp3", ".flac", ".m4a", ".epub", ".pdf", ".cbz",
 			},
