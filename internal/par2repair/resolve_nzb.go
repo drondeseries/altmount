@@ -13,7 +13,7 @@ import (
 	"github.com/javi11/nntppool/v4"
 	"github.com/javi11/nzbparser"
 
-	metapb "github.com/javi11/altmount/internal/metadata/proto"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 )
 
 // ResolveFromNzb builds a repair plan straight from a parsed NZB, for releases
@@ -92,7 +92,9 @@ func ResolveFromNzb(
 	}
 
 	started := time.Now()
-	hidden, err := statSweep(ctx, fetch, releaseArticleIDs(store, par2Files), dead, progress)
+	// store carries only content entries here, so nothing to exclude.
+	hidden, err := statSweepBudgeted(ctx, fetch, releaseArticleIDs(store, par2Files), dead,
+		newDamageBudget(store.Files, nil, caps), progress)
 	if err != nil {
 		return nil, err
 	}

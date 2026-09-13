@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"github.com/javi11/altmount/internal/arrs/clients"
-	"github.com/javi11/altmount/internal/arrs/data"
-	"github.com/javi11/altmount/internal/arrs/failures"
-	"github.com/javi11/altmount/internal/arrs/instances"
-	"github.com/javi11/altmount/internal/arrs/model"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
+	"github.com/kipsilabs/altmount/internal/arrs/data"
+	"github.com/kipsilabs/altmount/internal/arrs/failures"
+	"github.com/kipsilabs/altmount/internal/arrs/instances"
+	"github.com/kipsilabs/altmount/internal/arrs/model"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
 	"golang.org/x/sync/singleflight"
 	"golift.io/starr"
 	"golift.io/starr/lidarr"
@@ -56,17 +56,29 @@ func (m *Manager) findInstanceForFilePath(ctx context.Context, filePath string, 
 
 	allInstances := m.instances.GetAllInstances()
 
-	// Strategy 1: Fast Path - Check Root Folders
+	// Strategy 1: Fast Path - Check Root Folders.
+	//
+	// Every instance is scored and the most specific (longest) matching root
+	// folder wins. First-match-wins sent files under "/media/tv-4k" to the
+	// instance rooted at "/media/tv" whenever that one happened to be listed
+	// first, and the same applies to a nested root such as "/media/tv/anime"
+	// (issue #749).
+	bestScore, bestType, bestName := 0, "", ""
 	for _, instance := range allInstances {
 		if !instance.Enabled {
 			continue
 		}
 
 		if client, err := m.clients.GetOrCreateClient(instance); err == nil {
-			if m.managesFile(ctx, instance.Type, client, filePath) {
-				return instance.Type, instance.Name, nil
+			if score := m.managesFile(ctx, instance.Type, client, filePath); score > bestScore {
+				bestScore, bestType, bestName = score, instance.Type, instance.Name
 			}
 		}
+	}
+	if bestScore > 0 {
+		slog.DebugContext(ctx, "Found managing instance by root folder",
+			"instance", bestName, "type", bestType, "root_len", bestScore)
+		return bestType, bestName, nil
 	}
 
 	// Strategy 2: Category Match - Check if file is in the staging/complete folder
@@ -120,40 +132,63 @@ func (m *Manager) findInstanceForFilePath(ctx context.Context, filePath string, 
 	return "", "", fmt.Errorf("no ARR instance found managing file path: %s", filePath)
 }
 
-func (m *Manager) managesFile(ctx context.Context, instanceType string, client any, filePath string) bool {
+// rootFolderScore reports how specifically rootPath claims filePath: the
+// length of the normalized root folder when filePath is that folder or lives
+// inside it, else 0. Bigger means more specific.
+//
+// Matching is on path-segment boundaries. A raw strings.HasPrefix made
+// "/media/tv" claim "/media/tv-4k/..." — sending repairs to an ARR that owns
+// no such series (issue #749).
+func rootFolderScore(filePath, rootPath string) int {
+	root := strings.TrimRight(filepath.ToSlash(rootPath), "/")
+	file := strings.TrimRight(filepath.ToSlash(filePath), "/")
+	if root == "" || file == "" {
+		return 0
+	}
+	if file == root || strings.HasPrefix(file, root+"/") {
+		return len(root)
+	}
+	return 0
+}
+
+// managesFile reports how specifically instanceType's root folders claim
+// filePath: the length of the longest matching root folder, or 0 when none
+// matches. Callers compare scores across instances so the most specific root
+// wins (see findInstanceForFilePath).
+func (m *Manager) managesFile(ctx context.Context, instanceType string, client any, filePath string) int {
 	switch instanceType {
 	case "radarr":
 		rc, ok := client.(*radarr.Radarr)
 		if !ok {
-			return false
+			return 0
 		}
 		return m.radarrManagesFile(ctx, rc, filePath)
 	case "sonarr":
 		sc, ok := client.(*sonarr.Sonarr)
 		if !ok {
-			return false
+			return 0
 		}
 		return m.sonarrManagesFile(ctx, sc, filePath)
 	case "lidarr":
 		lc, ok := client.(*lidarr.Lidarr)
 		if !ok {
-			return false
+			return 0
 		}
 		return m.lidarrManagesFile(ctx, lc, filePath)
 	case "readarr":
 		rc, ok := client.(*readarr.Readarr)
 		if !ok {
-			return false
+			return 0
 		}
 		return m.readarrManagesFile(ctx, rc, filePath)
 	case "whisparr":
 		wc, ok := client.(*sonarr.Sonarr)
 		if !ok {
-			return false
+			return 0
 		}
 		return m.sonarrManagesFile(ctx, wc, filePath)
 	default:
-		return false
+		return 0
 	}
 }
 
@@ -180,8 +215,9 @@ func (m *Manager) hasFile(ctx context.Context, instanceType string, client any, 
 	}
 }
 
-// radarrManagesFile checks if Radarr manages the given file path using root folders (checkrr approach)
-func (m *Manager) radarrManagesFile(ctx context.Context, client *radarr.Radarr, filePath string) bool {
+// radarrManagesFile scores how specifically Radarr's root folders claim
+// filePath (checkrr approach). See rootFolderScore for the match rule.
+func (m *Manager) radarrManagesFile(ctx context.Context, client *radarr.Radarr, filePath string) int {
 	slog.DebugContext(ctx, "Checking Radarr root folders for file ownership",
 		"file_path", filePath)
 
@@ -189,25 +225,27 @@ func (m *Manager) radarrManagesFile(ctx context.Context, client *radarr.Radarr, 
 	rootFolders, err := client.GetRootFoldersContext(ctx)
 	if err != nil {
 		slog.DebugContext(ctx, "Failed to get root folders from Radarr for file check", "error", err)
-		return false
+		return 0
 	}
 
-	// Check if file path starts with any root folder path
+	best := 0
 	for _, folder := range rootFolders {
 		slog.DebugContext(ctx, "Checking Radarr root folder", "folder_path", folder.Path, "file_path", filePath)
-		// Check for direct prefix match or if the filePath contains the folder.Path (common in Docker/Remote setups)
-		if strings.HasPrefix(filePath, folder.Path) {
+		if score := rootFolderScore(filePath, folder.Path); score > best {
 			slog.DebugContext(ctx, "File matches Radarr root folder", "folder_path", folder.Path)
-			return true
+			best = score
 		}
 	}
 
-	slog.DebugContext(ctx, "File does not match any Radarr root folders")
-	return false
+	if best == 0 {
+		slog.DebugContext(ctx, "File does not match any Radarr root folders")
+	}
+	return best
 }
 
-// sonarrManagesFile checks if Sonarr manages the given file path using root folders (checkrr approach)
-func (m *Manager) sonarrManagesFile(ctx context.Context, client *sonarr.Sonarr, filePath string) bool {
+// sonarrManagesFile scores how specifically Sonarr's root folders claim
+// filePath (checkrr approach). See rootFolderScore for the match rule.
+func (m *Manager) sonarrManagesFile(ctx context.Context, client *sonarr.Sonarr, filePath string) int {
 	slog.DebugContext(ctx, "Checking Sonarr root folders for file ownership",
 		"file_path", filePath)
 
@@ -215,52 +253,56 @@ func (m *Manager) sonarrManagesFile(ctx context.Context, client *sonarr.Sonarr, 
 	rootFolders, err := client.GetRootFoldersContext(ctx)
 	if err != nil {
 		slog.DebugContext(ctx, "Failed to get root folders from Sonarr for file check", "error", err)
-		return false
+		return 0
 	}
 
-	// Check if file path starts with any root folder path
+	best := 0
 	for _, folder := range rootFolders {
 		slog.DebugContext(ctx, "Checking Sonarr root folder", "folder_path", folder.Path, "file_path", filePath)
-		if strings.HasPrefix(filePath, folder.Path) {
+		if score := rootFolderScore(filePath, folder.Path); score > best {
 			slog.DebugContext(ctx, "File matches Sonarr root folder", "folder_path", folder.Path)
-			return true
+			best = score
 		}
 	}
 
-	slog.DebugContext(ctx, "File does not match any Sonarr root folders")
-	return false
+	if best == 0 {
+		slog.DebugContext(ctx, "File does not match any Sonarr root folders")
+	}
+	return best
 }
 
-// lidarrManagesFile checks if Lidarr manages the given file path using root folders
-func (m *Manager) lidarrManagesFile(ctx context.Context, client *lidarr.Lidarr, filePath string) bool {
+// lidarrManagesFile scores how specifically Lidarr's root folders claim filePath.
+func (m *Manager) lidarrManagesFile(ctx context.Context, client *lidarr.Lidarr, filePath string) int {
 	slog.DebugContext(ctx, "Checking Lidarr root folders for file ownership", "file_path", filePath)
 	rootFolders, err := client.GetRootFoldersContext(ctx)
 	if err != nil {
 		slog.DebugContext(ctx, "Failed to get root folders from Lidarr", "error", err)
-		return false
+		return 0
 	}
+	best := 0
 	for _, folder := range rootFolders {
-		if strings.HasPrefix(filePath, folder.Path) {
-			return true
+		if score := rootFolderScore(filePath, folder.Path); score > best {
+			best = score
 		}
 	}
-	return false
+	return best
 }
 
-// readarrManagesFile checks if Readarr manages the given file path using root folders
-func (m *Manager) readarrManagesFile(ctx context.Context, client *readarr.Readarr, filePath string) bool {
+// readarrManagesFile scores how specifically Readarr's root folders claim filePath.
+func (m *Manager) readarrManagesFile(ctx context.Context, client *readarr.Readarr, filePath string) int {
 	slog.DebugContext(ctx, "Checking Readarr root folders for file ownership", "file_path", filePath)
 	rootFolders, err := client.GetRootFoldersContext(ctx)
 	if err != nil {
 		slog.DebugContext(ctx, "Failed to get root folders from Readarr", "error", err)
-		return false
+		return 0
 	}
+	best := 0
 	for _, folder := range rootFolders {
-		if strings.HasPrefix(filePath, folder.Path) {
-			return true
+		if score := rootFolderScore(filePath, folder.Path); score > best {
+			best = score
 		}
 	}
-	return false
+	return best
 }
 
 // radarrHasFile checks if any movie in the instance contains the given relative path
@@ -764,22 +806,16 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 		"movie_path", targetMovie.Path,
 		"file_path", filePath)
 
+	failAt := time.Now()
+	blocklisted := false
+
 	// If we found the movie and have a file ID, try to blocklist and delete the file
 	if targetMovieFileID > 0 {
 		// Try to blocklist the release associated with this file
 		if err := m.blocklistRadarrMovieFile(ctx, client, targetMovie.ID, targetMovieFileID, relativePath, sceneName); err != nil {
 			slog.WarnContext(ctx, "Failed to blocklist Radarr release", "error", err)
 		}
-
-		// Delete the existing file from Radarr database
-		err = client.DeleteMovieFilesContext(ctx, targetMovieFileID)
-		if err != nil {
-			slog.WarnContext(ctx, "Failed to delete movie file from Radarr, continuing with search",
-				"instance", instanceName,
-				"movie_id", targetMovie.ID,
-				"file_id", targetMovieFileID,
-				"error", err)
-		}
+		blocklisted = true
 	} else {
 		slog.InfoContext(ctx, "Movie has no specific file ID linked in Radarr, attempting release blocklist using metadata",
 			"movie", targetMovie.Title)
@@ -787,7 +823,26 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 			if err := m.blocklistRadarrMovieFile(ctx, client, targetMovie.ID, 0, relativePath, sceneName); err != nil {
 				slog.WarnContext(ctx, "Failed to blocklist Radarr release using metadata fallback", "error", err)
 			}
+			blocklisted = true
 		}
+	}
+
+	var autoSearch *arrCommand
+	if blocklisted {
+		auto, state, settleErr := m.settleRadarrAutoRedownload(ctx, client, instanceName, radarrRedownloadTarget{
+			movieID:     targetMovie.ID,
+			movieFileID: targetMovieFileID,
+		}, failAt)
+		if settleErr != nil {
+			return settleErr
+		}
+		switch state {
+		case redownloadHandled:
+			return nil
+		case redownloadSatisfied:
+			return model.ErrEpisodeAlreadySatisfied
+		}
+		autoSearch = auto
 	}
 
 	// Failure breaker: every targeted re-search counts one failure-driven action
@@ -799,14 +854,9 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 	}
 
 	// Step 3: Trigger targeted search for the missing movie
-	searchCmd := &radarr.CommandRequest{
-		Name:     "MoviesSearch",
-		MovieIDs: []int64{targetMovie.ID},
-	}
-
-	response, err := client.SendCommandContext(ctx, searchCmd)
+	response, err := m.sendRadarrSearch(ctx, client, instanceName, targetMovie.ID, autoSearch)
 	if err != nil {
-		return fmt.Errorf("failed to trigger Radarr search for movie ID %d: %w", targetMovie.ID, err)
+		return err
 	}
 
 	slog.InfoContext(ctx, "Successfully triggered Radarr targeted search for re-download",
@@ -959,6 +1009,7 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 	}
 
 	var episodeIDs []int64
+	var autoSearch *arrCommand
 
 	// Get all episodes for this specific series
 	episodes, err := client.GetSeriesEpisodesContext(ctx, &sonarr.GetEpisode{
@@ -1001,19 +1052,28 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 				"episode_count", len(episodeIDs),
 				"episode_file_id", targetEpisodeFileID)
 
+			failAt := time.Now()
+
 			// Try to blocklist the release associated with this file
 			if err := m.blocklistSonarrEpisodeFile(ctx, client, targetSeriesID, targetEpisodeFileID, relativePath, episodeIDs, sceneName); err != nil {
 				slog.WarnContext(ctx, "Failed to blocklist Sonarr release", "error", err)
 			}
 
-			// Delete the existing episode file from Sonarr database
-			err := client.DeleteEpisodeFileContext(ctx, targetEpisodeFileID)
+			auto, state, err := m.settleSonarrAutoRedownload(ctx, client, instanceName, sonarrRedownloadTarget{
+				seriesID:      targetSeriesID,
+				episodeIDs:    episodeIDs,
+				episodeFileID: targetEpisodeFileID,
+			}, failAt)
 			if err != nil {
-				slog.WarnContext(ctx, "Failed to delete episode file from Sonarr, continuing with search",
-					"instance", instanceName,
-					"episode_file_id", targetEpisodeFileID,
-					"error", err)
+				return err
 			}
+			switch state {
+			case redownloadHandled:
+				return nil
+			case redownloadSatisfied:
+				return model.ErrEpisodeAlreadySatisfied
+			}
+			autoSearch = auto
 		}
 	} else {
 		slog.WarnContext(ctx, "Series found but no matching episode file ID found, attempting queue-based failure",
@@ -1032,10 +1092,27 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 				episodeIDs = append(episodeIDs, ep.Id)
 			}
 
+			failAt := time.Now()
+
 			// Try to blocklist the release associated with these episodes
 			if err := m.blocklistSonarrEpisodeFile(ctx, client, targetSeriesID, 0, relativePath, episodeIDs, sceneName); err != nil {
 				slog.WarnContext(ctx, "Failed to blocklist Sonarr release using metadata fallback", "error", err)
 			}
+
+			auto, state, err := m.settleSonarrAutoRedownload(ctx, client, instanceName, sonarrRedownloadTarget{
+				seriesID:   targetSeriesID,
+				episodeIDs: episodeIDs,
+			}, failAt)
+			if err != nil {
+				return err
+			}
+			switch state {
+			case redownloadHandled:
+				return nil
+			case redownloadSatisfied:
+				return model.ErrEpisodeAlreadySatisfied
+			}
+			autoSearch = auto
 		}
 	}
 
@@ -1053,14 +1130,9 @@ func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.
 	}
 
 	// Trigger targeted episode search for the remaining episodes in this file
-	searchCmd := &sonarr.CommandRequest{
-		Name:       "EpisodeSearch",
-		EpisodeIDs: searchIDs,
-	}
-
-	response, err := client.SendCommandContext(ctx, searchCmd)
+	response, err := m.sendSonarrSearch(ctx, client, instanceName, searchIDs, autoSearch)
 	if err != nil {
-		return fmt.Errorf("failed to trigger Sonarr episode search: %w", err)
+		return err
 	}
 
 	slog.InfoContext(ctx, "Successfully triggered Sonarr targeted episode search for re-download",

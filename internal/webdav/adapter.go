@@ -12,12 +12,12 @@ import (
 	"strings"
 
 	"github.com/go-pkgz/auth/v2/token"
-	"github.com/javi11/altmount/internal/api"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/nzbfilesystem"
-	"github.com/javi11/altmount/internal/utils"
-	"github.com/javi11/altmount/internal/webdav/propfind"
+	"github.com/kipsilabs/altmount/internal/api"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem"
+	"github.com/kipsilabs/altmount/internal/utils"
+	"github.com/kipsilabs/altmount/internal/webdav/propfind"
 )
 
 // Handler provides WebDAV functionality as an HTTP handler
@@ -148,7 +148,18 @@ func (h *webdavMethods) handleGet(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
-	http.ServeContent(w, r, fi.Name(), fi.ModTime(), f)
+	tracked := &readTracker{File: f}
+	http.ServeContent(w, r, fi.Name(), fi.ModTime(), tracked)
+	// A client that hangs up cancels the request context and the reader
+	// surfaces that cancellation; only a body cut short while the client was
+	// still listening is a server-side failure worth a warning.
+	if tracked.err != nil && ctx.Err() == nil {
+		slog.WarnContext(ctx, "WebDAV stream ended on read error",
+			"path", reqPath,
+			"range", r.Header.Get("Range"),
+			"bytes_served", tracked.bytesRead,
+			"error", tracked.err)
+	}
 }
 
 func (h *webdavMethods) handleDelete(w http.ResponseWriter, r *http.Request) {
@@ -280,6 +291,13 @@ func NewHandler(
 
 	// Create the main handler with authentication
 	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		loginRequired := true
+		if configGetter != nil {
+			if cfg := configGetter(); cfg != nil && cfg.Auth.LoginRequired != nil {
+				loginRequired = *cfg.Auth.LoginRequired
+			}
+		}
+
 		// Fallback to basic authentication if JWT failed
 		username, password, hasBasicAuth := r.BasicAuth()
 
@@ -321,7 +339,9 @@ func NewHandler(
 			}
 		}
 
-		if !authenticated {
+		// An explicit Basic credential is always verified: mounts configured with
+		// webdav.user/password must fail loudly rather than fall back to anonymous.
+		if !authenticated && (loginRequired || hasBasicAuth) {
 			slog.DebugContext(r.Context(), "WebDAV auth failed", "method", r.Method, "path", r.URL.Path, "has_basic", hasBasicAuth)
 			w.Header().Set("WWW-Authenticate", `Basic realm="BASIC WebDAV REALM"`)
 			w.WriteHeader(http.StatusUnauthorized)

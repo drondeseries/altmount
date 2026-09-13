@@ -33,6 +33,12 @@ type NntpClient interface {
 	// reads use this so live playback isn't queued behind a background import.
 	BodyPriority(ctx context.Context, messageID string, onMeta ...func(nntppool.YEncMeta)) (*nntppool.ArticleBody, error)
 
+	// BodyBackground fetches an article body via the background lane: served
+	// only when nothing priority or normal is queued and capped per provider
+	// while foreground traffic is recent. PAR2 repair reads whole releases
+	// through it so playback and imports stay ahead of it.
+	BodyBackground(ctx context.Context, messageID string, onMeta ...func(nntppool.YEncMeta)) (*nntppool.ArticleBody, error)
+
 	// BodyStreamPriority fetches an article on the priority lane, writing
 	// decoded bytes to w as each wire read is decoded so a reader can serve
 	// the head of an article before its tail arrives. Bytes on the result is
@@ -43,6 +49,12 @@ type NntpClient interface {
 	// Stat checks whether an article exists on at least one provider without
 	// downloading the body. Used by health checks and validation.
 	Stat(ctx context.Context, messageID string) (*nntppool.StatResult, error)
+
+	// StatPriority is Stat on the priority lane, for an existence check with a
+	// playback read blocked on its result: on the normal lane it could spend
+	// its whole budget queued behind a large BODY rather than awaiting an
+	// answer. Used by the mid-stream miss re-check.
+	StatPriority(ctx context.Context, messageID string) (*nntppool.StatResult, error)
 
 	// StatMany checks the existence of many articles concurrently, streaming a
 	// result per message-id as each completes. Used by health checks and

@@ -154,6 +154,9 @@ export interface HealthConfig {
 	corruption_action?: "repair" | "delete";
 	verify_content?: boolean; // Probe each media file's header for a valid container signature during health checks
 	verify_content_timeout_seconds?: number; // Per-file content probe timeout (default 15s)
+	// Days a corrupted_metadata safety copy is kept before the health cycle prunes it.
+	// 0 or absent means keep forever.
+	corrupted_retention_days?: number;
 }
 
 export interface RepairConfig {
@@ -162,6 +165,8 @@ export interface RepairConfig {
 	max_cooldown_hours: number;
 	max_repair_retries: number; // Max repair notification retries
 	exponential_backoff: boolean;
+	auto_search_wait_seconds: number; // Wait for the ARR's own redownload search before deleting the file record; 0 disables
+	file_delete_confirm_seconds: number; // Wait for the ARR to report the deleted file record as unlinked; 0 disables
 }
 
 // Dry run result for library sync
@@ -197,6 +202,10 @@ export interface RCloneConfig {
 	read_only: boolean;
 	timeout: string;
 	syslog: boolean;
+
+	// How long the rcd may stay unresponsive to liveness probes before it is
+	// killed and restarted. Empty means the built-in default (90s).
+	rcd_restart_after: string;
 
 	// System and filesystem options
 	log_level: string;
@@ -323,6 +332,7 @@ export interface PipelineDepthSample {
 
 export interface PipelineTuneResponse {
 	recommended_inflight: number;
+	recommended_stat_inflight: number;
 	baseline_mbps: number;
 	best_mbps: number;
 	improvement_pct: number;
@@ -462,6 +472,7 @@ export interface RCloneUpdateRequest {
 	read_only?: boolean;
 	timeout?: string;
 	syslog?: boolean;
+	rcd_restart_after?: string;
 
 	// System and filesystem options
 	log_level?: string;
@@ -587,6 +598,7 @@ export interface RCloneMountFormData {
 	read_only: boolean;
 	timeout: string;
 	syslog: boolean;
+	rcd_restart_after: string;
 
 	// System and filesystem options
 	log_level: string;

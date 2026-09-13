@@ -4,13 +4,16 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/javi11/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/config"
 )
 
 // File system constants
 const (
 	// RootPath represents the root directory path
 	RootPath = "/"
+
+	// corruptedDirName is the metadata-root folder holding corrupted safety copies.
+	corruptedDirName = "corrupted_metadata"
 )
 
 // Error constants

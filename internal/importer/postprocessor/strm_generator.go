@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/javi11/altmount/internal/auth"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/auth"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
 )
 
 // CreateStrmFiles creates STRM files for an imported file or directory
@@ -47,12 +47,12 @@ func (c *Coordinator) CreateStrmFiles(ctx context.Context, item *database.Import
 	resultingPath = buildLibraryRelPath(resultingPath, cfg.SABnzbd.CompleteDir, category)
 
 	// Check the metadata directory to determine if this is a file or directory
-	metadataPath := filepath.Join(cfg.Metadata.RootPath, strings.TrimPrefix(originalResultingPath, "/"))
+	metadataPath := c.metadataService.GetMetadataDirectoryPath(originalResultingPath)
 	fileInfo, err := os.Stat(metadataPath)
 
 	// If stat fails, check if it's a .meta file (single file case)
 	if err != nil {
-		metaFile := metadataPath + ".meta"
+		metaFile := c.metadataService.GetMetadataFilePath(originalResultingPath)
 		if _, metaErr := os.Stat(metaFile); metaErr == nil {
 			return c.CreateSingleStrmFile(ctx, resultingPath, originalResultingPath, cfg.WebDAV.Port)
 		}

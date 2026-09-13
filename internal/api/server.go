@@ -13,19 +13,19 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"github.com/gofiber/fiber/v2/middleware/limiter"
 	"github.com/gofiber/fiber/v2/middleware/recover"
-	"github.com/javi11/altmount/internal/arrs"
-	"github.com/javi11/altmount/internal/auth"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/health"
-	"github.com/javi11/altmount/internal/importer"
-	"github.com/javi11/altmount/internal/metadata"
-	"github.com/javi11/altmount/internal/nzbfilesystem"
-	"github.com/javi11/altmount/internal/nzbfilesystem/segcache"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/progress"
-	"github.com/javi11/altmount/internal/rclone"
-	"github.com/javi11/altmount/internal/updater"
-	"github.com/javi11/altmount/internal/version"
+	"github.com/kipsilabs/altmount/internal/arrs"
+	"github.com/kipsilabs/altmount/internal/auth"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/health"
+	"github.com/kipsilabs/altmount/internal/importer"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem/segcache"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/rclone"
+	"github.com/kipsilabs/altmount/internal/updater"
+	"github.com/kipsilabs/altmount/internal/version"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -315,6 +315,8 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Post("/health/library-sync/cancel", s.handleCancelLibrarySync)
 	api.Post("/health/library-sync/dry-run", s.handleDryRunLibrarySync)
 
+	api.Get("/metadata/corrupted", s.handleGetCorruptedMetadata)
+	api.Delete("/metadata/corrupted", s.handlePurgeCorruptedMetadata)
 	api.Get("/metadata/migration/status", s.handleGetMetadataMigrationStatus)
 	api.Post("/metadata/migration/dry-run", s.handleDryRunMetadataMigration)
 	api.Post("/metadata/migration/start", s.handleStartMetadataMigration)

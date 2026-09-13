@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/streambench"
-	"github.com/javi11/altmount/internal/testsupport/nntpserver"
-	"github.com/javi11/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/streambench"
+	"github.com/kipsilabs/altmount/internal/testsupport/nntpserver"
+	"github.com/kipsilabs/altmount/internal/usenet"
 	"github.com/javi11/nntppool/v4"
 )
 
@@ -68,6 +68,9 @@ func (noopBenchStats) GetOldestStatDate(context.Context) (time.Time, error) {
 }
 func (noopBenchStats) GetOldestProviderStatDates(context.Context) (map[string]time.Time, error) {
 	return map[string]time.Time{}, nil
+}
+func (noopBenchStats) MigrateSystemStats(context.Context, map[string]int64, []string) error {
+	return nil
 }
 
 type benchHarness struct {

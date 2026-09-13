@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/altmount/internal/testsupport/nntpserver"
-	"github.com/javi11/altmount/internal/testsupport/segments"
+	"github.com/kipsilabs/altmount/internal/testsupport/nntpserver"
+	"github.com/kipsilabs/altmount/internal/testsupport/segments"
 	"github.com/javi11/nntppool/v4"
 )
 
@@ -79,6 +79,9 @@ func (noopStatsRepo) GetOldestStatDate(context.Context) (time.Time, error) {
 }
 func (noopStatsRepo) GetOldestProviderStatDates(context.Context) (map[string]time.Time, error) {
 	return map[string]time.Time{}, nil
+}
+func (noopStatsRepo) MigrateSystemStats(context.Context, map[string]int64, []string) error {
+	return nil
 }
 
 // benchStreamSource is the StreamActivitySource the ImportBudget consults. The

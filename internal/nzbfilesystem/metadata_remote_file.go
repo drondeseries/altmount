@@ -17,20 +17,20 @@ import (
 
 	lru "github.com/hashicorp/golang-lru/v2"
 
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/encryption"
-	"github.com/javi11/altmount/internal/encryption/aes"
-	"github.com/javi11/altmount/internal/encryption/rclone"
-	"github.com/javi11/altmount/internal/holes"
-	"github.com/javi11/altmount/internal/metadata"
-	metapb "github.com/javi11/altmount/internal/metadata/proto"
-	"github.com/javi11/altmount/internal/nzbfilesystem/segcache"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/encryption"
+	"github.com/kipsilabs/altmount/internal/encryption/aes"
+	"github.com/kipsilabs/altmount/internal/encryption/rclone"
+	"github.com/kipsilabs/altmount/internal/holes"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem/segcache"
 
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/usenet"
-	"github.com/javi11/altmount/internal/utils"
-	"github.com/javi11/altmount/pkg/rclonecli"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/utils"
+	"github.com/kipsilabs/altmount/pkg/rclonecli"
 	"github.com/spf13/afero"
 )
 
@@ -169,7 +169,7 @@ func (mrf *MetadataRemoteFile) OpenFile(ctx context.Context, name string) (bool,
 
 	// Force showCorrupted if we are inside the corrupted_metadata folder
 	// normalizedName is clean and has no trailing slashes
-	if strings.HasPrefix(normalizedName, "corrupted_metadata/") || normalizedName == "corrupted_metadata" {
+	if strings.HasPrefix(normalizedName, corruptedDirName+"/") || normalizedName == corruptedDirName {
 		showCorrupted = true
 	}
 
@@ -341,6 +341,12 @@ func (mrf *MetadataRemoteFile) RemoveFile(ctx context.Context, fileName string) 
 	// Prevent removal of root directory
 	if normalizedName == RootPath {
 		return false, ErrCannotRemoveRoot
+	}
+
+	// A recursive DELETE on the safety folder itself would wipe every corrupted
+	// copy at once; purging is an explicit action. Paths inside it stay removable.
+	if strings.EqualFold(strings.Trim(normalizedName, "/"), corruptedDirName) {
+		return false, os.ErrPermission
 	}
 
 	// Prevent removal of category folders
@@ -1069,6 +1075,24 @@ func (mvf *MetadataVirtualFile) classifyReadError(readErr error) error {
 	return readErr
 }
 
+// truncatedTailError describes a file whose advertised size extends past the
+// bytes its articles actually hold: a reader built at `at` produced nothing
+// and rebuilding it cannot help. The bytes from `at` to FileSize are gone for
+// good, so this is a permanent data corruption (NoRetry) that the health
+// pipeline must record and hand to repair. Without that verdict every client
+// that wants the tail (MKV cues live there) re-fetches the final article on
+// each attempt and retries indefinitely — the 15-requests-per-second storm
+// seen in the field. The error still unwraps to io.ErrUnexpectedEOF.
+func (mvf *MetadataVirtualFile) truncatedTailError(at int64) error {
+	return &usenet.DataCorruptionError{
+		UnderlyingErr: fmt.Errorf("%w: reader ended at offset %d before the requested end (file advertises %d bytes)",
+			io.ErrUnexpectedEOF, at, mvf.meta.FileSize),
+		BytesRead:  at,
+		NoRetry:    true,
+		FileOffset: at,
+	}
+}
+
 // segmentOffsetIndex provides O(1) lookup for offset→segment mapping using binary search
 type segmentOffsetIndex struct {
 	offsets []int64 // Cumulative start offset of each segment in file coordinates
@@ -1133,6 +1157,15 @@ func (idx *segmentOffsetIndex) findSegmentForOffset(offset int64) int {
 	return lo - 1
 }
 
+// totalBytes is the number of bytes the indexed segments cover.
+func (idx *segmentOffsetIndex) totalBytes() int64 {
+	if idx == nil || len(idx.offsets) == 0 {
+		return 0
+	}
+	n := len(idx.offsets)
+	return idx.offsets[n-1] + idx.sizes[n-1]
+}
+
 // getOffsetForSegment returns the cumulative file offset at the start of the given segment index
 // Returns 0 if the index is invalid or out of bounds
 func (idx *segmentOffsetIndex) getOffsetForSegment(segmentIndex int) int64 {
@@ -1171,6 +1204,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 		return 0, ErrFileClosed
 	}
 
+	stalledAt := int64(-1)
 	for n < len(p) {
 		if err := mvf.ensureReader(); err != nil {
 			return n, err
@@ -1192,6 +1226,13 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 
 		if readErr != nil {
 			if errors.Is(readErr, io.EOF) && mvf.hasMoreDataToRead() {
+				// A rebuilt reader that ends at the same offset again cannot reach
+				// the range end; rotating once more would spin here holding mvf.mu.
+				if totalRead == 0 && mvf.position == stalledAt {
+					mvf.closeCurrentReader()
+					return n, mvf.classifyReadError(mvf.truncatedTailError(mvf.position))
+				}
+				stalledAt = mvf.position
 				// Close current reader and try to get a new one for the next range in next iteration
 				mvf.closeCurrentReader()
 				continue
@@ -1321,6 +1362,7 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 		}
 		buf := p[:want]
 		var sharedErr error
+		stalledAt := int64(-1)
 		for n < int(want) {
 			rn, readErr := mvf.reader.Read(buf[n:])
 			n += rn
@@ -1335,6 +1377,14 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 
 			if readErr != nil {
 				if errors.Is(readErr, io.EOF) && mvf.hasMoreDataToRead() {
+					// Same no-progress guard as Read: a rebuilt reader ending at the
+					// same offset cannot reach the range end.
+					at := off + int64(n)
+					if rn == 0 && at == stalledAt {
+						sharedErr = mvf.truncatedTailError(at)
+						break
+					}
+					stalledAt = at
 					mvf.closeCurrentReader()
 					if rotateErr := mvf.ensureReader(); rotateErr != nil {
 						sharedErr = rotateErr
@@ -1419,6 +1469,13 @@ ephemeral:
 	n, err = readFullContext(readCtx, reader, buf)
 	if err == io.ErrUnexpectedEOF {
 		err = nil
+	}
+	// The window lies inside the advertised file, yet a fresh reader at its
+	// start had nothing at all: the data behind this offset does not exist
+	// (a truncated final article). Report it as corruption so the client
+	// gets a definitive answer instead of a short read it will retry forever.
+	if n == 0 && errors.Is(err, io.EOF) && off < mvf.meta.FileSize {
+		err = mvf.truncatedTailError(off)
 	}
 
 	// Only update the shared cursor when the shared reader was torn down.
@@ -1988,6 +2045,9 @@ func (mvf *MetadataVirtualFile) getRequestRange() (start, end int64) {
 		if rangeStr, ok := mvf.ctx.Value(utils.RangeKey).(string); ok && rangeStr != "" {
 			rangeHeader, err := utils.ParseRangeHeader(rangeStr)
 			if err == nil && rangeHeader != nil {
+				if rangeHeader.End >= mvf.meta.FileSize {
+					rangeHeader.End = mvf.meta.FileSize - 1
+				}
 				mvf.originalRangeEnd = rangeHeader.End
 				return rangeHeader.Start, rangeHeader.End
 			}
@@ -2021,6 +2081,18 @@ func (mvf *MetadataVirtualFile) createUsenetReader(ctx context.Context, start, e
 	mvf.segmentIndexOnce.Do(func() {
 		mvf.segmentIndex = buildSegmentIndex(mvf.meta.SegmentData)
 	})
+
+	// Bound the range by what the segments cover, not by FileSize: an
+	// AES-encrypted file's segments extend up to 15 bytes past FileSize (the
+	// padded final block), and the decryptor needs them to produce the last
+	// plaintext bytes.
+	covered := mvf.segmentIndex.totalBytes()
+	if start >= covered {
+		return nil, io.EOF
+	}
+	if end >= covered {
+		end = covered - 1
+	}
 
 	loader := newMetadataSegmentLoader(mvf.meta.SegmentData)
 
@@ -2397,6 +2469,46 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	isDegraded := healthEnabled && classification != nil &&
 		classification.Verdict == holes.VerdictDegraded
 
+	// A 430 mid-stream is not proof the article is gone: one transient answer
+	// was enough to hide a healthy file behind FILE_STATUS_CORRUPTED and have
+	// the ARR redownload it (issue #749). The reader settles that before the
+	// read fails, so this is only the backstop for failures arriving without a
+	// verdict — and only a proven-present article stops the repair, since a
+	// briefly unhealthy pool must not be able to suppress one.
+	//
+	// Gated on !isDegraded because it can cost a round trip while the caller
+	// holds mvf.mu: a degraded verdict is zero-filled and still playable and
+	// takes no destructive action, while everything past this point does —
+	// even with health disabled the file is marked corrupted, which hides it
+	// from listings and blocks opens.
+	//
+	// Recording pending rather than dropping the failure hands an
+	// intermittently reachable segment to the health worker instead of
+	// stalling playback forever with no repair. The debounce token stays
+	// spent; the read has already failed, so the next attempt re-triggers.
+	if !isDegraded && !mvf.confirmSegmentMissing(ctx, dataCorruptionErr) {
+		// With health checking off nothing consumes the pending row. Still the
+		// right call — the article is provably there — but say so rather than
+		// promise a follow-up that will not happen.
+		slog.WarnContext(ctx, "Streaming failure not confirmed on re-check, not condemning the file",
+			"file", mvf.name,
+			"segment_id", dataCorruptionErr.SegmentID,
+			"deferred_to_health_worker", healthEnabled)
+
+		errMsg := dataCorruptionErr.Error()
+		sourceNzb := &mvf.meta.SourceNzbPath
+		if *sourceNzb == "" {
+			sourceNzb = nil
+		}
+		if err := mvf.healthRepository.UpdateFileHealthScheduled(ctx,
+			mvf.name, database.HealthStatusPending, &errMsg, sourceNzb, nil, true, time.Now().UTC(),
+		); err != nil {
+			slog.WarnContext(ctx, "Failed to schedule health re-check after an unconfirmed streaming failure",
+				"file", mvf.name, "error", err)
+		}
+		return
+	}
+
 	// A missing article is PAR2-repairable regardless of eligibility for
 	// zero-fill (RAR/AES streams fail here instead of padding). Queue a
 	// background repair; the repair queue dedups and the planner enforces
@@ -2572,6 +2684,42 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	); err != nil {
 		slog.WarnContext(ctx, "Failed to update health database for streaming failure", "file", mvf.name, "error", err)
 	}
+}
+
+// confirmSegmentMissing re-checks a segment a stream read reported as missing,
+// returning false only when the article is provably still there. Anything else
+// returns true so the caller proceeds exactly as it did before.
+func (mvf *MetadataVirtualFile) confirmSegmentMissing(ctx context.Context, dcErr *usenet.DataCorruptionError) bool {
+	if !usenet.IsArticleNotFound(dcErr.UnderlyingErr) {
+		return true
+	}
+
+	// The reader already asked; asking again costs a round trip under mvf.mu
+	// for an answer we have. Every settled verdict means the miss stands,
+	// including present-but-unfetchable — re-checking that one forever would
+	// leave the file unplayable and unrepaired.
+	if dcErr.MissVerdict != usenet.MissUnverified {
+		return true
+	}
+
+	if dcErr.SegmentID == "" || mvf.poolManager == nil {
+		return true
+	}
+
+	usenetPool, err := mvf.poolManager.GetPool()
+	if err != nil || usenetPool == nil {
+		return true
+	}
+
+	statCtx, cancel := context.WithTimeout(ctx, usenet.MissRecheckTimeout)
+	defer cancel()
+
+	// Priority lane: a playback read is blocked behind this, so it must not
+	// spend its budget queued behind a large BODY on a busy connection.
+	if _, err := usenetPool.StatPriority(statCtx, dcErr.SegmentID); err != nil {
+		return true
+	}
+	return false
 }
 
 // readFullContext reads exactly len(buf) bytes from r, but returns early

@@ -12,24 +12,24 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
 	fLogger "github.com/gofiber/fiber/v2/middleware/logger"
-	"github.com/javi11/altmount/internal/api"
-	"github.com/javi11/altmount/internal/arrs"
-	"github.com/javi11/altmount/internal/auth"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/contentverify"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/health"
-	"github.com/javi11/altmount/internal/httpclient"
-	"github.com/javi11/altmount/internal/importer"
-	"github.com/javi11/altmount/internal/metadata"
-	"github.com/javi11/altmount/internal/nzbfilesystem"
-	"github.com/javi11/altmount/internal/nzbfilesystem/segcache"
-	"github.com/javi11/altmount/internal/par2repair"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/progress"
-	"github.com/javi11/altmount/internal/rclone"
-	"github.com/javi11/altmount/internal/webdav"
-	"github.com/javi11/altmount/pkg/rclonecli"
+	"github.com/kipsilabs/altmount/internal/api"
+	"github.com/kipsilabs/altmount/internal/arrs"
+	"github.com/kipsilabs/altmount/internal/auth"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/contentverify"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/health"
+	"github.com/kipsilabs/altmount/internal/httpclient"
+	"github.com/kipsilabs/altmount/internal/importer"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem/segcache"
+	"github.com/kipsilabs/altmount/internal/par2repair"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/rclone"
+	"github.com/kipsilabs/altmount/internal/webdav"
+	"github.com/kipsilabs/altmount/pkg/rclonecli"
 )
 
 // repositorySet holds all database repositories
@@ -402,18 +402,14 @@ func startPar2RepairService(
 	configGetter config.ConfigGetter,
 	streamsActive func() bool,
 ) *par2repair.Service {
-	// Repair fetches hold both budgets: the repair's own cap (narrow, so at
-	// most that many fetches queue on the shared budget) and the pool-wide
-	// import connection budget, whose stream headroom makes repair yield to
-	// playback exactly as imports do.
+	// Repair fetches ride the pool's background lane, which the pool keeps
+	// behind playback and imports on its own. The repair's cap only bounds how
+	// much of an idle pool one repair may fill.
 	fetcher := par2repair.NewPoolFetcher(func() (par2repair.BodyClient, error) {
 		return poolManager.GetPool()
-	}, par2repair.CombineBudgets(
-		par2repair.NewConnLimiter(func() int {
-			return configGetter().Par2Repair.EffectiveMaxConnections()
-		}),
-		par2repair.ConnBudgetFunc(poolManager.AcquireImportConnection),
-	))
+	}, par2repair.NewConnLimiter(func() int {
+		return configGetter().Par2Repair.EffectiveMaxConnections()
+	}))
 	// Stream-aware sweep width (conservative while anything plays, bounded
 	// widening when idle), further capped by the repair's own connection
 	// budget so a 10-connection repair never floods every connection's STAT

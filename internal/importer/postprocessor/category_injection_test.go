@@ -7,8 +7,9 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/metadata"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -92,7 +93,8 @@ func TestCreateSymlinks_WithCategoryInjection(t *testing.T) {
 
 	// Setup Coordinator
 	coord := NewCoordinator(Config{
-		ConfigGetter: configGetter,
+		ConfigGetter:    configGetter,
+		MetadataService: metadata.NewMetadataService(metadataDir),
 	})
 
 	// Test Scenario 1: Injection Needed

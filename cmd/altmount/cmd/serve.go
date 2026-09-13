@@ -14,21 +14,21 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/filesystem"
-	"github.com/javi11/altmount/frontend"
-	"github.com/javi11/altmount/internal/api"
-	"github.com/javi11/altmount/internal/arrs"
-	"github.com/javi11/altmount/internal/arrs/registrar"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/health"
-	"github.com/javi11/altmount/internal/metadata"
-	"github.com/javi11/altmount/internal/nzbfilesystem/segcache"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/progress"
-	"github.com/javi11/altmount/internal/rclone"
-	"github.com/javi11/altmount/internal/slogutil"
-	"github.com/javi11/altmount/internal/stremio"
-	"github.com/javi11/altmount/internal/usenet"
-	"github.com/javi11/altmount/internal/webdav"
+	"github.com/kipsilabs/altmount/frontend"
+	"github.com/kipsilabs/altmount/internal/api"
+	"github.com/kipsilabs/altmount/internal/arrs"
+	"github.com/kipsilabs/altmount/internal/arrs/registrar"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/health"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	"github.com/kipsilabs/altmount/internal/nzbfilesystem/segcache"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/rclone"
+	"github.com/kipsilabs/altmount/internal/slogutil"
+	"github.com/kipsilabs/altmount/internal/stremio"
+	"github.com/kipsilabs/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/webdav"
 	"github.com/spf13/cobra"
 )
 
@@ -139,6 +139,10 @@ func runServe(cmd *cobra.Command, args []string) error {
 		defer initialCache.Stop()
 	}
 	applySoftMemoryLimit(ctx, cfg)
+	// Keep the memory tier from pushing the live heap over the soft limit:
+	// under GC pressure the governor shrinks it, then restores it when calm.
+	go cacheSource.RunPressureGovernor(ctx)
+	importerService.SetSegmentStore(cacheSource.Store)
 
 	// Background PAR2 repair: repairs missing articles and serves the patched
 	// payloads on the read path's hole branch.

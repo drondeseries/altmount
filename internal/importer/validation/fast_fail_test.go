@@ -8,11 +8,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/altmount/internal/holes"
-	metapb "github.com/javi11/altmount/internal/metadata/proto"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/testsupport/fakepool"
-	"github.com/javi11/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/holes"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/testsupport/fakepool"
+	"github.com/kipsilabs/altmount/internal/usenet"
 	"github.com/javi11/nntppool/v4"
 )
 
@@ -208,6 +208,7 @@ func TestFastFailCheckFilesRetriesOnlyTransientIDs(t *testing.T) {
 		context.Background(), files, fastFailPoolManager{client: client},
 		100, 2, 100*time.Millisecond, nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil after transient recovery", err)
@@ -234,6 +235,7 @@ func TestFastFailCheckFilesTransientExhaustionIsInconclusive(t *testing.T) {
 		fastFailPoolManager{client: client},
 		100, 1, 100*time.Millisecond, nil,
 		nil,
+		false,
 	)
 	if err == nil {
 		t.Fatal("FastFailCheckFiles error = nil, want inconclusive error after retries are exhausted")
@@ -439,6 +441,7 @@ func TestFastFailCheckFilesAllReachable(t *testing.T) {
 		100, 2, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -470,6 +473,7 @@ func TestFastFailCheckFilesOneFileBroken(t *testing.T) {
 		100, 2, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -504,6 +508,7 @@ func TestFastFailCheckFilesBrokenSidecarsAreReported(t *testing.T) {
 		100, 2, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -536,6 +541,7 @@ func TestFastFailCheckFilesBrokenSidecarIsReported(t *testing.T) {
 		100, 1, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -559,6 +565,7 @@ func TestFastFailCheckFilesPoolUnavailableReturnsError(t *testing.T) {
 		100, 1, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err == nil {
 		t.Fatal("FastFailCheckFiles returned nil error, want error for nil pool")
@@ -592,6 +599,7 @@ func TestFastFailCheckFilesFirstSegmentAlwaysChecked(t *testing.T) {
 		0, 1, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -624,6 +632,7 @@ func TestFastFailCheckFilesGroupPropagation(t *testing.T) {
 		100, 4, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -668,6 +677,7 @@ func TestFastFailCheckFilesGroupShortCircuitSkipsStats(t *testing.T) {
 		100, 1, 100*time.Millisecond, // single connection → deterministic ordering
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -703,6 +713,7 @@ func TestFastFailCheckFilesEmptyGroupKeyNoPropagation(t *testing.T) {
 		100, 2, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
@@ -732,6 +743,7 @@ func TestFastFailCheckFilesIndexAligned(t *testing.T) {
 		100, 2, 100*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v", err)
@@ -826,6 +838,7 @@ func TestFastFailCheckFilesTimeoutIsInconclusive(t *testing.T) {
 		10*time.Millisecond,
 		nil,
 		nil,
+		false,
 	)
 	if err == nil {
 		t.Fatal("FastFailCheckFiles error = nil, want inconclusive error after retries")
@@ -869,6 +882,7 @@ func TestFastFailCheckFilesDeadReleaseSettlesWithoutWaitingForUnverified(t *test
 		fastFailPoolManager{client: client},
 		100, 10, 100*time.Millisecond, nil,
 		nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v, want nil for a dead release", err)
@@ -927,6 +941,7 @@ func TestFastFailCheckFilesPlaceholdersAreKnownMissesWithoutStat(t *testing.T) {
 		context.Background(), files,
 		fastFailPoolManager{client: client},
 		100, 8, 100*time.Millisecond, nil, nil,
+		false,
 	)
 	if err != nil {
 		t.Fatalf("FastFailCheckFiles error = %v", err)
@@ -945,24 +960,6 @@ func TestFastFailCheckFilesPlaceholdersAreKnownMissesWithoutStat(t *testing.T) {
 	}
 	if got := client.PerMessageCalls(segs[1].Id); got != 0 {
 		t.Fatalf("placeholder STAT-ed %d times, want 0", got)
-	}
-}
-
-func TestFastFailReleaseProbePlaceholderIsDamageWithoutStat(t *testing.T) {
-	client := fakepool.New()
-	segs := makeTestSegments("f", 3)
-	segs[2] = &metapb.SegmentData{Id: holes.PlaceholderID(3, "f-0")}
-	missing, err := FastFailReleaseProbe(
-		context.Background(),
-		[]FastFailFile{{Filename: "movie.mkv", Segments: segs}},
-		fastFailPoolManager{client: client},
-		100, 1, 100*time.Millisecond, nil,
-	)
-	if err != nil || !missing {
-		t.Fatalf("probe = (%v, %v), want (true, nil)", missing, err)
-	}
-	if client.StatCalls() != 0 {
-		t.Fatalf("StatCalls = %d, want 0", client.StatCalls())
 	}
 }
 
@@ -988,5 +985,235 @@ func TestCapReleaseProbeSampleKeepsEdgesAndBounds(t *testing.T) {
 	small := makeTestSegments("small", 20)
 	if got := capReleaseProbeSample(small); len(got) != 20 {
 		t.Fatalf("small sample must pass through untouched, got %d", len(got))
+	}
+}
+
+type recordingTracker struct {
+	mu      sync.Mutex
+	current int
+	total   int
+}
+
+func (r *recordingTracker) Update(current, total int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.current, r.total = current, total
+}
+
+func (r *recordingTracker) UpdateAbsolute(int) {}
+
+func (r *recordingTracker) last() (int, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.current, r.total
+}
+
+// A standalone file (no GroupKey) is condemned by its first definitive miss:
+// the rest of its sample is never STAT-ed.
+func TestFastFailCheckFilesStopFileOnFirstMissSkipsRestOfFile(t *testing.T) {
+	client := fakepool.New()
+	client.SetBehavior("a-0", fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+
+	files := []FastFailFile{
+		{Filename: "a.mkv", Segments: makeTestSegments("a", 3)},
+		{Filename: "b.mkv", Segments: makeTestSegments("b", 3)},
+	}
+
+	results, err := FastFailCheckFiles(
+		context.Background(), files,
+		fastFailPoolManager{client: client},
+		100, 1, 100*time.Millisecond, // single connection → deterministic ordering
+		nil,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
+	}
+	if !results[0].Broken {
+		t.Error("results[0].Broken = false, want true")
+	}
+	if results[1].Broken {
+		t.Error("results[1].Broken = true, want false")
+	}
+	if got := client.PerMessageCalls("a-0"); got != 1 {
+		t.Errorf("a-0 STAT calls = %d, want 1", got)
+	}
+	for _, id := range []string{"a-1", "a-2"} {
+		if got := client.PerMessageCalls(id); got != 0 {
+			t.Errorf("%s STAT calls = %d, want 0 once the file is condemned", id, got)
+		}
+	}
+	if got := client.StatCalls(); got != 4 {
+		t.Errorf("StatCalls = %d, want 4 (1 for the condemned file, 3 for the healthy one)", got)
+	}
+}
+
+// Once every eligible file is condemned the sweep returns without STAT-ing the
+// remaining jobs, and progress still reports the full job count.
+func TestFastFailCheckFilesStopsWhenNoEligibleFilesRemain(t *testing.T) {
+	client := fakepool.New()
+	client.SetBehavior("a-0", fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+	client.SetBehavior("b-0", fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+
+	files := []FastFailFile{
+		{Filename: "a.mkv", Segments: makeTestSegments("a", 3)},
+		{Filename: "b.mkv", Segments: makeTestSegments("b", 3)},
+	}
+
+	tracker := &recordingTracker{}
+	results, err := FastFailCheckFiles(
+		context.Background(), files,
+		fastFailPoolManager{client: client},
+		100, 1, 100*time.Millisecond,
+		tracker,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
+	}
+	for i, r := range results {
+		if !r.Broken {
+			t.Errorf("results[%d].Broken = false, want true", i)
+		}
+	}
+	if got := client.StatCalls(); got != 2 {
+		t.Errorf("StatCalls = %d, want 2 (one per file, then the sweep ends)", got)
+	}
+	if current, total := tracker.last(); current != total || total != 6 {
+		t.Errorf("progress = %d/%d, want 6/6", current, total)
+	}
+}
+
+// Regression guard: with stopFileOnFirstMiss disabled the sweep still checks
+// every selected segment of a broken file.
+func TestFastFailCheckFilesWithoutStopFileSweepsWholeSample(t *testing.T) {
+	client := fakepool.New()
+	client.SetBehavior("a-0", fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+
+	files := []FastFailFile{
+		{Filename: "a.mkv", Segments: makeTestSegments("a", 3)},
+		{Filename: "b.mkv", Segments: makeTestSegments("b", 3)},
+	}
+
+	results, err := FastFailCheckFiles(
+		context.Background(), files,
+		fastFailPoolManager{client: client},
+		100, 1, 100*time.Millisecond,
+		nil,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
+	}
+	if !results[0].Broken || results[1].Broken {
+		t.Fatalf("results = %+v, want only the first file broken", results)
+	}
+	if got := client.StatCalls(); got != 6 {
+		t.Errorf("StatCalls = %d, want 6 (full sample for both files)", got)
+	}
+	for _, id := range []string{"a-1", "a-2"} {
+		if got := client.PerMessageCalls(id); got != 1 {
+			t.Errorf("%s STAT calls = %d, want 1", id, got)
+		}
+	}
+}
+
+// A miss in one volume condemns every member of its set, so the sweep ends
+// without STAT-ing any sibling.
+func TestFastFailCheckFilesStopFileOnFirstMissCondemnsGroup(t *testing.T) {
+	client := fakepool.New()
+	client.SetBehavior("p0-0", fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+
+	files := make([]FastFailFile, 3)
+	for i := range files {
+		files[i] = FastFailFile{
+			Filename: fmt.Sprintf("set.part%02d.rar", i+1),
+			Segments: makeTestSegments(fmt.Sprintf("p%d", i), 3),
+			GroupKey: "set",
+		}
+	}
+
+	results, err := FastFailCheckFiles(
+		context.Background(), files,
+		fastFailPoolManager{client: client},
+		100, 1, 100*time.Millisecond,
+		nil,
+		nil,
+		true,
+	)
+	if err != nil {
+		t.Fatalf("FastFailCheckFiles error = %v, want nil", err)
+	}
+	for i, r := range results {
+		if !r.Broken {
+			t.Errorf("results[%d].Broken = false, want true", i)
+		}
+	}
+	if got := client.StatCalls(); got != 1 {
+		t.Errorf("StatCalls = %d, want 1 (the whole set is condemned by the first miss)", got)
+	}
+}
+
+// TestFastFailReleaseProbeIgnoresPlaceholders pins that a gap the NZB itself
+// declares is not a reason to skip the probe: the placeholder is never STATed
+// and the probe still answers for the provider's copy of the real segments.
+func TestFastFailReleaseProbeIgnoresPlaceholders(t *testing.T) {
+	client := fakepool.New()
+	placeholder := holes.PlaceholderID(2, "salt")
+	files := []FastFailFile{{
+		Filename: "release.part01.rar",
+		GroupKey: "release",
+		Segments: []*metapb.SegmentData{
+			{Id: "rar-1"},
+			{Id: placeholder},
+			{Id: "rar-3"},
+		},
+	}}
+
+	missing, err := FastFailReleaseProbe(context.Background(), files, fastFailPoolManager{client: client}, 100, 1, 100*time.Millisecond, nil)
+	if err != nil {
+		t.Fatalf("FastFailReleaseProbe error = %v", err)
+	}
+	if missing {
+		t.Fatal("missing = true, want false: every real segment is reachable and a declared gap is not a provider miss")
+	}
+	if got := client.PerMessageCalls(placeholder); got != 0 {
+		t.Errorf("placeholder STATed %d times, want 0", got)
+	}
+	if got := client.StatCalls(); got == 0 {
+		t.Error("StatCalls = 0, want the real segments probed")
+	}
+}
+
+// TestPlaceholderResultsMapsDeclaredGapsWithoutStats pins the STAT-free result
+// shape for a release whose only damage is declared in the NZB.
+func TestPlaceholderResultsMapsDeclaredGapsWithoutStats(t *testing.T) {
+	p1, p2 := holes.PlaceholderID(2, "s"), holes.PlaceholderID(3, "s")
+	files := []FastFailFile{
+		{Filename: "release.part01.rar", GroupKey: "release", Segments: []*metapb.SegmentData{{Id: "a-1"}, {Id: "a-2"}}},
+		{Filename: "release.part02.rar", GroupKey: "release", Segments: []*metapb.SegmentData{{Id: "b-1"}, {Id: p1}, {Id: p2}}},
+		{Filename: "release.par2"},
+	}
+
+	results := PlaceholderResults(files)
+
+	if len(results) != len(files) {
+		t.Fatalf("len(results) = %d, want %d (index-aligned)", len(results), len(files))
+	}
+	if results[0].Broken || results[0].KnownGapCount != 0 || len(results[0].MissingSegmentIDs) != 0 || results[0].SampledCount != 0 {
+		t.Errorf("gap-free file result = %+v, want zero value", results[0])
+	}
+	got := results[1]
+	if !got.Broken || got.KnownGapCount != 2 || got.SampledCount != 0 {
+		t.Errorf("gapped file result = %+v, want Broken with KnownGapCount 2 and no sample", got)
+	}
+	if len(got.MissingSegmentIDs) != 2 || got.MissingSegmentIDs[0] != p1 || got.MissingSegmentIDs[1] != p2 {
+		t.Errorf("MissingSegmentIDs = %v, want [%s %s]", got.MissingSegmentIDs, p1, p2)
+	}
+	if results[2].Broken {
+		t.Errorf("segment-less sidecar result = %+v, want zero value", results[2])
 	}
 }

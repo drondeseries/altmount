@@ -3,6 +3,7 @@ import type {
 	APIResponse,
 	AuthResponse,
 	ChangeOwnPasswordRequest,
+	CorruptedMetadataStats,
 	FileHealth,
 	FileMetadata,
 	FuseStatus,
@@ -142,6 +143,10 @@ class APIClient {
 				}
 
 				throw extractApiError(response.status, response.statusText, errorData);
+			}
+
+			if (response.status === 204) {
+				return undefined as T;
 			}
 
 			const data: APIResponse<T> = await response.json();
@@ -556,6 +561,14 @@ class APIClient {
 		});
 	}
 
+	async getCorruptedMetadataStats() {
+		return this.request<CorruptedMetadataStats>("/metadata/corrupted");
+	}
+
+	async purgeCorruptedMetadata() {
+		return this.request<void>("/metadata/corrupted", { method: "DELETE" });
+	}
+
 	async getMetadataMigrationStatus() {
 		return this.request<MetadataMigrationStatus>("/metadata/migration/status");
 	}
@@ -594,7 +607,7 @@ class APIClient {
 		);
 	}
 
-	async directHealthCheck(id: number) {
+	async directHealthCheck(id: number, verifyContent?: boolean) {
 		return this.request<{
 			message: string;
 			id: number;
@@ -605,6 +618,9 @@ class APIClient {
 			health_data: FileHealth;
 		}>(`/health/${id}/check-now`, {
 			method: "POST",
+			...(verifyContent === undefined
+				? {}
+				: { body: JSON.stringify({ verify_content: verifyContent }) }),
 		});
 	}
 

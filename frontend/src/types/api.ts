@@ -289,7 +289,16 @@ export interface HealthErrorDetails {
 	// makes `sampled` a partial count and the missing-segment map incomplete.
 	terminated_early?: boolean;
 	termination_reason?: string;
+	// Outcome of the media-container header probe. Absent when verification
+	// never ran (feature off, or the file is not an eligible media type), and
+	// the one field a healthy record still carries.
+	content_verification?: ContentVerificationStatus;
 }
+
+// Outcome of the media-container header probe, recorded on both healthy and
+// corrupted results. "unavailable" means the probe itself could not complete,
+// so the content is unproven rather than bad.
+export type ContentVerificationStatus = "passed" | "failed" | "unavailable";
 
 export interface HealthCleanupRequest {
 	older_than?: string;
@@ -411,6 +420,11 @@ export interface LibrarySyncStatus {
 }
 
 // Metadata migration types (legacy inline-segment .meta → v3 shared NZB store)
+export interface CorruptedMetadataStats {
+	file_count: number;
+	total_bytes: number;
+}
+
 export interface MetadataMigrationProgress {
 	total_groups: number;
 	processed_groups: number;
@@ -450,7 +464,6 @@ export interface ProviderStatus {
 	id: string;
 	name?: string;
 	host: string;
-	username: string;
 	used_connections: number;
 	max_connections: number;
 	state: string;

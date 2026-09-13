@@ -15,24 +15,25 @@ import (
 	"github.com/javi11/nntppool/v4"
 	"github.com/javi11/nzbparser"
 
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/holes"
-	"github.com/javi11/altmount/internal/importer/archive"
-	"github.com/javi11/altmount/internal/importer/archive/rar"
-	"github.com/javi11/altmount/internal/importer/archive/sevenzip"
-	"github.com/javi11/altmount/internal/importer/filesystem"
-	"github.com/javi11/altmount/internal/importer/multifile"
-	"github.com/javi11/altmount/internal/importer/parser"
-	"github.com/javi11/altmount/internal/importer/parser/fileinfo"
-	"github.com/javi11/altmount/internal/importer/singlefile"
-	"github.com/javi11/altmount/internal/importer/utils/nzbtrim"
-	"github.com/javi11/altmount/internal/importer/validation"
-	"github.com/javi11/altmount/internal/metadata"
-	metapb "github.com/javi11/altmount/internal/metadata/proto"
-	"github.com/javi11/altmount/internal/nzbfile"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/holes"
+	"github.com/kipsilabs/altmount/internal/importer/archive"
+	"github.com/kipsilabs/altmount/internal/importer/archive/rar"
+	"github.com/kipsilabs/altmount/internal/importer/archive/sevenzip"
+	"github.com/kipsilabs/altmount/internal/importer/filesystem"
+	"github.com/kipsilabs/altmount/internal/importer/multifile"
+	"github.com/kipsilabs/altmount/internal/importer/parser"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
+	"github.com/kipsilabs/altmount/internal/importer/singlefile"
+	"github.com/kipsilabs/altmount/internal/importer/utils/nzbtrim"
+	"github.com/kipsilabs/altmount/internal/importer/validation"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
+	"github.com/kipsilabs/altmount/internal/nzbfile"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/usenet"
 )
 
 const (
@@ -133,6 +134,29 @@ func (proc *Processor) SetRepairEnqueuer(re RepairEnqueuer) {
 // as available during the fast-fail availability sweep.
 func (proc *Processor) SetPatchIndex(idx validation.PatchIndex) {
 	proc.patchIndex = idx
+}
+
+// SetSegmentStore publishes first articles fetched at import to the streaming
+// segment store, so the cold open right after an import is a cache hit.
+func (proc *Processor) SetSegmentStore(resolve func() usenet.SegmentStore) {
+	proc.parser.SetSegmentStore(func() parser.SegmentStore {
+		if store := resolve(); store != nil {
+			return store
+		}
+		return nil
+	})
+	// The archive analysis passes read the warmed articles back through their
+	// import-scoped caches. Optional so the processors' interfaces (and their
+	// test doubles) stay unchanged.
+	type storeAware interface {
+		SetSegmentStore(func() usenet.SegmentStore)
+	}
+	if p, ok := proc.rarProcessor.(storeAware); ok {
+		p.SetSegmentStore(resolve)
+	}
+	if p, ok := proc.sevenZipProcessor.(storeAware); ok {
+		p.SetSegmentStore(resolve)
+	}
 }
 
 // queueNzbRepair queues an NZB-mode repair for a release that was deferred
@@ -408,7 +432,7 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 	// common case — pay only this and skip the per-file sweep entirely, keeping
 	// the "Checking segment availability" stage short.
 	probeStart := time.Now()
-	missing, err := validation.FastFailReleaseProbe(
+	verdict, err := validation.FastFailReleaseProbeVerdict(
 		ctx,
 		fastFailFiles,
 		proc.poolManager,
@@ -420,55 +444,85 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	if !missing {
-		if proc.log != nil {
-			proc.log.DebugContext(ctx, "Fast-fail release probe passed",
-				"files", len(fastFailFiles),
-				"duration", time.Since(probeStart))
-		}
-		return nil, nil, nil, nil
-	}
+	missing := verdict.Missing
+	acceptableMissingPercent := cfg.GetAcceptableMissingSegmentsPercentage()
 
-	isStremioImport := (category != nil && *category == "stremio") || (downloadID != nil && strings.HasPrefix(*downloadID, "stremio:"))
-	if isStremioImport && cfg.Stremio.EffectiveFastFailHeaderOnly() {
+	var results []validation.FastFailFileResult
+	switch {
+	case verdict.Dead:
+		// Every sampled article of the first wave is gone: the per-file sweep
+		// would only re-learn that with hundreds more STATs, each a slow 430
+		// lookup left pipelined on the connections for the next import to
+		// queue behind.
 		if proc.log != nil {
-			proc.log.InfoContext(ctx, "Fast-fail release probe failed for Stremio import; aborting immediately without per-file sweep",
+			proc.log.InfoContext(ctx, "Fast-fail release probe judged the release dead; skipping the per-file sweep",
 				"files", len(fastFailFiles),
 				"probe_duration", time.Since(probeStart))
 		}
-		return nil, nil, nil, multifile.ErrNoFilesProcessed
-	}
+		results = validation.DeadReleaseResults(fastFailFiles, verdict.MissingIDs)
+	case !missing:
+		// The provider has everything the NZB lists. Gaps the NZB itself
+		// declares are mapped from their placeholders without a STAT; the
+		// per-file sweep would only re-learn what the probe just answered.
+		results = validation.PlaceholderResults(fastFailFiles)
+		if !anyBroken(results) {
+			if proc.log != nil {
+				proc.log.DebugContext(ctx, "Fast-fail release probe passed",
+					"files", len(fastFailFiles),
+					"duration", time.Since(probeStart))
+			}
+			return nil, nil, nil, nil
+		}
+		if proc.log != nil {
+			proc.log.DebugContext(ctx, "Fast-fail release probe passed; mapping declared gaps without a per-file sweep",
+				"files", len(fastFailFiles),
+				"duration", time.Since(probeStart))
+		}
+	default:
+		isStremioImport := (category != nil && *category == "stremio") || (downloadID != nil && strings.HasPrefix(*downloadID, "stremio:"))
+		if isStremioImport && cfg.Stremio.EffectiveFastFailHeaderOnly() {
+			if proc.log != nil {
+				proc.log.InfoContext(ctx, "Fast-fail release probe failed for Stremio import; aborting immediately without per-file sweep",
+					"files", len(fastFailFiles),
+					"probe_duration", time.Since(probeStart))
+			}
+			return nil, nil, nil, multifile.ErrNoFilesProcessed
+		}
 
-	// Phase 2 (escalation): the probe found an unreachable segment, so map
-	// exactly which files are broken. This sweeps a per-file sample of every
-	// file but only runs for releases that are already known to have missing
-	// segments — those imports skip Body work below, so the extra Stats are
-	// recovered.
-	if proc.log != nil {
-		proc.log.DebugContext(ctx, "Fast-fail release probe found a missing segment, escalating to per-file sweep",
-			"files", len(fastFailFiles),
-			"probe_duration", time.Since(probeStart))
-	}
+		// Phase 2 (escalation): the probe found an unreachable segment, so map
+		// exactly which files are broken. This sweeps a per-file sample of every
+		// file but only runs for releases that are already known to have missing
+		// segments — those imports skip Body work below, so the extra Stats are
+		// recovered.
+		if proc.log != nil {
+			proc.log.DebugContext(ctx, "Fast-fail release probe found a missing segment, escalating to per-file sweep",
+				"files", len(fastFailFiles),
+				"probe_duration", time.Since(probeStart))
+		}
 
-	// Report progress within the 0–10% band so the queue item doesn't appear
-	// frozen at "Checking segment availability" during the network sweep.
-	var fastFailTracker *progress.Tracker
-	if proc.broadcaster != nil && proc.broadcaster.HasSubscribers() {
-		fastFailTracker = proc.broadcaster.CreateTracker(queueID, 0, 10).WithStage("Checking segment availability")
-	}
+		// Report progress within the 0–10% band so the queue item doesn't appear
+		// frozen during the network sweep. NOT gated on HasSubscribers(): the
+		// tracker also persists the latest percentage for clients that connect
+		// mid-import, and this sweep can outlast the moment it starts.
+		var fastFailTracker *progress.Tracker
+		if proc.broadcaster != nil {
+			fastFailTracker = proc.broadcaster.CreateTracker(queueID, 0, 10).WithStage("Mapping missing segments")
+		}
 
-	results, err := validation.FastFailCheckFiles(
-		ctx,
-		fastFailFiles,
-		proc.poolManager,
-		cfg.Import.SegmentSamplePercentage,
-		concurrency,
-		proc.validationTimeout,
-		fastFailTracker,
-		proc.patchIndex,
-	)
-	if err != nil {
-		return nil, nil, nil, err
+		results, err = validation.FastFailCheckFiles(
+			ctx,
+			fastFailFiles,
+			proc.poolManager,
+			cfg.Import.SegmentSamplePercentage,
+			concurrency,
+			proc.validationTimeout,
+			fastFailTracker,
+			proc.patchIndex,
+			acceptableMissingPercent == 0,
+		)
+		if err != nil {
+			return nil, nil, nil, err
+		}
 	}
 
 	brokenIdx := make(map[int]struct{})
@@ -486,7 +540,6 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 	}
 	missingIDs := make(map[string]struct{})
 	eligibleRegularCount := 0
-	acceptableMissingPercent := cfg.GetAcceptableMissingSegmentsPercentage()
 	// Archive-set members whose only misses are gaps the NZB declares,
 	// keyed by set; judged together below against the whole set's size.
 	gappedSets := make(map[string]*gappedSet)
@@ -667,8 +720,13 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 		return nil, nil, nil, multifile.ErrNoFilesProcessed
 	}
 
-	if len(brokenIdx) == 0 {
+	if len(brokenIdx) == 0 && len(missingIDs) == 0 && len(degradedFiles) == 0 {
 		return nil, nil, nil, nil
+	}
+	if len(brokenIdx) == 0 {
+		// Degraded only: nothing to exclude, but the caller still needs the
+		// misses and degraded files to persist known holes and queue repair.
+		return nil, missingIDs, degradedFiles, nil
 	}
 
 	if proc.log != nil {
@@ -733,6 +791,16 @@ type gappedSet struct {
 	members    []int // members with declared gaps
 	totalBytes int64 // whole set, gap-free volumes included
 	totalSegs  int
+}
+
+// anyBroken reports whether any fast-fail result marks its file broken.
+func anyBroken(results []validation.FastFailFileResult) bool {
+	for _, r := range results {
+		if r.Broken {
+			return true
+		}
+	}
+	return false
 }
 
 // fastFailDamageIsDegraded judges a file's confirmed damage against the hole

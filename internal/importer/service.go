@@ -17,26 +17,27 @@ import (
 	"sync"
 	"time"
 
-	"github.com/javi11/altmount/internal/arrs"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/contentverify"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/httpclient"
-	"github.com/javi11/altmount/internal/importer/filesystem"
-	"github.com/javi11/altmount/internal/importer/parser"
-	"github.com/javi11/altmount/internal/importer/parser/fileinfo"
-	"github.com/javi11/altmount/internal/importer/postprocessor"
-	"github.com/javi11/altmount/internal/importer/queue"
-	"github.com/javi11/altmount/internal/importer/scanner"
-	"github.com/javi11/altmount/internal/importer/utils/nzbtrim"
-	"github.com/javi11/altmount/internal/importer/validation"
-	"github.com/javi11/altmount/internal/metadata"
-	"github.com/javi11/altmount/internal/nzbfile"
-	"github.com/javi11/altmount/internal/pool"
-	"github.com/javi11/altmount/internal/progress"
-	"github.com/javi11/altmount/internal/sabnzbd"
-	"github.com/javi11/altmount/internal/utils"
-	"github.com/javi11/altmount/pkg/rclonecli"
+	"github.com/kipsilabs/altmount/internal/arrs"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/contentverify"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/httpclient"
+	"github.com/kipsilabs/altmount/internal/importer/filesystem"
+	"github.com/kipsilabs/altmount/internal/importer/parser"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
+	"github.com/kipsilabs/altmount/internal/importer/postprocessor"
+	"github.com/kipsilabs/altmount/internal/importer/queue"
+	"github.com/kipsilabs/altmount/internal/importer/scanner"
+	"github.com/kipsilabs/altmount/internal/importer/utils/nzbtrim"
+	"github.com/kipsilabs/altmount/internal/importer/validation"
+	"github.com/kipsilabs/altmount/internal/metadata"
+	"github.com/kipsilabs/altmount/internal/nzbfile"
+	"github.com/kipsilabs/altmount/internal/pool"
+	"github.com/kipsilabs/altmount/internal/progress"
+	"github.com/kipsilabs/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/sabnzbd"
+	"github.com/kipsilabs/altmount/internal/utils"
+	"github.com/kipsilabs/altmount/pkg/rclonecli"
 	"github.com/javi11/nzbparser"
 )
 
@@ -222,6 +223,14 @@ func (s *Service) FailWaitingRepair(ctx context.Context, nzbPath string, reason 
 func (s *Service) SetPatchIndex(idx validation.PatchIndex) {
 	if s.processor != nil {
 		s.processor.SetPatchIndex(idx)
+	}
+}
+
+// SetSegmentStore wires the streaming segment store into the importer so
+// articles fetched at import are already cached when playback starts.
+func (s *Service) SetSegmentStore(resolve func() usenet.SegmentStore) {
+	if s.processor != nil {
+		s.processor.SetSegmentStore(resolve)
 	}
 }
 
@@ -947,9 +956,8 @@ func (s *Service) processNzbItem(ctx context.Context, item *database.ImportQueue
 // confirmed-missing head article) is returned as an error so the caller
 // routes the item to HandleFailure exactly like any other import error,
 // letting the Arr app blocklist the release. A transient probe error is
-// likewise returned as an error — it flows through the same existing
-// retry/backoff path as any other transient import failure; no separate
-// mechanism is introduced.
+// wrapped with ErrContentProbeInconclusive instead, so handleProcessingFailure
+// retains the item for retry without reporting a bad release.
 func (s *Service) verifyWrittenContent(ctx context.Context, writtenPaths []string) error {
 	s.mu.Lock()
 	contentVerifyFS := s.contentVerifyFS
@@ -975,7 +983,7 @@ func (s *Service) verifyWrittenContent(ctx context.Context, writtenPaths []strin
 		case contentverify.ContentSegmentMissing:
 			return fmt.Errorf("content verification failed for %q: head article missing: %w", path, result.Err)
 		case contentverify.ContentProbeError:
-			return fmt.Errorf("content verification could not complete for %q: %w", path, result.Err)
+			return fmt.Errorf("content verification could not complete for %q: %w: %w", path, ErrContentProbeInconclusive, result.Err)
 		}
 	}
 	return nil
@@ -1549,13 +1557,14 @@ func (s *Service) handleProcessingFailure(ctx context.Context, item *database.Im
 	}
 
 	errorMessage := processingErr.Error()
-	if errors.Is(processingErr, validation.ErrFastFailInconclusive) {
-		// The provider never produced a conclusive answer within the validator's
-		// bounded retry budget. Keep this distinct from a bad release: do not log
-		// an indexer failure, notify/blocklist in ARR, invoke fallback, or move the
-		// NZB away. The retained failed item can be retried manually once the
-		// provider is healthy again.
-		s.log.WarnContext(ctx, "Import stopped because segment availability was inconclusive",
+	if errors.Is(processingErr, validation.ErrFastFailInconclusive) || errors.Is(processingErr, ErrContentProbeInconclusive) {
+		// The provider never produced a conclusive answer within the bounded
+		// retry budget of segment validation or of the content probe. Keep this
+		// distinct from a bad release: do not log an indexer failure,
+		// notify/blocklist in ARR, invoke fallback, or move the NZB away. The
+		// retained failed item can be retried manually once the provider is
+		// healthy again.
+		s.log.WarnContext(ctx, "Import stopped because verification was inconclusive",
 			"queue_id", item.ID,
 			"file", item.NzbPath,
 			"error", processingErr)

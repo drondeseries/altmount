@@ -11,10 +11,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
-	"github.com/javi11/altmount/internal/testsupport/fakepool"
-	"github.com/javi11/altmount/internal/usenet"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/testsupport/fakepool"
+	"github.com/kipsilabs/altmount/internal/usenet"
 	"github.com/spf13/afero"
 	"github.com/stretchr/testify/require"
 )
@@ -88,6 +88,19 @@ func TestJudgeValidation_ContentProbeErrorLeavesStatusUnchanged(t *testing.T) {
 
 	if event.Type != EventTypeFileHealthy {
 		t.Errorf("got event type %v, want EventTypeFileHealthy (transient probe error must not corrupt)", event.Type)
+	}
+}
+
+func TestJudgeContentVerification_ProbeErrorReturnsNoEvent(t *testing.T) {
+	hc := newTestHealthCheckerWithVerifyContentEnabled(&fakeContentOpener{err: errors.New("connection reset")})
+	prep := preparedCheck{filePath: "/movie.mkv", currentStatus: database.HealthStatusPending}
+
+	event, healthyDetails := hc.judgeContentVerification(context.Background(), prep)
+	if event != nil {
+		t.Errorf("a transient probe error must produce no event, got %+v", *event)
+	}
+	if healthyDetails == nil {
+		t.Error("a transient probe error must still be recorded on the healthy result")
 	}
 }
 

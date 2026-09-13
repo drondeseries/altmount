@@ -6,9 +6,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/javi11/altmount/internal/auth"
-	"github.com/javi11/altmount/internal/config"
-	"github.com/javi11/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/auth"
+	"github.com/kipsilabs/altmount/internal/config"
+	"github.com/kipsilabs/altmount/internal/database"
 )
 
 // nzbJobName returns the display name for an NZB job by stripping the .nzb or .nzb.gz
@@ -82,6 +82,10 @@ type RCloneAPIResponse struct {
 	Timeout       string `json:"timeout"`
 	Syslog        bool   `json:"syslog"`
 
+	// RcdRestartAfter is how long the rcd may stay unresponsive to liveness
+	// probes before it is killed and restarted. Empty means the built-in default.
+	RcdRestartAfter string `json:"rcd_restart_after"`
+
 	// System and filesystem options
 	LogLevel    string `json:"log_level"`
 	UID         int    `json:"uid"`
@@ -115,6 +119,7 @@ type RCloneAPIResponse struct {
 
 // ProviderAPIResponse sanitizes Provider config for API responses
 type ProviderAPIResponse struct {
+	// ID is a stable public provider identifier; it is not an authentication field.
 	ID                       string     `json:"id"`
 	Name                     string     `json:"name,omitempty"`
 	Host                     string     `json:"host"`
@@ -353,6 +358,8 @@ func ToConfigAPIResponse(cfg *config.Config, apiKey string) *ConfigAPIResponse {
 		ReadOnly:      cfg.RClone.ReadOnly,
 		Timeout:       cfg.RClone.Timeout,
 		Syslog:        cfg.RClone.Syslog,
+
+		RcdRestartAfter: cfg.RClone.RcdRestartAfter,
 
 		// System and filesystem options
 		LogLevel:    cfg.RClone.LogLevel,
@@ -1184,7 +1191,6 @@ type ProviderStatusResponse struct {
 	ID                      string     `json:"id"`
 	Name                    string     `json:"name,omitempty"`
 	Host                    string     `json:"host"`
-	Username                string     `json:"username"`
 	UsedConnections         int        `json:"used_connections"`
 	MaxConnections          int        `json:"max_connections"`
 	State                   string     `json:"state"`
