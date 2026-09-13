@@ -18,6 +18,7 @@ import {
 	useHealth,
 	useHealthStats,
 	usePar2RepairJobs,
+	usePinSymlinkTimestamps,
 	useRegenerateSymlinks,
 	useRepairBulkHealthItems,
 	useRepairHealthItem,

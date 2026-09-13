@@ -754,8 +754,8 @@ function RCloneMountSubSection({ config, onFormDataChange }: RCloneSubSectionPro
 						/>
 						<p className="label min-w-0 max-w-full whitespace-normal break-words text-base-content/70 text-xs">
 							How long the rcd may stay unresponsive before it's killed and restarted. Restarting
-							unmounts the drive out from under every reader, so raise this if your rcd goes
-							briefly slow under load (e.g., 5m).
+							unmounts the drive out from under every reader, so raise this if your rcd goes briefly
+							slow under load (e.g., 5m).
 						</p>
 					</fieldset>
 				</div>
