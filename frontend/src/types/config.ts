@@ -318,6 +318,8 @@ export interface ProviderConfig {
 	user_agent?: string;
 	quota_bytes?: number;
 	quota_period_hours?: number;
+	max_article_age_days?: number;
+	strict_max_article_age?: boolean;
 	last_rtt_ms?: number;
 	last_speed_test_mbps?: number;
 	last_speed_test_time?: string;
@@ -554,6 +556,8 @@ export interface ProviderUpdateRequest {
 	user_agent?: string;
 	quota_bytes?: number;
 	quota_period_hours?: number;
+	max_article_age_days?: number;
+	strict_max_article_age?: boolean;
 	account_expiration_date?: string;
 }
 
@@ -661,6 +665,8 @@ export interface ProviderFormData {
 	user_agent: string;
 	quota_bytes: number;
 	quota_period_hours: number;
+	max_article_age_days: number;
+	strict_max_article_age: boolean;
 	account_expiration_date: string;
 }
 
