@@ -30,6 +30,9 @@ func newRangeTestMVF(t *testing.T, rangeHeader string, n, segSize int) (*Metadat
 	mvf.healthRepository = repo
 	mvf.metadataService = ms
 	mvf.configGetter = func() *config.Config { return cfg }
+	// Force Range-header parsing on first read (production handles start
+	// with the zero value; the shared helper presets unbounded).
+	mvf.originalRangeEnd = 0
 
 	recorded := func() bool {
 		fh, err := repo.GetFileHealth(context.Background(), mvf.name)
@@ -73,4 +76,71 @@ func TestRangeStartAtOrPastEOFIsEOFNotCorrupted(t *testing.T) {
 	assert.Equal(t, 0, n0)
 	assert.ErrorIs(t, err, io.EOF)
 	assert.False(t, recorded(), "no health record must be written for a read at EOF")
+}
+
+func TestSuffixRangeReadsFromPositionNotRangeStart(t *testing.T) {
+	const n, segSize = 8, 64 << 10
+	fileSize := int64(n * segSize)
+	const tail = 65_536
+	mvf, recorded := newRangeTestMVF(t, fmt.Sprintf("bytes=-%d", tail), n, segSize)
+
+	// The shared Read path honors the seek position: a suffix Range header
+	// parsed at open must still serve from the current position, matching the
+	// pre-fix behavior for `bytes=0-` style headers.
+	_, err := mvf.Seek(0, io.SeekStart)
+	require.NoError(t, err)
+
+	got, err := io.ReadAll(mvf)
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "suffix range must not be a corruption verdict: %v", err)
+	require.NoError(t, err)
+
+	want := segments.FileBytes(n, segSize)[fileSize-tail:]
+	assert.Equal(t, len(want), len(got), "suffix read serves the tail window")
+	assert.True(t, bytes.Equal(got, want))
+	assert.False(t, recorded(), "no health record must be written for a suffix range")
+}
+
+func TestSuffixRangeLargerThanFileServesWholeFile(t *testing.T) {
+	const n, segSize = 4, 64 << 10
+	fileSize := int64(n * segSize)
+	mvf, recorded := newRangeTestMVF(t, fmt.Sprintf("bytes=-%d", fileSize+1_000_000), n, segSize)
+
+	got, err := io.ReadAll(mvf)
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "oversized suffix range must not be a corruption verdict: %v", err)
+	require.NoError(t, err)
+
+	want := segments.FileBytes(n, segSize)
+	assert.True(t, bytes.Equal(got, want), "got %d bytes, want %d", len(got), len(want))
+	assert.False(t, recorded(), "no health record must be written for an oversized suffix range")
+}
+
+func TestOpenEndedRangeServesFromStart(t *testing.T) {
+	const n, segSize = 8, 64 << 10
+	start := int64(6*segSize + 100)
+	mvf, recorded := newRangeTestMVF(t, fmt.Sprintf("bytes=%d-", start), n, segSize)
+
+	_, err := mvf.Seek(start, io.SeekStart)
+	require.NoError(t, err)
+
+	got, err := io.ReadAll(mvf)
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "open-ended range must not be a corruption verdict: %v", err)
+	require.NoError(t, err)
+
+	want := segments.FileBytes(n, segSize)[start:]
+	assert.True(t, bytes.Equal(got, want), "got %d bytes, want %d", len(got), len(want))
+	assert.False(t, recorded(), "no health record must be written for an open-ended range")
+}
+
+func TestCreateUsenetReaderRejectsNegativeStartWithoutCorruption(t *testing.T) {
+	const n, segSize = 4, 64 << 10
+	mvf, recorded := newRangeTestMVF(t, "bytes=0-", n, segSize)
+
+	_, err := mvf.createUsenetReader(context.Background(), -1, 65535)
+	require.ErrorIs(t, err, ErrInvalidRange)
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "negative start must not be a corruption verdict")
+	assert.False(t, recorded(), "no health record must be written for an invalid range")
 }
