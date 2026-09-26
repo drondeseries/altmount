@@ -888,6 +888,13 @@ type MetadataVirtualFile struct {
 	position          int64 // File position (what client sees after Seek)
 	originalRangeEnd  int64 // Original end requested by client (-1 for unbounded)
 
+	// rangeUnsatisfiable latches when the handle's HTTP Range header parses
+	// but normalizes to no bytes (start past EOF, empty window). Reads then
+	// fail with ErrInvalidRange — a request error the HTTP layers map to
+	// 416 — instead of serving the full file or condemning it as corrupt.
+	// Guarded by mvf.mu like position.
+	rangeUnsatisfiable bool
+
 	// readAtSharedNext is the next file offset that the shared reader can serve
 	// via ReadAtContext. Sequential ReadAt calls reuse mvf.reader when the
 	// requested offset matches this cursor; non-sequential calls use ephemeral
@@ -1744,8 +1751,12 @@ func (mvf *MetadataVirtualFile) Seek(offset int64, whence int) (int64, error) {
 
 	// Reset originalRangeEnd when position changes to force fresh range calculation
 	// on next read. This prevents stale range information from being reused after seek.
+	// A latched unsatisfiable header stays latched: a Seek does not make an
+	// unsatisfiable Range satisfiable.
 	if abs != mvf.position {
-		mvf.originalRangeEnd = 0
+		if !mvf.rangeUnsatisfiable {
+			mvf.originalRangeEnd = 0
+		}
 		if mvf.streamTracker != nil && mvf.streamID != "" {
 			mvf.streamTracker.UpdateCurrentOffset(mvf.streamID, abs)
 		}
@@ -1968,7 +1979,10 @@ func (mvf *MetadataVirtualFile) ensureReader() error {
 	}
 
 	// Get request range from args or use default range starting from current position
-	start, end := mvf.getRequestRange()
+	start, end, rangeErr := mvf.getRequestRange()
+	if rangeErr != nil {
+		return rangeErr
+	}
 
 	// A suffix Range pins its start at open: the position jumped to the
 	// tail window on the first branch, but a Seek issued after open moves
@@ -2078,7 +2092,12 @@ func normalizeRangeHeader(header *utils.RangeHeader, fileSize int64) (start, end
 
 // getRequestRange gets the range for reader creation based on HTTP range or current position
 // Implements intelligent range limiting to prevent excessive memory usage when end=-1 or ranges are too large
-func (mvf *MetadataVirtualFile) getRequestRange() (start, end int64) {
+// The third return reports an unsatisfiable client range as ErrInvalidRange
+// (HTTP 416 upstream), never as corruption or EOF-masked full-file service.
+func (mvf *MetadataVirtualFile) getRequestRange() (start, end int64, err error) {
+	if mvf.rangeUnsatisfiable {
+		return 0, 0, fmt.Errorf("range unsatisfiable: %w", ErrInvalidRange)
+	}
 	// If this is the first read, check for HTTP range header and save original end
 	if !mvf.readerInitialized && mvf.originalRangeEnd == 0 {
 		// Extract range from context
@@ -2095,19 +2114,20 @@ func (mvf *MetadataVirtualFile) getRequestRange() (start, end int64) {
 					if normStart > mvf.position {
 						mvf.position = normStart
 					}
-					return normStart, normEnd
+					return normStart, normEnd, nil
 				}
-				// Unsatisfiable range: fall back to the current position so
-				// the caller gets a request error downstream, not a
-				// corruption verdict against the file.
+				// Unsatisfiable range: fail subsequent reads with ErrInvalidRange
+				// (mapped to 416 upstream) instead of serving the full file
+				// or condemning it as corrupt.
 				mvf.originalRangeEnd = -1
-				return mvf.position, -1
+				mvf.rangeUnsatisfiable = true
+				return 0, 0, fmt.Errorf("range %q: %w", rangeStr, ErrInvalidRange)
 			}
 		}
 
 		// No range header, set unbounded
 		mvf.originalRangeEnd = -1
-		return mvf.position, -1
+		return mvf.position, -1, nil
 	}
 
 	// For subsequent reads, use current position and respect original range
@@ -2120,7 +2140,7 @@ func (mvf *MetadataVirtualFile) getRequestRange() (start, end int64) {
 		targetEnd = mvf.originalRangeEnd
 	}
 
-	return mvf.position, targetEnd
+	return mvf.position, targetEnd, nil
 }
 
 // suffixWindowStart returns the normalized start of a suffix Range header

@@ -69,13 +69,16 @@ func TestRangeStartAtOrPastEOFIsEOFNotCorrupted(t *testing.T) {
 	_, err := mvf.Seek(fileSize, io.SeekStart)
 	require.NoError(t, err)
 
+	// An explicit Range whose start sits at/past EOF is unsatisfiable:
+	// 416 upstream (ErrInvalidRange), never a corruption verdict and never
+	// silent full-file bytes.
 	buf := make([]byte, 16)
 	n0, err := mvf.Read(buf)
-	var corrupted *CorruptedFileError
-	require.False(t, errors.As(err, &corrupted), "start at EOF must not be a corruption verdict: %v", err)
+	require.ErrorIs(t, err, ErrInvalidRange)
 	assert.Equal(t, 0, n0)
-	assert.ErrorIs(t, err, io.EOF)
-	assert.False(t, recorded(), "no health record must be written for a read at EOF")
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "unsatisfiable range must not be a corruption verdict: %v", err)
+	assert.False(t, recorded(), "no health record must be written for an unsatisfiable range")
 }
 
 func TestSuffixRangeReadsFromPositionNotRangeStart(t *testing.T) {
@@ -143,4 +146,21 @@ func TestCreateUsenetReaderRejectsNegativeStartWithoutCorruption(t *testing.T) {
 	var corrupted *CorruptedFileError
 	require.False(t, errors.As(err, &corrupted), "negative start must not be a corruption verdict")
 	assert.False(t, recorded(), "no health record must be written for an invalid range")
+}
+
+func TestUnsatisfiableRangeReturns416NotCorruption(t *testing.T) {
+	const n, segSize = 4, 64 << 10
+	fileSize := int64(n * segSize)
+	mvf, recorded := newRangeTestMVF(t, fmt.Sprintf("bytes=%d-", fileSize+100), n, segSize)
+	// Seek to EOF is legal; the read must surface ErrInvalidRange (416
+	// upstream), not a corruption verdict and not full-file bytes.
+	_, err := mvf.Seek(fileSize, io.SeekStart)
+	require.NoError(t, err)
+	buf := make([]byte, 16)
+	n0, err := mvf.Read(buf)
+	require.ErrorIs(t, err, ErrInvalidRange)
+	assert.Equal(t, 0, n0)
+	var corrupted *CorruptedFileError
+	require.False(t, errors.As(err, &corrupted), "unsatisfiable range must not be a corruption verdict")
+	assert.False(t, recorded(), "no health record must be written for an unsatisfiable range")
 }
