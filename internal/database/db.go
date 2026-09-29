@@ -365,28 +365,28 @@ func repairMigration030IndexerSchema(db *sql.DB, d Dialect) error {
 		if !hasColumn(db, d, table, "indexer") {
 			column := fmt.Sprintf("ALTER TABLE %s ADD COLUMN indexer %s DEFAULT NULL;", table, indexerColumnType(d))
 			if _, err := db.Exec(column); err != nil {
-				return fmt.Errorf("failed to add indexer column to %s: %w", table, err)
+				return fmt.Errorf("migration 030 repair: add indexer column to %s: %w", table, err)
 			}
 		}
 
 		indexName := fmt.Sprintf("idx_%s_indexer", table)
 		indexQuery := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s(indexer);", indexName, table)
 		if _, err := db.Exec(indexQuery); err != nil {
-			return fmt.Errorf("failed to create indexer index on %s: %w", table, err)
+			return fmt.Errorf("migration 030 repair: create index %s on %s: %w", indexName, table, err)
 		}
 	}
 
 	// Restore the indexer_import_stats table migration 030 creates.
 	if !hasTable(db, d, "indexer_import_stats") {
 		if _, err := db.Exec(indexerImportStatsCreate(d)); err != nil {
-			return fmt.Errorf("failed to create indexer_import_stats table: %w", err)
+			return fmt.Errorf("migration 030 repair: create table indexer_import_stats: %w", err)
 		}
 	}
 
 	// Ensure download_id column exists (handles early historical migration-030 variants).
 	if !hasColumn(db, d, "indexer_import_stats", "download_id") {
 		if _, err := db.Exec("ALTER TABLE indexer_import_stats ADD COLUMN download_id TEXT DEFAULT NULL;"); err != nil {
-			return fmt.Errorf("failed to add download_id column to indexer_import_stats: %w", err)
+			return fmt.Errorf("migration 030 repair: add download_id column to indexer_import_stats: %w", err)
 		}
 	}
 
@@ -401,7 +401,7 @@ func repairMigration030IndexerSchema(db *sql.DB, d Dialect) error {
 	for _, index := range indexerStatsIndexes {
 		indexQuery := fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON indexer_import_stats(%s);", index.name, index.column)
 		if _, err := db.Exec(indexQuery); err != nil {
-			return fmt.Errorf("failed to create indexer_import_stats index %s: %w", index.name, err)
+			return fmt.Errorf("migration 030 repair: create index %s on indexer_import_stats: %w", index.name, err)
 		}
 	}
 

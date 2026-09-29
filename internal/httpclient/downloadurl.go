@@ -15,11 +15,15 @@ import (
 // link-local or private addresses — including cloud instance-metadata
 // endpoints — turning the download path into an SSRF primitive.
 //
-// Hostnames are not resolved here: a DNS name that resolves to a private
-// address still passes. Blocking literal private targets removes the direct
-// attack while keeping the check cheap and dependency-free on a hot path;
-// callers validate redirect hops using SafeDownloadCheckRedirect, so a remote
-// host cannot bounce the request onto an internal address.
+// Security contract: literal-IP blocking ONLY. A literal IP that is loopback,
+// private, link-local (unicast or multicast) or unspecified is rejected, as
+// are "localhost" names. DNS hostnames are NOT resolved here: a DNS name that
+// resolves to a private address still passes. This check is not a destination
+// allowlist. Callers re-validate every redirect hop with
+// SafeDownloadCheckRedirect, which applies this same literal-IP-only rule per
+// hop (DNS hostnames again NOT resolved). Credential stripping on cross-host
+// redirects is a separate concern: it governs request headers, not the
+// destination allowlist.
 func ValidateDownloadURL(raw string) error {
 	if strings.TrimSpace(raw) == "" {
 		return fmt.Errorf("download URL is empty")
@@ -59,9 +63,21 @@ func ValidateDownloadURL(raw string) error {
 }
 
 // SafeDownloadCheckRedirect returns a CheckRedirect function that permits redirects
-// up to maxRedirects (default 10) and ensures each redirect target satisfies
-// ValidateDownloadURL. It also redacts sensitive credentials (X-Api-Key, Authorization)
-// when redirecting across different hostnames.
+// up to maxRedirects (default 10) and re-validates each redirect target per hop
+// with ValidateDownloadURL — the same literal-IP-only rule (DNS hostnames NOT
+// resolved — see ValidateDownloadURL). It also redacts sensitive credentials
+// (X-Api-Key, Authorization) when redirecting away from the ORIGINAL request
+// origin (scheme + host, case-insensitive); that redaction governs request
+// headers, not the destination allowlist.
+//
+// Binding to the original origin (via[0]) rather than the immediately previous
+// hop is load-bearing: net/http copies the initial request's headers into every
+// redirect request before CheckRedirect runs (see makeHeadersCopier — custom
+// headers such as X-Api-Key are copied unconditionally), so a chain like
+// Prowlarr A -> external B -> B/path would otherwise reintroduce the key on
+// the second hop (prev == req host) after it was stripped on the first. A hop
+// that returns to the original origin is allowed to carry credentials again,
+// since the key belongs to that host.
 func SafeDownloadCheckRedirect(maxRedirects int) func(req *http.Request, via []*http.Request) error {
 	if maxRedirects <= 0 {
 		maxRedirects = 10
@@ -74,8 +90,8 @@ func SafeDownloadCheckRedirect(maxRedirects int) func(req *http.Request, via []*
 			return fmt.Errorf("refusing redirect: %w", err)
 		}
 		if len(via) > 0 {
-			prev := via[len(via)-1]
-			if !strings.EqualFold(prev.URL.Scheme, req.URL.Scheme) || !strings.EqualFold(prev.URL.Host, req.URL.Host) {
+			orig := via[0].URL
+			if !strings.EqualFold(orig.Scheme, req.URL.Scheme) || !strings.EqualFold(orig.Host, req.URL.Host) {
 				req.Header.Del("X-Api-Key")
 				req.Header.Del("Authorization")
 			}

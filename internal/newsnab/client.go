@@ -86,9 +86,13 @@ type Client struct {
 	// idMu guards idSearchFailures, the learned negative cache for identifier
 	// searches: indexers that answer a bare imdbid/tvdbid query with zero
 	// rows (no identifier mappings) are not retried with identifiers until
-	// the entry expires.
+	// the entry expires. idSearchMisses is the shorter-lived tier for the
+	// both-empty outcome (identifier miss + keyword miss): it only
+	// short-circuits the identifier fan-out for idSearchMissTTL so legit
+	// zero-result searches recover quickly.
 	idMu              sync.Mutex
 	idSearchFailures  map[string]time.Time
+	idSearchMisses    map[string]time.Time
 }
 
 // Parameters usable as negative-cache keys for identifier searches.
@@ -102,15 +106,30 @@ const (
 // TTL so both learned views of an indexer expire together.
 const idSearchNegativeTTL = time.Hour
 
+// idSearchMissTTL bounds how long a both-empty outcome (identifier miss +
+// keyword miss) suppresses identifier queries for an indexer. It is
+// deliberately short: unlike a proven identifier/keyword divergence this
+// outcome carries no signal that identifier search is unsupported, so legit
+// zero-result searches must recover quickly instead of being suppressed for
+// a full hour.
+const idSearchMissTTL = 10 * time.Minute
+
 // idSearchBroken reports whether a recent bare identifier search for this
 // indexer returned zero results, meaning the indexer likely cannot resolve
 // identifiers at all (e.g. it has no IMDb mappings) and keyword searches
-// should be preferred until the entry expires.
+// should be preferred until the entry expires. It covers both the long-lived
+// divergence tier (identifier miss + keyword hit) and the short-lived
+// both-empty tier (identifier miss + keyword miss).
 func (c *Client) idSearchBroken(param string) bool {
 	c.idMu.Lock()
 	defer c.idMu.Unlock()
-	at, ok := c.idSearchFailures[param]
-	return ok && time.Since(at) < idSearchNegativeTTL
+	if at, ok := c.idSearchFailures[param]; ok && time.Since(at) < idSearchNegativeTTL {
+		return true
+	}
+	if at, ok := c.idSearchMisses[param]; ok && time.Since(at) < idSearchMissTTL {
+		return true
+	}
+	return false
 }
 
 // markIDSearchBroken records that a bare identifier search returned zero
@@ -122,6 +141,28 @@ func (c *Client) markIDSearchBroken(param string) {
 		c.idSearchFailures = make(map[string]time.Time)
 	}
 	c.idSearchFailures[param] = time.Now()
+}
+
+// markIDSearchMiss records the both-empty outcome: the identifier query and
+// its keyword fallback both returned zero rows. This carries no signal that
+// identifier search is unsupported (the title may simply be unindexed), so
+// it only suppresses identifier fan-out for the short idSearchMissTTL.
+func (c *Client) markIDSearchMiss(param string) {
+	c.idMu.Lock()
+	defer c.idMu.Unlock()
+	if c.idSearchMisses == nil {
+		c.idSearchMisses = make(map[string]time.Time)
+	}
+	c.idSearchMisses[param] = time.Now()
+}
+
+// clearIDSearchState drops any negative-cache entry for param after a
+// successful identifier search proves the indexer resolves identifiers.
+func (c *Client) clearIDSearchState(param string) {
+	c.idMu.Lock()
+	defer c.idMu.Unlock()
+	delete(c.idSearchFailures, param)
+	delete(c.idSearchMisses, param)
 }
 
 // cloneWithout returns a copy of params with the given keys removed.
@@ -264,7 +305,13 @@ func (c *Client) SearchMovie(ctx context.Context, imdbID, title string, categori
 	if err != nil {
 		return nil, err
 	}
-	if len(results) > 0 || !byID {
+	if len(results) > 0 {
+		if byID {
+			c.clearIDSearchState(idParamImdb)
+		}
+		return results, nil
+	}
+	if !byID {
 		return results, nil
 	}
 
@@ -284,6 +331,7 @@ func (c *Client) SearchMovie(ctx context.Context, imdbID, title string, categori
 		if len(retry) > 0 {
 			slog.DebugContext(ctx, "Newsnab search succeeded after dropping category filter",
 				"indexer", c.config.Name, "results", len(retry))
+			c.clearIDSearchState(idParamImdb)
 			return retry, nil
 		}
 	}
@@ -302,6 +350,11 @@ func (c *Client) SearchMovie(ctx context.Context, imdbID, title string, categori
 		c.markIDSearchBroken(idParamImdb)
 		slog.DebugContext(ctx, "Newsnab identifier search unsupported; keyword fallback succeeded",
 			"indexer", c.config.Name, "results", len(keywordResults))
+	} else {
+		// Both-empty: the identifier miss carries no signal that identifier
+		// search is unsupported (the title may simply be unindexed), so only
+		// suppress identifier fan-out for the short miss TTL.
+		c.markIDSearchMiss(idParamImdb)
 	}
 	return keywordResults, nil
 }
@@ -354,11 +407,25 @@ func (c *Client) SearchTV(ctx context.Context, imdbID, tvdbID, title string, sea
 	cats := filterCategories(caps, c.resolveCategories(categories, []int{5000, 5010, 5030, 5040}))
 	setCategories(params, cats)
 
+	identityParam := ""
+	switch {
+	case params.Get(idParamTVDB) != "":
+		identityParam = idParamTVDB
+	case params.Get(idParamImdb) != "":
+		identityParam = idParamImdb
+	}
+
 	results, err := c.executeSearch(ctx, params, userAgent, byID)
 	if err != nil {
 		return nil, err
 	}
-	if len(results) > 0 || !byID {
+	if len(results) > 0 {
+		if byID && identityParam != "" {
+			c.clearIDSearchState(identityParam)
+		}
+		return results, nil
+	}
+	if !byID {
 		return results, nil
 	}
 
@@ -384,16 +451,12 @@ func (c *Client) SearchTV(ctx context.Context, imdbID, tvdbID, title string, sea
 		for i := range retry {
 			retry[i].ByIDSearch = false
 		}
+		if identityParam != "" {
+			c.clearIDSearchState(identityParam)
+		}
 		return retry, nil
 	}
 
-	identityParam := ""
-	switch {
-	case params.Get(idParamTVDB) != "":
-		identityParam = idParamTVDB
-	case params.Get(idParamImdb) != "":
-		identityParam = idParamImdb
-	}
 	if identityParam == "" {
 		return results, nil
 	}
@@ -412,6 +475,11 @@ func (c *Client) SearchTV(ctx context.Context, imdbID, tvdbID, title string, sea
 		c.markIDSearchBroken(identityParam)
 		slog.DebugContext(ctx, "Newsnab identifier search unsupported; keyword fallback succeeded",
 			"indexer", c.config.Name, "identifier", identityParam, "results", len(keywordResults))
+	} else {
+		// Both-empty: the identifier miss carries no signal that identifier
+		// search is unsupported (the title may simply be unindexed), so only
+		// suppress identifier fan-out for the short miss TTL.
+		c.markIDSearchMiss(identityParam)
 	}
 	return keywordResults, nil
 }

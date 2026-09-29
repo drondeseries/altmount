@@ -597,6 +597,119 @@ func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
+// TestNewsnabClient_BothEmptyBackoffAndRecovery proves the both-empty outcome
+// (identifier miss + keyword miss) short-circuits identifier fan-out on the
+// next search via the short miss TTL — without permanently marking identifier
+// search broken — and that a later successful identifier search clears it.
+func TestNewsnabClient_BothEmptyBackoffAndRecovery(t *testing.T) {
+	emptyRSS := `<?xml version="1.0"?><rss version="2.0"><channel><title>x</title></channel></rss>`
+
+	t.Run("movie both-empty short-circuits then recovers", func(t *testing.T) {
+		var mu sync.Mutex
+		searchQueries := []url.Values{}
+		var serveResults atomic.Bool // false: everything empty; true: identifier queries hit
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serveCaps(w, r) {
+				return
+			}
+			q := r.URL.Query()
+			mu.Lock()
+			searchQueries = append(searchQueries, q)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/xml")
+			if serveResults.Load() && q.Get("imdbid") != "" {
+				_, _ = w.Write([]byte(rssWithItems("Some Movie 1080p")))
+				return
+			}
+			_, _ = w.Write([]byte(emptyRSS))
+		}))
+		defer ts.Close()
+
+		client := NewClient(IndexerConfig{Name: "both-empty-idx", URL: ts.URL, APIKey: "k", Enabled: true}, ts.Client())
+		ctx := context.Background()
+
+		// First search: identifier attempt (+ category-degraded retry) plus the
+		// keyword fallback, all empty.
+		results, err := client.SearchMovie(ctx, "tt0111161", "Some Movie", nil, "ua")
+		require.NoError(t, err)
+		assert.Empty(t, results)
+		mu.Lock()
+		firstCallRequests := len(searchQueries)
+		mu.Unlock()
+		require.Equal(t, 3, firstCallRequests, "first both-empty search fans out to identifier + degraded + keyword")
+		assert.True(t, client.idSearchBroken(idParamImdb), "both-empty outcome must suppress identifier queries")
+		client.idMu.Lock()
+		_, permanentlyBroken := client.idSearchFailures[idParamImdb]
+		client.idMu.Unlock()
+		assert.False(t, permanentlyBroken, "both-empty must not use the long-lived broken tier")
+
+		// Second search: identifier queries are skipped, single keyword query.
+		results, err = client.SearchMovie(ctx, "tt0111161", "Some Movie", nil, "ua")
+		require.NoError(t, err)
+		assert.Empty(t, results)
+		mu.Lock()
+		secondCallRequests := len(searchQueries) - firstCallRequests
+		secondQuery := searchQueries[firstCallRequests]
+		mu.Unlock()
+		assert.Equal(t, 1, secondCallRequests, "both-empty backoff must short-circuit identifier fan-out")
+		assert.NotEmpty(t, secondQuery.Get("q"))
+		assert.Empty(t, secondQuery.Get("imdbid"))
+
+		// Success clears state: expire the short miss entry, let identifier
+		// queries hit, and confirm the next identifier search succeeds and
+		// drops the suppression.
+		client.idMu.Lock()
+		client.idSearchMisses[idParamImdb] = time.Now().Add(-idSearchMissTTL - time.Minute)
+		client.idMu.Unlock()
+		assert.False(t, client.idSearchBroken(idParamImdb), "expired miss entry must recover")
+		serveResults.Store(true)
+		results, err = client.SearchMovie(ctx, "tt0111161", "Some Movie", nil, "ua")
+		require.NoError(t, err)
+		require.Len(t, results, 1)
+		assert.True(t, results[0].ByIDSearch)
+		assert.False(t, client.idSearchBroken(idParamImdb), "successful identifier search must clear state")
+	})
+
+	t.Run("tv both-empty short-circuits", func(t *testing.T) {
+		var mu sync.Mutex
+		searchQueries := []url.Values{}
+		ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if serveCaps(w, r) {
+				return
+			}
+			q := r.URL.Query()
+			mu.Lock()
+			searchQueries = append(searchQueries, q)
+			mu.Unlock()
+			w.Header().Set("Content-Type", "application/xml")
+			_, _ = w.Write([]byte(emptyRSS))
+		}))
+		defer ts.Close()
+
+		client := NewClient(IndexerConfig{Name: "both-empty-tv-idx", URL: ts.URL, APIKey: "k", Enabled: true}, ts.Client())
+		ctx := context.Background()
+
+		results, err := client.SearchTV(ctx, "tt1234567", "", "Show", 1, 1, nil, "ua")
+		require.NoError(t, err)
+		assert.Empty(t, results)
+		mu.Lock()
+		firstCallRequests := len(searchQueries)
+		mu.Unlock()
+		require.Equal(t, 5, firstCallRequests, "first both-empty TV search fans out across the degradation ladder + keyword")
+		assert.True(t, client.idSearchBroken(idParamImdb))
+
+		results, err = client.SearchTV(ctx, "tt1234567", "", "Show", 1, 1, nil, "ua")
+		require.NoError(t, err)
+		assert.Empty(t, results)
+		mu.Lock()
+		defer mu.Unlock()
+		secondCallRequests := len(searchQueries) - firstCallRequests
+		assert.Equal(t, 1, secondCallRequests, "both-empty backoff must short-circuit identifier fan-out")
+		assert.NotEmpty(t, searchQueries[firstCallRequests].Get("q"))
+		assert.Empty(t, searchQueries[firstCallRequests].Get("imdbid"))
+	})
+}
+
 func TestNewsnabClient_DownloadNZB_Redirect(t *testing.T) {
 	const indexerURL = "https://indexer.example.com/api?t=get&id=123"
 	const cdnURL = "https://cdn.example.com/nzbs/123.nzb"

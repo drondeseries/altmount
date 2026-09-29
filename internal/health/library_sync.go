@@ -890,7 +890,9 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 						// stale cache entries; skip the eager refresh since
 						// nothing remains to list and the next access re-lists
 						// lazily.
-						_ = lsw.rcloneClient.ForgetDir(c, vfsName, dirs)
+						if err := lsw.rcloneClient.ForgetDir(c, vfsName, dirs); err != nil {
+							slog.ErrorContext(c, "Failed to notify rclone VFS to forget directories", "vfs", vfsName, "dir_count", len(dirs), "err", err)
+						}
 					}()
 				}
 			}
