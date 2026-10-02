@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/javi11/altmount/internal/utils"
+	"github.com/kipsilabs/altmount/internal/utils"
 )
 
 // SymlinkLookup looks up the final AltMount path for a given source and external ID.

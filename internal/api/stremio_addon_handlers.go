@@ -275,7 +275,7 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 	selector := &stremioEpisodeSelector{Season: season, Episode: episode}
 	var libraryStreams []fiber.Map
 	if streamType == "movie" {
-		tmdbID, movieTitle, movieYear, _ := resolveMovieMetadataFromIMDb(ctx, imdbID)
+		tmdbID, movieTitle, movieYear, _ := resolveMovieMetadataFromIMDb(ctx, imdbID, cfg.GetUserAgent())
 		yearNum, _ := strconv.Atoi(movieYear)
 		if healthyFiles, err := s.healthRepo.FindHealthyFilesForMovie(ctx, movieTitle, movieYear, tmdbID); err == nil {
 			for _, h := range healthyFiles {
@@ -299,7 +299,7 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 			}
 		}
 	} else if streamType == "series" {
-		tvdbIDStr, seriesTitle, _ := resolveSeriesMetadataFromIMDb(ctx, imdbID)
+		tvdbIDStr, seriesTitle, _ := resolveSeriesMetadataFromIMDb(ctx, imdbID, cfg.GetUserAgent())
 		tvdbID, _ := strconv.Atoi(tvdbIDStr)
 		if healthyFiles, err := s.healthRepo.FindHealthyFilesForSeries(ctx, seriesTitle, tvdbID); err == nil {
 			for _, h := range healthyFiles {
@@ -886,7 +886,7 @@ func (s *Server) searchStremioReleases(
 	seriesMatchCtx := releaseMatchContext{}
 	if streamType == "series" {
 		var err error
-		tvdbID, title, err = resolveSeriesMetadataFromIMDb(ctx, imdbID)
+		tvdbID, title, err = resolveSeriesMetadataFromIMDb(ctx, imdbID, cfg.GetUserAgent())
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to resolve series metadata from IMDb ID", "error", err, "imdb_id", imdbID)
 		}
@@ -895,14 +895,14 @@ func (s *Server) searchStremioReleases(
 		// titles; resolve both once per request so the relevance gate can
 		// accept e.g. "[SubsPlease] Detective Conan - 1210" for catalog
 		// SxxEyy entries.
-		meta := resolveSeriesEpisodeMeta(ctx, imdbID)
+		meta := resolveSeriesEpisodeMeta(ctx, imdbID, cfg.GetUserAgent())
 		seriesMatchCtx = releaseMatchContext{
-			aliases:     resolveSeriesTitleAliases(ctx, imdbID),
+			aliases:     resolveSeriesTitleAliases(ctx, imdbID, cfg.GetUserAgent()),
 			episodeMeta: meta,
 			isAnime:     meta.isAnimation,
 		}
 	} else if imdbID != "" {
-		_, movieTitle, movieYear, mErr := resolveMovieMetadataFromIMDb(ctx, imdbID)
+		_, movieTitle, movieYear, mErr := resolveMovieMetadataFromIMDb(ctx, imdbID, cfg.GetUserAgent())
 		if mErr != nil {
 			slog.WarnContext(ctx, "Failed to resolve movie metadata from IMDb ID", "error", mErr, "imdb_id", imdbID)
 		}
@@ -1617,14 +1617,13 @@ func (s *Server) enqueueStremioRelease(
 			category := "Movies"
 			tmdbID := 0
 			tvdbID := 0
-			switch streamType {
-			case "series":
+			if streamType == "series" {
 				category = "TV"
-				if tvdbIDStr, _, _ := resolveSeriesMetadataFromIMDb(workCtx, imdbID); tvdbIDStr != "" {
+				if tvdbIDStr, _, _ := resolveSeriesMetadataFromIMDb(workCtx, imdbID, cfg.GetUserAgent()); tvdbIDStr != "" {
 					tvdbID, _ = strconv.Atoi(tvdbIDStr)
 				}
-			case "movie":
-				tmdbID, _, _, _ = resolveMovieMetadataFromIMDb(workCtx, imdbID)
+			} else if streamType == "movie" {
+				tmdbID, _, _, _ = resolveMovieMetadataFromIMDb(workCtx, imdbID, cfg.GetUserAgent())
 			}
 			stremioDownloadID := stremioDownloadIDPrefix + uuid.NewString()
 			metaJSONPtr, metadataErr := encodeStremioQueueMetadata(stremioQueueMetadata{
@@ -1868,26 +1867,6 @@ type prowlarrIndexersRequest struct {
 //	@Success		200		{object}	APIResponse
 //	@Failure		400		{object}	APIResponse
 //	@Security		BearerAuth
-func isSameOrigin(urlStr1, urlStr2 string) bool {
-	u1, err1 := url.Parse(strings.TrimSpace(urlStr1))
-	u2, err2 := url.Parse(strings.TrimSpace(urlStr2))
-	if err1 != nil || err2 != nil || u1.Host == "" || u2.Host == "" {
-		return false
-	}
-	return strings.EqualFold(u1.Scheme, u2.Scheme) && strings.EqualFold(u1.Host, u2.Host)
-}
-
-//	@Summary		List available Prowlarr indexers
-//	@Description	Queries the configured Prowlarr instance and returns all enabled indexers
-//	@Tags			Stremio
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
-//	@Success		200		{object}	APIResponse
-//	@Failure		400		{object}	APIResponse
-//	@Failure		500		{object}	APIResponse
-//	@Failure		503		{object}	APIResponse
-//	@Security		BearerAuth
 //	@Router			/prowlarr/indexers [post]
 func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	if s.configManager == nil {
@@ -1899,25 +1878,20 @@ func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	_ = c.BodyParser(&req)
 
 	cfg := s.configManager.GetConfig()
-	storedHost := cfg.Stremio.Indexers.Prowlarr.Host
-	if storedHost == "" {
-		storedHost = cfg.Stremio.Prowlarr.Host
-	}
-	storedKey := cfg.Stremio.Indexers.Prowlarr.APIKey
-	if storedKey == "" {
-		storedKey = cfg.Stremio.Prowlarr.APIKey
-	}
-
 	host := strings.TrimSpace(req.Host)
 	apiKey := strings.TrimSpace(req.APIKey)
-
-	// Fall back to the stored Prowlarr configuration when fields are empty or
-	// when host matches the stored host (for masked credentials).
+	// Fall back to the stored Prowlarr configuration so masked credentials
+	// work without re-entry: the per-indexer section is authoritative, the
+	// legacy stremio.prowlarr section is the fallback.
 	if host == "" {
-		host = storedHost
+		if host = cfg.Stremio.Indexers.Prowlarr.Host; host == "" {
+			host = cfg.Stremio.Prowlarr.Host
+		}
 	}
-	if apiKey == "" && (req.Host == "" || isSameOrigin(req.Host, storedHost)) {
-		apiKey = storedKey
+	if apiKey == "" {
+		if apiKey = cfg.Stremio.Indexers.Prowlarr.APIKey; apiKey == "" {
+			apiKey = cfg.Stremio.Prowlarr.APIKey
+		}
 	}
 
 	if host == "" || apiKey == "" {
@@ -1948,17 +1922,15 @@ func (s *Server) handleTestNewsnabIndexer(c *fiber.Ctx) error {
 	reqURL := strings.TrimSpace(req.URL)
 
 	// A masked stored API key arrives empty; when the request identifies a
-	// configured indexer, fall back to its stored credentials only if the URL
-	// is empty or matches the stored indexer origin.
+	// configured indexer, fall back to its stored credentials so testing an
+	// existing indexer does not require re-typing the key.
 	if strings.TrimSpace(req.APIKey) == "" && strings.TrimSpace(req.ID) != "" {
 		for _, n := range s.configManager.GetConfig().Stremio.Indexers.Newsnab {
 			if n.ID == strings.TrimSpace(req.ID) {
 				if reqURL == "" {
 					reqURL = n.URL
-					req.APIKey = n.APIKey
-				} else if isSameOrigin(reqURL, n.URL) {
-					req.APIKey = n.APIKey
 				}
+				req.APIKey = n.APIKey
 				break
 			}
 		}
@@ -1977,7 +1949,7 @@ func (s *Server) handleTestNewsnabIndexer(c *fiber.Ctx) error {
 		Enabled:        true,
 	}, httpclient.NewForExternal(cfg.Network, 10*time.Second))
 
-	ua := stremio.GetUserAgentManager().GetUserAgent("movie", "")
+	ua := stremio.GetUserAgentManager().GetUserAgent("movie", cfg.Stremio.Indexers.CustomUserAgent)
 	caps, err := client.CheckCaps(c.Context(), ua)
 	if err != nil {
 		return RespondBadRequest(c, "Failed to connect to Newsnab indexer", err.Error())
@@ -2010,12 +1982,12 @@ func (s *Server) handleRefreshStremioUserAgents(c *fiber.Ctx) error {
 
 	cfg := s.configManager.GetConfig()
 	if cfg != nil {
-		_ = mgr.FetchLatestFromGitHub(ctx)
+		_ = mgr.FetchLatestFromGitHub(ctx, cfg.GetUserAgent())
 		sonarrURL, sonarrKey := firstEnabledARR(cfg.Arrs.SonarrInstances)
 		radarrURL, radarrKey := firstEnabledARR(cfg.Arrs.RadarrInstances)
 		_ = mgr.CheckLocalARRs(ctx, sonarrURL, sonarrKey, radarrURL, radarrKey)
 	} else {
-		_ = mgr.FetchLatestFromGitHub(ctx)
+		_ = mgr.FetchLatestFromGitHub(ctx, "")
 	}
 
 	return RespondSuccess(c, mgr.GetInfo())
