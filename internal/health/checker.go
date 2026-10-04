@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path"
+	"strings"
 	"time"
 
 	"github.com/kipsilabs/altmount/internal/config"
@@ -74,8 +75,14 @@ type CheckOptions struct {
 	VerifyContentOverride *bool
 }
 
+// PatchIndex reports articles restored locally by PAR2 repair.
+type PatchIndex interface {
+	Has(messageID string) bool
+}
+
 // HealthChecker manages file health checking logic
 type HealthChecker struct {
+	patchIndex      PatchIndex
 	healthRepo      *database.HealthRepository
 	metadataService *metadata.MetadataService
 	poolManager     pool.Manager
@@ -101,6 +108,15 @@ func NewHealthChecker(
 		rcloneClient:    rcloneClient,
 		contentVerifyFS: contentVerifyFS,
 	}
+}
+
+// SetPatchIndex wires the shared repair store before health workers start.
+func (hc *HealthChecker) SetPatchIndex(idx PatchIndex) {
+	hc.patchIndex = idx
+}
+
+func (hc *HealthChecker) hasPatch(messageID string) bool {
+	return hc.patchIndex != nil && hc.patchIndex.Has(strings.Trim(messageID, "<>"))
 }
 
 // healthCheckInput holds the fields extracted from FileMetadata that the
@@ -517,6 +533,7 @@ func (hc *HealthChecker) batchOptions(preps []preparedCheck, opts ...CheckOption
 	}
 
 	return usenet.BatchOptions{
+		HasPatch:       hc.hasPatch,
 		MaxConnections: hc.statSweepConcurrency(cfg),
 		Timeout:        cfg.GetHealthReadTimeout(),
 		ArticleDate:    oldestReleaseDate(preps),
