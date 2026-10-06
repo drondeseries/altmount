@@ -502,6 +502,17 @@ func (c *Client) searchWithID(ctx context.Context, idField, idValue, searchType 
 }
 
 // DownloadNZB fetches the NZB file content from the given Prowlarr download URL or direct indexer URL.
+//
+// Security contract: direct indexer URLs are checked with
+// httpclient.ValidateDownloadURL (literal-IP private/link-local blocking only;
+// DNS hostnames NOT resolved — see ValidateDownloadURL). URLs targeting the
+// configured Prowlarr host skip that initial check because the host is
+// operator-configured and commonly a private/LAN address; treating it as
+// untrusted indexer input would break legitimate deployments. Every redirect
+// hop on BOTH paths is re-validated per hop via SafeDownloadCheckRedirect
+// (same literal-IP-only rule, DNS hostnames NOT resolved), and the Prowlarr
+// API key is sent only to the Prowlarr host — cross-host redirect handling
+// governs credentials, not the destination allowlist.
 func (c *Client) DownloadNZB(ctx context.Context, downloadURL string) ([]byte, error) {
 	reqURL, err := url.Parse(downloadURL)
 	if err != nil {
@@ -512,10 +523,16 @@ func (c *Client) DownloadNZB(ctx context.Context, downloadURL string) ([]byte, e
 	isProwlarrHost := prowlarrHostURL != nil && prowlarrHostURL.Hostname() != "" && strings.EqualFold(prowlarrHostURL.Hostname(), reqURL.Hostname())
 
 	if !isProwlarrHost {
+		// Literal-IP-only check; DNS hostnames are NOT resolved (see
+		// httpclient.ValidateDownloadURL).
 		if err := httpclient.ValidateDownloadURL(downloadURL); err != nil {
 			return nil, fmt.Errorf("prowlarr: refusing download: %w", err)
 		}
 	}
+	// NOTE: the Prowlarr-host path intentionally skips the initial check above:
+	// the host is operator-configured (often a LAN/private address), so the
+	// literal-IP rule cannot apply to it. Redirect hops on this path are still
+	// re-validated per hop via SafeDownloadCheckRedirect below.
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 	if err != nil {

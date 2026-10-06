@@ -4,9 +4,11 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -2455,31 +2457,192 @@ func (r *HealthRepository) matchMetadata(dbMeta, webMeta *model.WebhookMetadata)
 	return false
 }
 
+func metadataIDEquals(v any, targetID int) bool {
+	switch n := v.(type) {
+	case float64:
+		return int(n) == targetID
+	case string:
+		if parsed, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
+			return parsed == targetID
+		}
+	case json.Number:
+		if parsed, err := strconv.Atoi(string(n)); err == nil {
+			return parsed == targetID
+		}
+	case int:
+		return n == targetID
+	case int64:
+		return int(n) == targetID
+	}
+	return false
+}
+
+func hasMatchingTMDBID(metadataStr string, targetID int) bool {
+	if metadataStr == "" || targetID <= 0 {
+		return false
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
+		return false
+	}
+	if metadataIDEquals(data["tmdbId"], targetID) {
+		return true
+	}
+	if metadataIDEquals(data["tmdb_id"], targetID) {
+		return true
+	}
+	if movie, ok := data["movie"].(map[string]interface{}); ok {
+		if metadataIDEquals(movie["tmdbId"], targetID) {
+			return true
+		}
+		if metadataIDEquals(movie["tmdb_id"], targetID) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasMatchingTVDBID(metadataStr string, targetID int) bool {
+	if metadataStr == "" || targetID <= 0 {
+		return false
+	}
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
+		return false
+	}
+	if metadataIDEquals(data["tvdbId"], targetID) {
+		return true
+	}
+	if metadataIDEquals(data["tvdb_id"], targetID) {
+		return true
+	}
+	if series, ok := data["series"].(map[string]interface{}); ok {
+		if metadataIDEquals(series["tvdbId"], targetID) {
+			return true
+		}
+		if metadataIDEquals(series["tvdb_id"], targetID) {
+			return true
+		}
+	}
+	return false
+}
+
+// healthMetadataIDQuery identifies which metadata ID a lookup targets.
+type healthMetadataIDQuery struct {
+	tmdb bool // match metadata.tmdbId (movie)
+	tvdb bool // match metadata.tvdbId (series)
+}
+
+// metadataScanError marks a scan/iteration failure inside the metadata-ID
+// lookup path. Callers distinguish it from query-level failures: a broken
+// row must propagate, while a failed query falls through to title fallback.
+type metadataScanError struct{ err error }
+
+func (e *metadataScanError) Error() string { return e.err.Error() }
+func (e *metadataScanError) Unwrap() error { return e.err }
+
+// queryHealthyFilesByMetadataID returns healthy file_health rows whose metadata
+// carries the given external ID (TMDB or TVDB), or nil when no rows match so
+// callers can fall back to their title-based search.
+//
+// The prefilter differs per backend because the two engines index JSON
+// differently:
+//   - PostgreSQL: an exact predicate on the JSONB text extraction
+//     ((metadata->>'tmdbId') = $1) can use the expression indexes from
+//     migration 041, turning the lookup into an index scan instead of a full
+//     table scan. The predicate compares as text so both numeric
+//     ("tmdbId":1001) and string ("tmdbId":"1001") JSON shapes are index
+//     candidates; the nested movie.tmdbId / series.tvdbId shapes have no
+//     index and are covered only at the Go post-filter stage. The Go
+//     hasMatching* post-filter (numeric + string aware) remains the
+//     authoritative exact match.
+//   - SQLite: the portable CAST(metadata AS text) LIKE prefilter preserves
+//     the historical candidate set (compact numeric `"tmdbId":1001` shape;
+//     whitespace or string shapes were never matched by the prefilter). The
+//     Go post-filter then applies the exact match, including string-shaped
+//     IDs for rows reached through other paths.
+func (r *HealthRepository) queryHealthyFilesByMetadataID(ctx context.Context, target healthMetadataIDQuery, id int) ([]*FileHealth, error) {
+	var query string
+	var arg any
+	var limit int
+	if r.dialect.IsPostgres() {
+		key := "tvdbId"
+		if target.tmdb {
+			key = "tmdbId"
+		}
+		query = fileHealthSelectColumns + " WHERE status = 'healthy' AND (metadata->>'" + key + "') = $1 ORDER BY id DESC LIMIT 100"
+		arg = strconv.Itoa(id)
+		limit = 100
+	} else {
+		key := "tvdbId"
+		if target.tmdb {
+			key = "tmdbId"
+		}
+		// Series path keeps its historical LIMIT 100; movie path keeps LIMIT 50.
+		limit = 100
+		if target.tmdb {
+			limit = 50
+		}
+		query = fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT " + strconv.Itoa(limit)
+		arg = fmt.Sprintf(`%%"%s":%d%%`, key, id)
+	}
+
+	rows, err := r.db.QueryContext(ctx, query, arg)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var results []*FileHealth
+	for rows.Next() {
+		h, scanErr := scanFileHealth(rows)
+		if scanErr != nil {
+			return nil, &metadataScanError{err: fmt.Errorf("failed to scan file health row: %w", scanErr)}
+		}
+		if h == nil {
+			continue
+		}
+		metaStr := ""
+		if h.Metadata != nil {
+			metaStr = *h.Metadata
+		}
+		matched := false
+		if target.tmdb {
+			matched = hasMatchingTMDBID(metaStr, id)
+		} else {
+			matched = hasMatchingTVDBID(metaStr, id)
+		}
+		if matched {
+			results = append(results, h)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, &metadataScanError{err: fmt.Errorf("failed to read file health rows: %w", err)}
+	}
+	if len(results) == 0 {
+		return nil, nil
+	}
+	return results, nil
+}
+
 // FindHealthyFilesForMovie returns healthy library files matching a movie by TMDB ID or title/year.
 // It first searches metadata by TMDB ID; if no matches are found, it falls back to title and year search.
 func (r *HealthRepository) FindHealthyFilesForMovie(ctx context.Context, title string, year string, tmdbID int) ([]*FileHealth, error) {
-	// 1. Try TMDB ID if available
+	// 1. Try TMDB ID if available. Query errors (connection refused, bad
+	// SQL) fall through to the title/year fallback (historical behavior).
+	// Scan/iteration errors (corrupt row, type mismatch) propagate — they
+	// indicate a broken read, not an absent ID, and must not masquerade as
+	// a clean "no matches" that silently weakens into title matching.
 	if tmdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND metadata LIKE ? ORDER BY id DESC LIMIT 50"
-		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tmdbId":%d%%`, tmdbID))
-		if err == nil {
-			var results []*FileHealth
-			for rows.Next() {
-				if h, scanErr := scanFileHealth(rows); scanErr == nil && h != nil {
-					results = append(results, h)
-				} else if scanErr != nil {
-					rows.Close()
-					return nil, fmt.Errorf("failed to scan movie health row: %w", scanErr)
-				}
+		matches, qerr := r.queryHealthyFilesByMetadataID(ctx, healthMetadataIDQuery{tmdb: true}, tmdbID)
+		if qerr != nil {
+			var scanFail *metadataScanError
+			if errors.As(qerr, &scanFail) {
+				return nil, qerr
 			}
-			if rowsErr := rows.Err(); rowsErr != nil {
-				rows.Close()
-				return nil, fmt.Errorf("failed to read movie health rows: %w", rowsErr)
-			}
-			rows.Close()
-			if len(results) > 0 {
-				return results, nil
-			}
+			// Query-level error: fall through to title/year fallback.
+		} else if matches != nil {
+			return matches, nil
 		}
 	}
 
@@ -2547,28 +2710,21 @@ func buildTitleLikePattern(title string) string {
 // FindHealthyFilesForSeries returns healthy library files matching a TV series by TVDB ID or series title.
 // It first searches metadata by TVDB ID; if no matches are found, it falls back to series title search.
 func (r *HealthRepository) FindHealthyFilesForSeries(ctx context.Context, seriesTitle string, tvdbID int) ([]*FileHealth, error) {
-	// 1. Try TVDB ID if available
+	// 1. Try TVDB ID if available. Query errors (connection refused, bad
+	// SQL) fall through to the title fallback (historical behavior).
+	// Scan/iteration errors (corrupt row, type mismatch) propagate — they
+	// indicate a broken read, not an absent ID, and must not masquerade as
+	// a clean "no matches" that silently weakens into title matching.
 	if tvdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND metadata LIKE ? ORDER BY id DESC LIMIT 100"
-		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tvdbId":%d%%`, tvdbID))
-		if err == nil {
-			var results []*FileHealth
-			for rows.Next() {
-				if h, scanErr := scanFileHealth(rows); scanErr == nil && h != nil {
-					results = append(results, h)
-				} else if scanErr != nil {
-					rows.Close()
-					return nil, fmt.Errorf("failed to scan series health row: %w", scanErr)
-				}
+		matches, qerr := r.queryHealthyFilesByMetadataID(ctx, healthMetadataIDQuery{tvdb: true}, tvdbID)
+		if qerr != nil {
+			var scanFail *metadataScanError
+			if errors.As(qerr, &scanFail) {
+				return nil, qerr
 			}
-			if rowsErr := rows.Err(); rowsErr != nil {
-				rows.Close()
-				return nil, fmt.Errorf("failed to read series health rows: %w", rowsErr)
-			}
-			rows.Close()
-			if len(results) > 0 {
-				return results, nil
-			}
+			// Query-level error: fall through to title fallback.
+		} else if matches != nil {
+			return matches, nil
 		}
 	}
 

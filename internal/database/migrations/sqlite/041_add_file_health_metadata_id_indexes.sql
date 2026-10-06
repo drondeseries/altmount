@@ -1,0 +1,16 @@
+-- +goose Up
+-- +goose StatementBegin
+-- No-op on SQLite: the JSONB expression indexes from the PostgreSQL variant
+-- of this migration do not apply here. The TMDB/TVDB metadata lookups keep
+-- using the historical CAST(metadata AS text) LIKE prefilter (compact
+-- numeric `"tmdbId":1001` shape) plus the Go exact-match post-filter, which
+-- additionally accepts string-shaped IDs for rows reached through other
+-- paths. A SQLite functional index on json_extract(metadata, '$.tmdbId')
+-- is intentionally not added: it would only cover numeric values while
+-- suggesting broader coverage than it provides.
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+-- Nothing to revert.
+-- +goose StatementEnd
