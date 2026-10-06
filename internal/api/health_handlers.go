@@ -101,6 +101,9 @@ func (s *Server) handleListHealth(c *fiber.Ctx) error {
 	response := make([]*HealthItemResponse, len(items))
 	for i, item := range items {
 		response[i] = ToHealthItemResponse(item)
+		if s.healthWorker != nil && item.Status == database.HealthStatusChecking {
+			response[i].CheckProgress = s.healthWorker.GetCheckProgress(item.FilePath)
+		}
 	}
 
 	// Create metadata
@@ -160,6 +163,9 @@ func (s *Server) handleGetHealth(c *fiber.Ctx) error {
 	}
 
 	response := ToHealthItemResponse(item)
+	if s.healthWorker != nil && item.Status == database.HealthStatusChecking {
+		response.CheckProgress = s.healthWorker.GetCheckProgress(item.FilePath)
+	}
 	return RespondSuccess(c, response)
 }
 
@@ -620,6 +626,9 @@ func (s *Server) handleListCorrupted(c *fiber.Ctx) error {
 	response := make([]*HealthItemResponse, len(corruptedItems))
 	for i, item := range corruptedItems {
 		response[i] = ToHealthItemResponse(item)
+		if s.healthWorker != nil && item.Status == database.HealthStatusChecking {
+			response[i].CheckProgress = s.healthWorker.GetCheckProgress(item.FilePath)
+		}
 	}
 
 	// Create metadata

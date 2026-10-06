@@ -9,6 +9,7 @@ import (
 	"github.com/kipsilabs/altmount/internal/auth"
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
+	"github.com/kipsilabs/altmount/internal/health"
 )
 
 // nzbJobName returns the display name for an NZB job by stripping the .nzb or .nzb.gz
@@ -163,11 +164,13 @@ type ImportAPIResponse struct {
 	ImportDir                 *string               `json:"import_dir"`
 	WatchDir                  *string               `json:"watch_dir"`
 
-	WatchIntervalSeconds     *int    `json:"watch_interval_seconds,omitempty"`
-	AllowNestedRarExtraction *bool   `json:"allow_nested_rar_extraction,omitempty"`
-	RenameToNzbName          *bool   `json:"rename_to_nzb_name,omitempty"`
-	FilterSampleFiles        *bool   `json:"filter_sample_files,omitempty"`
-	PinSymlinkTimestamp      *string `json:"pin_symlink_timestamp,omitempty"`
+	WatchIntervalSeconds        *int    `json:"watch_interval_seconds,omitempty"`
+	AllowNestedRarExtraction    *bool   `json:"allow_nested_rar_extraction,omitempty"`
+	RenameToNzbName             *bool   `json:"rename_to_nzb_name,omitempty"`
+	FilterSampleFiles           *bool   `json:"filter_sample_files,omitempty"`
+	PinSymlinkTimestamp         *string `json:"pin_symlink_timestamp,omitempty"`
+	VerifyContent               *bool   `json:"verify_content,omitempty"`
+	VerifyContentTimeoutSeconds *int    `json:"verify_content_timeout_seconds,omitempty"`
 }
 
 // SABnzbdAPIResponse sanitizes SABnzbd config for API responses
@@ -572,13 +575,13 @@ func ToImportAPIResponse(importConfig config.ImportConfig) ImportAPIResponse {
 		SegmentSamplePercentage:        importConfig.SegmentSamplePercentage,
 		ImportStrategy:                 importConfig.ImportStrategy,
 		ImportDir:                      importConfig.ImportDir,
-		WatchDir:                       importConfig.WatchDir,
-
-		WatchIntervalSeconds:     importConfig.WatchIntervalSeconds,
-		AllowNestedRarExtraction: importConfig.AllowNestedRarExtraction,
-		RenameToNzbName:          importConfig.RenameToNzbName,
-		FilterSampleFiles:        importConfig.FilterSampleFiles,
-		PinSymlinkTimestamp:      importConfig.PinSymlinkTimestamp,
+		WatchIntervalSeconds:           importConfig.WatchIntervalSeconds,
+		AllowNestedRarExtraction:       importConfig.AllowNestedRarExtraction,
+		RenameToNzbName:                importConfig.RenameToNzbName,
+		FilterSampleFiles:              importConfig.FilterSampleFiles,
+		PinSymlinkTimestamp:            importConfig.PinSymlinkTimestamp,
+		VerifyContent:                  importConfig.VerifyContent,
+		VerifyContentTimeoutSeconds:    importConfig.VerifyContentTimeoutSeconds,
 	}
 }
 
@@ -700,6 +703,7 @@ type QueueHistoricalStatsResponse struct {
 
 // HealthItemResponse represents a health record in API responses
 type HealthItemResponse struct {
+	CheckProgress    *health.CheckProgress   `json:"check_progress,omitempty"`
 	ID               int64                   `json:"id"`
 	FilePath         string                  `json:"file_path"`
 	LibraryPath      *string                 `json:"library_path,omitempty"`
