@@ -2456,53 +2456,37 @@ func (r *HealthRepository) matchMetadata(dbMeta, webMeta *model.WebhookMetadata)
 }
 
 func hasMatchingTMDBID(metadataStr string, targetID int) bool {
-	if metadataStr == "" || targetID <= 0 {
-		return false
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
-		return false
-	}
-	if idVal, ok := data["tmdbId"].(float64); ok && int(idVal) == targetID {
-		return true
-	}
-	if idVal, ok := data["tmdb_id"].(float64); ok && int(idVal) == targetID {
-		return true
-	}
-	if movie, ok := data["movie"].(map[string]interface{}); ok {
-		if idVal, ok := movie["tmdbId"].(float64); ok && int(idVal) == targetID {
-			return true
-		}
-		if idVal, ok := movie["tmdb_id"].(float64); ok && int(idVal) == targetID {
-			return true
-		}
-	}
-	return false
+	metadata, err := model.DecodeHealthMetadata(metadataStr)
+	return err == nil && metadata.MatchesTMDBID(int64(targetID))
 }
 
 func hasMatchingTVDBID(metadataStr string, targetID int) bool {
-	if metadataStr == "" || targetID <= 0 {
-		return false
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
-		return false
-	}
-	if idVal, ok := data["tvdbId"].(float64); ok && int(idVal) == targetID {
-		return true
-	}
-	if idVal, ok := data["tvdb_id"].(float64); ok && int(idVal) == targetID {
-		return true
-	}
-	if series, ok := data["series"].(map[string]interface{}); ok {
-		if idVal, ok := series["tvdbId"].(float64); ok && int(idVal) == targetID {
-			return true
+	metadata, err := model.DecodeHealthMetadata(metadataStr)
+	return err == nil && metadata.MatchesTVDBID(int64(targetID))
+}
+
+// healthMetadataIDPredicate filters exact numeric identifiers before applying
+// the result limit. JSON paths are internal constants, never user input.
+func (r *HealthRepository) healthMetadataIDPredicate(key, legacyKey, nestedKey string, id int) (string, []any) {
+	paths := [][]string{{key}, {legacyKey}, {nestedKey, key}, {nestedKey, legacyKey}}
+	predicates := make([]string, 0, len(paths))
+	args := make([]any, 0, len(paths))
+	for _, path := range paths {
+		if r.dialect.IsPostgres() {
+			predicates = append(predicates, fmt.Sprintf("(jsonb_typeof(metadata #> '{%s}') = 'number' AND metadata #>> '{%s}' = CAST(CAST(? AS bigint) AS text))", strings.Join(path, ","), strings.Join(path, ",")))
+		} else {
+			jsonPath := "$." + strings.Join(path, ".")
+			predicates = append(predicates, fmt.Sprintf("(json_type(metadata, '%s') = 'integer' AND json_extract(metadata, '%s') = ?)", jsonPath, jsonPath))
 		}
-		if idVal, ok := series["tvdb_id"].(float64); ok && int(idVal) == targetID {
-			return true
-		}
+		args = append(args, id)
 	}
-	return false
+	predicate := "(" + strings.Join(predicates, " OR ") + ")"
+	if !r.dialect.IsPostgres() {
+		// Old SQLite records can contain empty or malformed JSON. CASE keeps JSON
+		// extraction from evaluating those values and aborting the entire lookup.
+		predicate = "CASE WHEN json_valid(metadata) THEN " + predicate + " ELSE FALSE END"
+	}
+	return predicate, args
 }
 
 // FindHealthyFilesForMovie returns healthy library files matching a movie by TMDB ID or title/year.
@@ -2510,8 +2494,9 @@ func hasMatchingTVDBID(metadataStr string, targetID int) bool {
 func (r *HealthRepository) FindHealthyFilesForMovie(ctx context.Context, title string, year string, tmdbID int) ([]*FileHealth, error) {
 	// 1. Try TMDB ID if available
 	if tmdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT 50"
-		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tmdbId":%d%%`, tmdbID))
+		predicate, args := r.healthMetadataIDPredicate("tmdbId", "tmdb_id", "movie", tmdbID)
+		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND " + predicate + " ORDER BY id DESC LIMIT 50"
+		rows, err := r.db.QueryContext(ctx, query, args...)
 		if err == nil {
 			var results []*FileHealth
 			for rows.Next() {
@@ -2605,8 +2590,9 @@ func buildTitleLikePattern(title string) string {
 func (r *HealthRepository) FindHealthyFilesForSeries(ctx context.Context, seriesTitle string, tvdbID int) ([]*FileHealth, error) {
 	// 1. Try TVDB ID if available
 	if tvdbID > 0 {
-		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT 100"
-		rows, err := r.db.QueryContext(ctx, query, fmt.Sprintf(`%%"tvdbId":%d%%`, tvdbID))
+		predicate, args := r.healthMetadataIDPredicate("tvdbId", "tvdb_id", "series", tvdbID)
+		query := fileHealthSelectColumns + " WHERE status = 'healthy' AND " + predicate + " ORDER BY id DESC LIMIT 100"
+		rows, err := r.db.QueryContext(ctx, query, args...)
 		if err == nil {
 			var results []*FileHealth
 			for rows.Next() {

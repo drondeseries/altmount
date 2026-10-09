@@ -1524,28 +1524,10 @@ func (hw *HealthWorker) enqueuePar2Fallback(ctx context.Context, filePath string
 }
 
 func (hw *HealthWorker) ensureMetadata(ctx context.Context, item *database.FileHealth) *string {
-	needsDiscovery := false
-	if item.Metadata == nil || *item.Metadata == "" {
-		needsDiscovery = true
-	} else {
-		var rawMap map[string]interface{}
-		if err := json.Unmarshal([]byte(*item.Metadata), &rawMap); err != nil {
-			needsDiscovery = true
-		} else {
-			_, hasTMDB := rawMap["tmdbId"]
-			_, hasTVDB := rawMap["tvdbId"]
-			var dbMeta model.WebhookMetadata
-			_ = json.Unmarshal([]byte(*item.Metadata), &dbMeta)
-			if dbMeta.Movie != nil || hasTMDB {
-				needsDiscovery = false
-			} else if dbMeta.Series != nil {
-				if len(dbMeta.Episodes) == 0 {
-					needsDiscovery = true
-				}
-			} else if !hasTVDB {
-				needsDiscovery = true
-			}
-		}
+	needsDiscovery := true
+	if item.Metadata != nil {
+		metadata, err := model.DecodeHealthMetadata(*item.Metadata)
+		needsDiscovery = err != nil || metadata.NeedsDiscovery()
 	}
 
 	if !needsDiscovery {
@@ -1570,11 +1552,9 @@ func (hw *HealthWorker) ensureMetadata(ctx context.Context, item *database.FileH
 		// Re-read from DB to verify if another concurrent worker finished discovery first
 		latest, err := hw.healthRepo.GetFileHealth(ctx, item.FilePath)
 		if err == nil && latest != nil && latest.Metadata != nil && *latest.Metadata != "" {
-			var dbMeta model.WebhookMetadata
-			if err := json.Unmarshal([]byte(*latest.Metadata), &dbMeta); err == nil {
-				if dbMeta.Series == nil || len(dbMeta.Episodes) > 0 {
-					return latest.Metadata, nil
-				}
+			metadata, err := model.DecodeHealthMetadata(*latest.Metadata)
+			if err == nil && !metadata.NeedsDiscovery() {
+				return latest.Metadata, nil
 			}
 		}
 
