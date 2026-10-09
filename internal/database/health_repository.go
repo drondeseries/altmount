@@ -85,6 +85,31 @@ func (r *HealthRepository) UpdateFileHealth(ctx context.Context, filePath string
 	return nil
 }
 
+// RecordPar2RepairFailure records the repair error without condemning degraded
+// files or cancelling an existing ARR repair. Retry budgets, health-check
+// schedules, and library metadata remain intact for those files.
+func (r *HealthRepository) RecordPar2RepairFailure(ctx context.Context, filePath, reason string) error {
+	filePath = normalizeHealthPath(filePath)
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, status, last_checked, last_error, scheduled_check_at)
+		VALUES (?, 'corrupted', datetime('now'), ?, NULL)
+		ON CONFLICT(file_path) DO UPDATE SET
+		    status = CASE
+		        WHEN file_health.status IN ('degraded', 'repair_triggered') THEN file_health.status
+		        ELSE 'corrupted' END,
+		    scheduled_check_at = CASE
+		        WHEN file_health.status IN ('degraded', 'repair_triggered') THEN file_health.scheduled_check_at
+		        ELSE NULL END,
+		    last_error = excluded.last_error,
+		    last_checked = datetime('now'),
+		    updated_at = datetime('now')
+	`, filePath, reason)
+	if err != nil {
+		return fmt.Errorf("failed to record PAR2 repair failure: %w", err)
+	}
+	return nil
+}
+
 // UpdateFileHealthScheduled is like UpdateFileHealth but uses an explicit scheduledAt time
 // instead of datetime('now') for the scheduled_check_at column.
 func (r *HealthRepository) UpdateFileHealthScheduled(ctx context.Context, filePath string, status HealthStatus, errorMessage *string, sourceNzbPath *string, errorDetails *string, noRetry bool, scheduledAt time.Time) error {
