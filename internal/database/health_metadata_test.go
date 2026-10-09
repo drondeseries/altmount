@@ -89,3 +89,20 @@ func testHealthyMetadataLookupSupportsJSONShapes(t *testing.T, setup func(*testi
 		})
 	}
 }
+
+func TestHealthyMetadataLookupPropagatesScanErrors(t *testing.T) {
+	for _, movie := range []bool{true, false} {
+		t.Run(fmt.Sprintf("movie=%v", movie), func(t *testing.T) {
+			repo := setupTestDB(t)
+			t.Cleanup(func() { require.NoError(t, repo.db.db.Close()) })
+			_, err := repo.db.ExecContext(context.Background(), "INSERT INTO file_health (file_path, status, metadata, retry_count) VALUES (?, 'healthy', ?, ?)", "wanted.mkv", `{"tmdbId":123,"tvdbId":123}`, "invalid-integer")
+			require.NoError(t, err)
+			if movie {
+				_, err = repo.FindHealthyFilesForMovie(context.Background(), "", "", 123)
+			} else {
+				_, err = repo.FindHealthyFilesForSeries(context.Background(), "", 123)
+			}
+			require.ErrorContains(t, err, "failed to scan file health row")
+		})
+	}
+}

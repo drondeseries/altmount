@@ -142,6 +142,87 @@ func TestSafeDownloadCheckRedirect(t *testing.T) {
 		}
 	})
 
+	t.Run("restores key on return to original origin (A->B->A)", func(t *testing.T) {
+		// Regression: net/http copies the initial request's headers into
+		// EVERY redirect request before CheckRedirect runs, so binding the
+		// credential strip to the previous hop (prev == req host) leaks the
+		// key back on the second hop. Binding to via[0] fixes it.
+		a1, _ := url.Parse("https://prowlarr.example.com/api/download?id=1")
+		b, _ := url.Parse("https://cdn.example.org/file.nzb")
+		a2, _ := url.Parse("https://prowlarr.example.com/log?hit=1")
+		via := []*http.Request{{URL: a1}, {URL: b}}
+
+		req := &http.Request{URL: b, Header: make(http.Header)}
+		req.Header.Set("X-Api-Key", "prowlarr-secret")
+		if err := checkRedirect(req, via[:1]); err != nil {
+			t.Fatalf("hop A->B: expected nil, got %v", err)
+		}
+		if req.Header.Get("X-Api-Key") != "" {
+			t.Fatalf("hop A->B: expected X-Api-Key stripped")
+		}
+
+		// Simulate net/http copying the ORIGINAL headers onto hop 2
+		// (req.Header starts fresh from the initial request each hop).
+		req2 := &http.Request{URL: a2, Header: make(http.Header)}
+		req2.Header.Set("X-Api-Key", "prowlarr-secret")
+		if err := checkRedirect(req2, via); err != nil {
+			t.Fatalf("hop A->B->A: expected nil, got %v", err)
+		}
+		if req2.Header.Get("X-Api-Key") != "prowlarr-secret" {
+			t.Errorf("hop A->B->A: expected X-Api-Key restored on return to original origin, got %q", req2.Header.Get("X-Api-Key"))
+		}
+	})
+
+	t.Run("strips key on every hop of A->B->B chain", func(t *testing.T) {
+		// The exact regression: Go recopies the INITIAL request's headers
+		// into every redirect request before CheckRedirect runs, so a
+		// prev-hop comparison would see prev == req host on the second B
+		// hop and leak the key. via[0]-binding strips on every off-origin
+		// hop.
+		a, _ := url.Parse("https://prowlarr.example.com/api/download?id=1")
+		b1, _ := url.Parse("https://cdn.example.org/file.nzb")
+		b2, _ := url.Parse("https://cdn.example.org/file.nzb?part=2")
+		via := []*http.Request{{URL: a}, {URL: b1}}
+
+		req1 := &http.Request{URL: b1, Header: make(http.Header)}
+		req1.Header.Set("X-Api-Key", "prowlarr-secret")
+		if err := checkRedirect(req1, via[:1]); err != nil {
+			t.Fatalf("hop A->B1: expected nil, got %v", err)
+		}
+		if req1.Header.Get("X-Api-Key") != "" {
+			t.Fatalf("hop A->B1: expected X-Api-Key stripped")
+		}
+
+		// Second hop still off-origin: headers re-copied from initial req.
+		req2 := &http.Request{URL: b2, Header: make(http.Header)}
+		req2.Header.Set("X-Api-Key", "prowlarr-secret")
+		req2.Header.Set("Authorization", "Bearer secret")
+		if err := checkRedirect(req2, via); err != nil {
+			t.Fatalf("hop A->B1->B2: expected nil, got %v", err)
+		}
+		if req2.Header.Get("X-Api-Key") != "" {
+			t.Errorf("hop A->B1->B2: X-Api-Key leaked on second off-origin hop")
+		}
+		if req2.Header.Get("Authorization") != "" {
+			t.Errorf("hop A->B1->B2: Authorization leaked on second off-origin hop")
+		}
+	})
+
+	t.Run("strips key on port change", func(t *testing.T) {
+		target, _ := url.Parse("https://indexer.example.com:8443/final.nzb")
+		prev, _ := url.Parse("https://indexer.example.com/get")
+		req := &http.Request{URL: target, Header: make(http.Header)}
+		req.Header.Set("Authorization", "Bearer secret")
+		via := []*http.Request{{URL: prev}}
+
+		if err := checkRedirect(req, via); err != nil {
+			t.Fatalf("expected nil, got error: %v", err)
+		}
+		if req.Header.Get("Authorization") != "" {
+			t.Errorf("expected Authorization stripped on port change")
+		}
+	})
+
 	t.Run("blocks redirect to private ip", func(t *testing.T) {
 		target, _ := url.Parse("http://192.168.1.1/admin")
 		prev, _ := url.Parse("https://indexer.example.com/get")

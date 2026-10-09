@@ -1,0 +1,11 @@
+-- +goose Up
+-- +goose StatementBegin
+-- No-op on SQLite: exact lookups use json_type/json_extract for flat and nested
+-- metadata, guarded by json_valid to tolerate old malformed TEXT records.
+-- PostgreSQL's JSONB expression indexes do not apply to this backend.
+-- +goose StatementEnd
+
+-- +goose Down
+-- +goose StatementBegin
+-- Nothing to revert.
+-- +goose StatementEnd

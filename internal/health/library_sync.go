@@ -886,11 +886,12 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 					go func() {
 						c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 						defer cancel()
-						// Deletion only: forget the directories so rclone drops
-						// stale cache entries; skip the eager refresh since
-						// nothing remains to list and the next access re-lists
-						// lazily.
-						_ = lsw.rcloneClient.ForgetDir(c, vfsName, dirs)
+						// Deletion only: refresh drops the stale cache entries for
+						// these directories; log failures instead of swallowing
+						// them so VFS notification outages are visible.
+						if err := lsw.rcloneClient.RefreshDir(c, vfsName, dirs); err != nil {
+							slog.ErrorContext(c, "Failed to notify rclone VFS to refresh directories", "vfs", vfsName, "dir_count", len(dirs), "err", err)
+						}
 					}()
 				}
 			}
