@@ -90,9 +90,9 @@ type Client struct {
 	// both-empty outcome (identifier miss + keyword miss): it only
 	// short-circuits the identifier fan-out for idSearchMissTTL so legit
 	// zero-result searches recover quickly.
-	idMu              sync.Mutex
-	idSearchFailures  map[string]time.Time
-	idSearchMisses    map[string]time.Time
+	idMu             sync.Mutex
+	idSearchFailures map[string]time.Time
+	idSearchMisses   map[string]time.Time
 }
 
 // Parameters usable as negative-cache keys for identifier searches.
@@ -336,6 +336,11 @@ func (c *Client) SearchMovie(ctx context.Context, imdbID, title string, categori
 		}
 	}
 
+	// A bare identifier search that still returns nothing means this indexer
+	// likely cannot resolve identifiers at all (e.g. no IMDb mappings) — but
+	// only when the keyword fallback proves the content exists. When both are
+	// empty the title may simply be unindexed, so record only the short-lived
+	// miss tier and let identifier queries recover quickly.
 	keyword := cloneWithout(params, idParamImdb, "cat")
 	keyword.Set("q", queryFallback(imdbID, title))
 	keywordResults, err := c.executeSearch(ctx, keyword, userAgent, false)
@@ -345,8 +350,9 @@ func (c *Client) SearchMovie(ctx context.Context, imdbID, title string, categori
 		return results, nil
 	}
 	if len(keywordResults) > 0 {
-		// Only mark identifier search broken if keyword search for the same title
-		// actually produced results, demonstrating the indexer has the content but missed it by ID.
+		// Only mark identifier search broken when the keyword fallback proves
+		// the content exists: the identifier miss then signals unsupported
+		// identifier search, not an unindexed title.
 		c.markIDSearchBroken(idParamImdb)
 		slog.DebugContext(ctx, "Newsnab identifier search unsupported; keyword fallback succeeded",
 			"indexer", c.config.Name, "results", len(keywordResults))
@@ -461,6 +467,10 @@ func (c *Client) SearchTV(ctx context.Context, imdbID, tvdbID, title string, sea
 		return results, nil
 	}
 
+	// The bare identifier search returned nothing: mark identifier search
+	// broken only when the keyword fallback proves the content exists. When
+	// both are empty the title may simply be unindexed, so record only the
+	// short-lived miss tier.
 	keyword := cloneWithout(params, identityParam, "ep", "season", "cat")
 	keyword.Set("q", queryFallback(imdbID, title))
 	keywordResults, err := c.executeSearch(ctx, keyword, userAgent, false)
@@ -470,8 +480,6 @@ func (c *Client) SearchTV(ctx context.Context, imdbID, tvdbID, title string, sea
 		return results, nil
 	}
 	if len(keywordResults) > 0 {
-		// Only mark identifier search broken if keyword search for the same title
-		// produced results, demonstrating the indexer has the content but missed it by ID.
 		c.markIDSearchBroken(identityParam)
 		slog.DebugContext(ctx, "Newsnab identifier search unsupported; keyword fallback succeeded",
 			"indexer", c.config.Name, "identifier", identityParam, "results", len(keywordResults))

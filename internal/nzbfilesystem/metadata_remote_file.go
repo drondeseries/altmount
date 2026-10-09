@@ -2717,18 +2717,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 			if err := mvf.healthRepository.DeleteHealthRecord(ctx, mvf.name); err != nil {
 				slog.ErrorContext(ctx, "Failed to delete health record after deleting corrupted file", "file", mvf.name, "error", err)
 			}
-			if mvf.rcloneClient != nil {
-				vfsName := cfg.RClone.VFSName
-				if vfsName == "" {
-					vfsName = config.MountProvider
-				}
-				dir := path.Dir(filepath.ToSlash(mvf.name))
-				go func() {
-					c, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-					defer cancel()
-					_ = mvf.rcloneClient.ForgetDir(c, vfsName, []string{dir})
-				}()
-			}
+			mvf.repairCoalescer.EnqueueRefresh(path.Dir(rclonecli.ToVFSPath(mvf.name)))
 		}
 		return
 	} else if healthEnabled && shouldRepair {

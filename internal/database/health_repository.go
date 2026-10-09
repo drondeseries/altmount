@@ -85,29 +85,25 @@ func (r *HealthRepository) UpdateFileHealth(ctx context.Context, filePath string
 	return nil
 }
 
-// RecordPar2RepairFailure preserves the PAR2 verdict and hands degraded files
-// to the ARR notification queue when enabled. Selecting the previous status in
-// the upsert keeps this transition atomic and avoids re-arming corrupted files
-// whose ARR-first repair already failed. Retry budgets and library metadata
-// remain intact; the health worker owns ARR attempts and their side effects.
-func (r *HealthRepository) RecordPar2RepairFailure(ctx context.Context, filePath, reason string, arrRepairEnabled bool) error {
+// RecordPar2RepairFailure records the repair error without condemning degraded
+// files or cancelling an existing ARR repair. Retry budgets, health-check
+// schedules, and library metadata remain intact for those files.
+func (r *HealthRepository) RecordPar2RepairFailure(ctx context.Context, filePath, reason string) error {
 	filePath = normalizeHealthPath(filePath)
 	_, err := r.db.ExecContext(ctx, `
 		INSERT INTO file_health (file_path, status, last_checked, last_error, scheduled_check_at)
 		VALUES (?, 'corrupted', datetime('now'), ?, NULL)
 		ON CONFLICT(file_path) DO UPDATE SET
 		    status = CASE
-		        WHEN file_health.status = 'repair_triggered' THEN 'repair_triggered'
-		        WHEN file_health.status = 'degraded' AND ? THEN 'repair_triggered'
+		        WHEN file_health.status IN ('degraded', 'repair_triggered') THEN file_health.status
 		        ELSE 'corrupted' END,
 		    scheduled_check_at = CASE
-		        WHEN file_health.status = 'repair_triggered' THEN file_health.scheduled_check_at
-		        WHEN file_health.status = 'degraded' AND ? THEN datetime('now')
+		        WHEN file_health.status IN ('degraded', 'repair_triggered') THEN file_health.scheduled_check_at
 		        ELSE NULL END,
 		    last_error = excluded.last_error,
 		    last_checked = datetime('now'),
 		    updated_at = datetime('now')
-	`, filePath, reason, arrRepairEnabled, arrRepairEnabled)
+	`, filePath, reason)
 	if err != nil {
 		return fmt.Errorf("failed to record PAR2 repair failure: %w", err)
 	}
@@ -2486,74 +2482,43 @@ func (r *HealthRepository) matchMetadata(dbMeta, webMeta *model.WebhookMetadata)
 	return false
 }
 
-func metadataIDEquals(v any, targetID int) bool {
-	switch n := v.(type) {
-	case float64:
-		return int(n) == targetID
-	case string:
-		if parsed, err := strconv.Atoi(strings.TrimSpace(n)); err == nil {
-			return parsed == targetID
-		}
-	case json.Number:
-		if parsed, err := strconv.Atoi(string(n)); err == nil {
-			return parsed == targetID
-		}
-	case int:
-		return n == targetID
-	case int64:
-		return int(n) == targetID
-	}
-	return false
-}
-
 func hasMatchingTMDBID(metadataStr string, targetID int) bool {
-	if metadataStr == "" || targetID <= 0 {
-		return false
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
-		return false
-	}
-	if metadataIDEquals(data["tmdbId"], targetID) {
-		return true
-	}
-	if metadataIDEquals(data["tmdb_id"], targetID) {
-		return true
-	}
-	if movie, ok := data["movie"].(map[string]interface{}); ok {
-		if metadataIDEquals(movie["tmdbId"], targetID) {
-			return true
-		}
-		if metadataIDEquals(movie["tmdb_id"], targetID) {
-			return true
-		}
-	}
-	return false
+	metadata, err := model.DecodeHealthMetadata(metadataStr)
+	return err == nil && metadata.MatchesTMDBID(int64(targetID))
 }
 
 func hasMatchingTVDBID(metadataStr string, targetID int) bool {
-	if metadataStr == "" || targetID <= 0 {
-		return false
-	}
-	var data map[string]interface{}
-	if err := json.Unmarshal([]byte(metadataStr), &data); err != nil {
-		return false
-	}
-	if metadataIDEquals(data["tvdbId"], targetID) {
-		return true
-	}
-	if metadataIDEquals(data["tvdb_id"], targetID) {
-		return true
-	}
-	if series, ok := data["series"].(map[string]interface{}); ok {
-		if metadataIDEquals(series["tvdbId"], targetID) {
-			return true
+	metadata, err := model.DecodeHealthMetadata(metadataStr)
+	return err == nil && metadata.MatchesTVDBID(int64(targetID))
+}
+
+// healthMetadataIDPredicate filters exact numeric identifiers before applying
+// the result limit. JSON paths are internal constants, never user input.
+func (r *HealthRepository) healthMetadataIDPredicate(key, legacyKey, nestedKey string, id int) (string, []any) {
+	paths := [][]string{{key}, {legacyKey}, {nestedKey, key}, {nestedKey, legacyKey}}
+	predicates := make([]string, 0, len(paths))
+	args := make([]any, 0, len(paths))
+	for _, path := range paths {
+		if r.dialect.IsPostgres() {
+			jsonValue, textValue := "metadata->'"+path[0]+"'", "metadata->>'"+path[0]+"'"
+			if len(path) == 2 {
+				jsonValue = "metadata->'" + path[0] + "'->'" + path[1] + "'"
+				textValue = "metadata->'" + path[0] + "'->>'" + path[1] + "'"
+			}
+			predicates = append(predicates, fmt.Sprintf("(jsonb_typeof(%s) = 'number' AND (%s) = CAST(CAST(? AS bigint) AS text))", jsonValue, textValue))
+		} else {
+			jsonPath := "$." + strings.Join(path, ".")
+			predicates = append(predicates, fmt.Sprintf("(json_type(metadata, '%s') = 'integer' AND json_extract(metadata, '%s') = ?)", jsonPath, jsonPath))
 		}
-		if metadataIDEquals(series["tvdb_id"], targetID) {
-			return true
-		}
+		args = append(args, id)
 	}
-	return false
+	predicate := "(" + strings.Join(predicates, " OR ") + ")"
+	if !r.dialect.IsPostgres() {
+		// Old SQLite records can contain empty or malformed JSON. CASE keeps JSON
+		// extraction from evaluating those values and aborting the entire lookup.
+		predicate = "CASE WHEN json_valid(metadata) THEN " + predicate + " ELSE FALSE END"
+	}
+	return predicate, args
 }
 
 // healthMetadataIDQuery identifies which metadata ID a lookup targets.
@@ -2574,49 +2539,20 @@ func (e *metadataScanError) Unwrap() error { return e.err }
 // carries the given external ID (TMDB or TVDB), or nil when no rows match so
 // callers can fall back to their title-based search.
 //
-// The prefilter differs per backend because the two engines index JSON
-// differently:
-//   - PostgreSQL: an exact predicate on the JSONB text extraction
-//     ((metadata->>'tmdbId') = $1) can use the expression indexes from
-//     migration 041, turning the lookup into an index scan instead of a full
-//     table scan. The predicate compares as text so both numeric
-//     ("tmdbId":1001) and string ("tmdbId":"1001") JSON shapes are index
-//     candidates; the nested movie.tmdbId / series.tvdbId shapes have no
-//     index and are covered only at the Go post-filter stage. The Go
-//     hasMatching* post-filter (numeric + string aware) remains the
-//     authoritative exact match.
-//   - SQLite: the portable CAST(metadata AS text) LIKE prefilter preserves
-//     the historical candidate set (compact numeric `"tmdbId":1001` shape;
-//     whitespace or string shapes were never matched by the prefilter). The
-//     Go post-filter then applies the exact match, including string-shaped
-//     IDs for rows reached through other paths.
+// All supported JSON paths are filtered exactly before the result limit.
+// PostgreSQL extraction expressions match migration 041's indexes; the shared
+// typed decoder validates candidates without truncating fractional identifiers.
 func (r *HealthRepository) queryHealthyFilesByMetadataID(ctx context.Context, target healthMetadataIDQuery, id int) ([]*FileHealth, error) {
-	var query string
-	var arg any
-	var limit int
-	if r.dialect.IsPostgres() {
-		key := "tvdbId"
-		if target.tmdb {
-			key = "tmdbId"
-		}
-		query = fileHealthSelectColumns + " WHERE status = 'healthy' AND (metadata->>'" + key + "') = $1 ORDER BY id DESC LIMIT 100"
-		arg = strconv.Itoa(id)
-		limit = 100
-	} else {
-		key := "tvdbId"
-		if target.tmdb {
-			key = "tmdbId"
-		}
-		// Series path keeps its historical LIMIT 100; movie path keeps LIMIT 50.
-		limit = 100
-		if target.tmdb {
-			limit = 50
-		}
-		query = fileHealthSelectColumns + " WHERE status = 'healthy' AND CAST(metadata AS text) LIKE ? ORDER BY id DESC LIMIT " + strconv.Itoa(limit)
-		arg = fmt.Sprintf(`%%"%s":%d%%`, key, id)
+	key, legacyKey, nestedKey := "tvdbId", "tvdb_id", "series"
+	limit := 100
+	if target.tmdb {
+		key, legacyKey, nestedKey = "tmdbId", "tmdb_id", "movie"
+		limit = 50
 	}
+	predicate, args := r.healthMetadataIDPredicate(key, legacyKey, nestedKey, id)
+	query := fileHealthSelectColumns + " WHERE status = 'healthy' AND " + predicate + " ORDER BY id DESC LIMIT " + strconv.Itoa(limit)
 
-	rows, err := r.db.QueryContext(ctx, query, arg)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}

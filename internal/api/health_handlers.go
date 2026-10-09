@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io/fs"
 	"log/slog"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -340,11 +342,7 @@ func (s *Server) handleDeleteHealthBulk(c *fiber.Ctx) error {
 		}
 
 		if len(deletedMetaDirs) > 0 && s.healthWorker != nil {
-			dirs := make([]string, 0, len(deletedMetaDirs))
-			for d := range deletedMetaDirs {
-				dirs = append(dirs, d)
-			}
-			s.healthWorker.NotifyRcloneVFSDirsForget(dirs)
+			s.healthWorker.NotifyRcloneVFSDirsForget(slices.Sorted(maps.Keys(deletedMetaDirs)))
 		}
 	}
 
