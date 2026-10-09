@@ -244,7 +244,7 @@ func (s *Server) handleDeleteHealth(c *fiber.Ctx) error {
 			} else {
 				metaDeleted = true
 				if s.healthWorker != nil {
-					s.healthWorker.NotifyRcloneVFS(item.FilePath)
+					s.healthWorker.NotifyRcloneVFSForget(item.FilePath)
 				}
 			}
 		}
@@ -341,7 +341,7 @@ func (s *Server) handleDeleteHealthBulk(c *fiber.Ctx) error {
 		}
 
 		if len(deletedMetaDirs) > 0 && s.healthWorker != nil {
-			s.healthWorker.NotifyRcloneVFSDirs(slices.Sorted(maps.Keys(deletedMetaDirs)))
+			s.healthWorker.NotifyRcloneVFSDirsForget(slices.Sorted(maps.Keys(deletedMetaDirs)))
 		}
 	}
 

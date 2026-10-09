@@ -588,12 +588,8 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 				"total_missing", event.Classification.TotalMissing,
 				"longest_run", event.Classification.LongestRun,
 				"next_check", nextCheck)
-			// Degraded damage is exactly what background PAR2 repair exists
-			// for: attempt to restore the zero-filled bytes byte-exact. The
-			// repair queue dedups; ARR replacement stays out of the picture.
-			if hw.par2Repair != nil {
-				hw.par2Repair.Enqueue(ctx, fh.FilePath, "")
-			}
+			// PAR2 is queued after the degraded health update is committed,
+			// so a fast repair outcome cannot be overwritten by this cycle.
 			return hw.metadataService.UpdateFileStatus(fh.FilePath, metapb.FileStatus_FILE_STATUS_DEGRADED)
 		}
 		return update, sideEffect
@@ -966,6 +962,7 @@ func (hw *HealthWorker) performDirectCheck(ctx context.Context, filePath string,
 		if err := hw.healthRepo.UpdateHealthStatusBulk(ctx, []database.HealthStatusUpdate{*updatePtr}); err != nil {
 			return fmt.Errorf("failed to update health status: %w", err)
 		}
+		hw.enqueueDegradedRepair(ctx, *updatePtr)
 		hw.broadcastHealthChanged()
 	}
 
@@ -1219,6 +1216,10 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 	if len(results) > 0 {
 		if err := hw.healthRepo.UpdateHealthStatusBulk(ctx, results); err != nil {
 			slog.ErrorContext(ctx, "Failed to perform bulk health status update", "error", err)
+		} else {
+			for _, result := range results {
+				hw.enqueueDegradedRepair(ctx, result)
+			}
 		}
 		hw.broadcastHealthChanged()
 	}
@@ -1348,7 +1349,7 @@ func (hw *HealthWorker) cleanupZombieRecord(ctx context.Context, item *database.
 	if delMetaErr := hw.metadataService.DeleteFileMetadata(ctx, relativePath); delMetaErr != nil {
 		slog.ErrorContext(ctx, "Failed to delete metadata during cleanup", "file_path", item.FilePath, "error", delMetaErr)
 	} else {
-		hw.NotifyRcloneVFS(item.FilePath)
+		hw.NotifyRcloneVFSForget(item.FilePath)
 	}
 }
 
@@ -1507,6 +1508,23 @@ func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.
 	return repairOutcomeTriggered, nil
 }
 
+// enqueueDegradedRepair runs only after the health update is committed, so an
+// immediate PAR2 verdict cannot be overwritten by a stale degraded write.
+func (hw *HealthWorker) enqueueDegradedRepair(ctx context.Context, result database.HealthStatusUpdate) {
+	if hw.par2Repair == nil || result.Skip || result.Type != database.UpdateTypeDegraded {
+		return
+	}
+	// A guarded update may have skipped a concurrently rescued file.
+	latest, err := hw.healthRepo.GetFileHealth(ctx, result.FilePath)
+	if err != nil {
+		slog.ErrorContext(ctx, "Failed to read degraded file before PAR2 repair", "file_path", result.FilePath, "error", err)
+		return
+	}
+	if latest != nil && latest.Status == database.HealthStatusDegraded {
+		hw.par2Repair.Enqueue(ctx, result.FilePath, "")
+	}
+}
+
 // enqueuePar2Fallback queues a PAR2 repair for a file whose ARR repair came up
 // empty — nothing found in the ARRs (no instance tracks the file, or none is
 // configured) or ARR repair is disabled. Gated by par2_repair.arr_first
@@ -1599,7 +1617,7 @@ func (hw *HealthWorker) moveMetadataToSafetyFolder(ctx context.Context, item *da
 	if moveErr := hw.metadataService.MoveToCorrupted(ctx, relativePath); moveErr != nil {
 		slog.WarnContext(ctx, "Failed to move corrupted metadata file", "error", moveErr)
 	} else {
-		hw.NotifyRcloneVFS(item.FilePath)
+		hw.NotifyRcloneVFSForget(item.FilePath)
 	}
 }
 
@@ -1610,9 +1628,27 @@ func (hw *HealthWorker) NotifyRcloneVFS(filePath string) {
 	}
 }
 
+// NotifyRcloneVFSForget notifies rclone VFS to forget the directory containing
+// filePath without a following refresh. Use when the file was deleted or moved
+// away: the next client access re-lists lazily, avoiding an unrequested eager
+// re-enumeration of potentially large directories.
+func (hw *HealthWorker) NotifyRcloneVFSForget(filePath string) {
+	if hw != nil && hw.healthChecker != nil {
+		hw.healthChecker.NotifyRcloneVFSForget(filePath)
+	}
+}
+
 // NotifyRcloneVFSDirs notifies rclone VFS to forget and refresh the specified directories.
 func (hw *HealthWorker) NotifyRcloneVFSDirs(dirs []string) {
 	if hw != nil && hw.healthChecker != nil {
 		hw.healthChecker.NotifyRcloneVFSDirs(dirs)
+	}
+}
+
+// NotifyRcloneVFSDirsForget invalidates the specified directories after deletion
+// without eagerly refreshing them.
+func (hw *HealthWorker) NotifyRcloneVFSDirsForget(dirs []string) {
+	if hw != nil && hw.healthChecker != nil {
+		hw.healthChecker.NotifyRcloneVFSDirsForget(dirs)
 	}
 }
