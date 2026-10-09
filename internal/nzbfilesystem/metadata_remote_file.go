@@ -2398,28 +2398,40 @@ type lazyNestedMultiReader struct {
 	mvf     *MetadataVirtualFile
 	specs   []nestedSourceSpec
 	idx     int
+	mu      sync.Mutex
 	current io.ReadCloser
 }
 
 func (r *lazyNestedMultiReader) Read(p []byte) (int, error) {
 	for {
+		r.mu.Lock()
 		if r.current == nil {
 			if r.idx >= len(r.specs) {
+				r.mu.Unlock()
 				return 0, io.EOF
 			}
 			spec := r.specs[r.idx]
+			r.idx++
+			r.mu.Unlock()
+
 			rc, err := r.mvf.createNestedSourceReader(spec.src, spec.localStart, spec.readLen)
 			if err != nil {
 				return 0, err
 			}
+			r.mu.Lock()
 			r.current = rc
-			r.idx++
 		}
+		cur := r.current
+		r.mu.Unlock()
 
-		n, err := r.current.Read(p)
+		n, err := cur.Read(p)
 		if err == io.EOF {
-			r.current.Close()
-			r.current = nil
+			cur.Close()
+			r.mu.Lock()
+			if r.current == cur {
+				r.current = nil
+			}
+			r.mu.Unlock()
 			if n > 0 {
 				return n, nil
 			}
@@ -2430,16 +2442,21 @@ func (r *lazyNestedMultiReader) Read(p []byte) (int, error) {
 }
 
 func (r *lazyNestedMultiReader) Close() error {
-	if r.current != nil {
-		err := r.current.Close()
-		r.current = nil
-		return err
+	r.mu.Lock()
+	cur := r.current
+	r.current = nil
+	r.mu.Unlock()
+	if cur != nil {
+		return cur.Close()
 	}
 	return nil
 }
 
 func (r *lazyNestedMultiReader) Interrupt() {
-	if i, ok := r.current.(interface{ Interrupt() }); ok {
+	r.mu.Lock()
+	cur := r.current
+	r.mu.Unlock()
+	if i, ok := cur.(interface{ Interrupt() }); ok {
 		i.Interrupt()
 	}
 }
@@ -2700,6 +2717,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 			if err := mvf.healthRepository.DeleteHealthRecord(ctx, mvf.name); err != nil {
 				slog.ErrorContext(ctx, "Failed to delete health record after deleting corrupted file", "file", mvf.name, "error", err)
 			}
+			mvf.repairCoalescer.EnqueueRefresh(path.Dir(rclonecli.ToVFSPath(mvf.name)))
 		}
 		return
 	} else if healthEnabled && shouldRepair {

@@ -4,8 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"maps"
 	"os"
+	"path"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -300,6 +303,7 @@ func (s *Server) handleDeleteHealthBulk(c *fiber.Ctx) error {
 	// Also perform meta/symlink deletions before removing DB records
 	if s.healthWorker != nil || req.DeleteMeta || req.DeleteSymlink {
 		cfg := s.configManager.GetConfig()
+		deletedMetaDirs := make(map[string]bool)
 
 		for _, filePath := range req.FilePaths {
 			// Get the record to check status and get library path
@@ -324,9 +328,7 @@ func (s *Server) handleDeleteHealthBulk(c *fiber.Ctx) error {
 					slog.ErrorContext(c.Context(), "Failed to delete metadata during bulk deletion", "file_path", item.FilePath, "error", delErr)
 				} else {
 					metaDeletedCount++
-					if s.healthWorker != nil {
-						s.healthWorker.NotifyRcloneVFSForget(item.FilePath)
-					}
+					deletedMetaDirs[path.Dir(filepath.ToSlash(item.FilePath))] = true
 				}
 			}
 
@@ -336,6 +338,10 @@ func (s *Server) handleDeleteHealthBulk(c *fiber.Ctx) error {
 					symlinkDeletedCount++
 				}
 			}
+		}
+
+		if len(deletedMetaDirs) > 0 && s.healthWorker != nil {
+			s.healthWorker.NotifyRcloneVFSDirsForget(slices.Sorted(maps.Keys(deletedMetaDirs)))
 		}
 	}
 
