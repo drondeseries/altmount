@@ -90,9 +90,9 @@ type Client struct {
 	// both-empty outcome (identifier miss + keyword miss): it only
 	// short-circuits the identifier fan-out for idSearchMissTTL so legit
 	// zero-result searches recover quickly.
-	idMu              sync.Mutex
-	idSearchFailures  map[string]time.Time
-	idSearchMisses    map[string]time.Time
+	idMu             sync.Mutex
+	idSearchFailures map[string]time.Time
+	idSearchMisses   map[string]time.Time
 }
 
 // Parameters usable as negative-cache keys for identifier searches.
