@@ -4,9 +4,9 @@ import (
 	"context"
 	"log/slog"
 
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
 	"github.com/kipsilabs/altmount/internal/arrs/failures"
 	"golift.io/starr/radarr"
-	"golift.io/starr/sonarr"
 )
 
 // splitEpisodesByBreaker bumps the failure breaker for every episode about to be
@@ -41,7 +41,7 @@ func (m *Manager) movieBreakerTripped(instanceName string, movieID int64) bool {
 
 // unmonitorSonarrEpisodes stops Sonarr/Whisparr from automatically re-searching
 // the given episodes after the failure breaker tripped.
-func unmonitorSonarrEpisodes(ctx context.Context, client *sonarr.Sonarr, instanceName string, episodeIDs []int64) {
+func unmonitorSonarrEpisodes(ctx context.Context, client clients.SonarrClient, instanceName string, episodeIDs []int64) {
 	if len(episodeIDs) == 0 {
 		return
 	}

@@ -1123,6 +1123,7 @@ type ArrsInstanceConfig struct {
 	Category          string `yaml:"category" mapstructure:"category" json:"category,omitempty"`
 	Enabled           *bool  `yaml:"enabled" mapstructure:"enabled" json:"enabled,omitempty"`
 	SyncIntervalHours *int   `yaml:"sync_interval_hours" mapstructure:"sync_interval_hours" json:"sync_interval_hours,omitempty"`
+	APIVersion        string `yaml:"api_version" mapstructure:"api_version" json:"api_version,omitempty"`
 }
 
 // DeepCopy returns a deep copy of the configuration using the copier library.

@@ -74,3 +74,35 @@ func TestResetBreaker_ClearsCount(t *testing.T) {
 		t.Fatalf("after reset the breaker should start over, got %q unmon=%v", action, unmon != nil)
 	}
 }
+
+func TestApplyBreaker_MultiKeySelectiveUnmonitor(t *testing.T) {
+	w := newTestWorker()
+	ctx := context.Background()
+
+	// ep:10 already had 1 failure
+	w.bumpBreaker("sonarr|inst|ep:10")
+
+	var unmonitored []string
+	item := stuckItem{
+		BreakerKeys: []string{"sonarr|inst|ep:10", "sonarr|inst|ep:11"},
+		UnmonitorTarget: func(ctx context.Context, trippedKeys []string) error {
+			unmonitored = append(unmonitored, trippedKeys...)
+			return nil
+		},
+	}
+
+	// Threshold 2: ep:10 hits 2 and trips; ep:11 hits 1 and does NOT trip
+	action, unmon := w.applyBreaker(ctx, item, config.StuckActionBlocklistSearch, 2, "inst")
+	if action != config.StuckActionBlocklist {
+		t.Fatalf("expected action %q, got %q", config.StuckActionBlocklist, action)
+	}
+	if unmon == nil {
+		t.Fatal("expected unmonitor closure")
+	}
+	if err := unmon(ctx); err != nil {
+		t.Fatalf("unmonitor error: %v", err)
+	}
+	if len(unmonitored) != 1 || unmonitored[0] != "sonarr|inst|ep:10" {
+		t.Fatalf("expected only ep:10 to be unmonitored, got %v", unmonitored)
+	}
+}

@@ -6,11 +6,11 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
 	"github.com/kipsilabs/altmount/internal/arrs/failures"
 	"github.com/kipsilabs/altmount/internal/arrs/model"
 	"github.com/kipsilabs/altmount/internal/arrs/registrar"
 	"github.com/kipsilabs/altmount/internal/config"
-	"golift.io/starr/sonarr"
 )
 
 // HandleImportFailure runs the importer-side failure breaker for one
@@ -99,13 +99,13 @@ func (w *Worker) HandleImportFailure(ctx context.Context, downloadID, category s
 // Returns handled=true when the download was found in this instance's queue.
 func (w *Worker) importFailureSonarr(ctx context.Context, instance *model.ConfigInstance, downloadID string, maxFailures int, whisparr bool) (bool, error) {
 	var (
-		client *sonarr.Sonarr
+		client clients.SonarrClient
 		err    error
 	)
 	if whisparr {
-		client, err = w.clients.GetOrCreateWhisparrClient(instance.Name, instance.URL, instance.APIKey)
+		client, err = w.clients.GetOrCreateWhisparrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	} else {
-		client, err = w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+		client, err = w.clients.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	}
 	if err != nil {
 		return false, fmt.Errorf("failed to get Sonarr client: %w", err)
@@ -129,13 +129,19 @@ func (w *Worker) importFailureSonarr(ctx context.Context, instance *model.Config
 		if deleteID == 0 {
 			deleteID = q.ID
 		}
-		if q.EpisodeID <= 0 {
-			continue
+		epIDs := q.EpisodeIDs
+		if len(epIDs) == 0 && q.EpisodeID > 0 {
+			epIDs = []int64{q.EpisodeID}
 		}
-		count := w.bumpBreaker(failures.EpisodeKey(instance.Name, q.EpisodeID))
-		if count >= maxFailures {
-			giveUpIDs = append(giveUpIDs, q.EpisodeID)
-			giveUpTitle = q.Title
+		for _, epID := range epIDs {
+			if epID <= 0 {
+				continue
+			}
+			count := w.bumpBreaker(failures.EpisodeKey(instance.Name, epID))
+			if count >= maxFailures {
+				giveUpIDs = append(giveUpIDs, epID)
+				giveUpTitle = q.Title
+			}
 		}
 	}
 	if !found {

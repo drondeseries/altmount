@@ -290,7 +290,6 @@ func (s *Service) ClearInstanceCache(ctx context.Context, instanceName string) {
 	s.data.ClearSeriesCache(instanceName)
 }
 
-
 // DiscoverFileMetadata attempts to discover the rich metadata for a file through the appropriate ARR instance
 func (s *Service) DiscoverFileMetadata(ctx context.Context, filePath, relativePath, nzbName, libraryPath string) (*model.WebhookMetadata, error) {
 	return s.scanner.DiscoverFileMetadata(ctx, filePath, relativePath, nzbName, libraryPath)
@@ -345,7 +344,7 @@ func (s *Service) GetHealth(ctx context.Context) (map[string]any, error) {
 				_ = client.GetInto(ctx, starr.Request{URI: "/health"}, &health)
 			}
 		case "sonarr":
-			client, err := s.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+			client, err := s.clients.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 			if err == nil {
 				_ = client.GetInto(ctx, starr.Request{URI: "/health"}, &health)
 			}
@@ -360,7 +359,7 @@ func (s *Service) GetHealth(ctx context.Context) (map[string]any, error) {
 				_ = client.GetInto(ctx, starr.Request{URI: "/health"}, &health)
 			}
 		case "whisparr":
-			client, err := s.clients.GetOrCreateWhisparrClient(instance.Name, instance.URL, instance.APIKey)
+			client, err := s.clients.GetOrCreateWhisparrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 			if err == nil {
 				_ = client.GetInto(ctx, starr.Request{URI: "/health"}, &health)
 			}

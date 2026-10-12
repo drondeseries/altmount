@@ -12,17 +12,16 @@ import (
 	"golift.io/starr/lidarr"
 	"golift.io/starr/radarr"
 	"golift.io/starr/readarr"
-	"golift.io/starr/sonarr"
 )
 
 type Manager struct {
 	mu              sync.RWMutex
 	httpClient      *http.Client
 	radarrClients   map[string]*radarr.Radarr   // key: instance name
-	sonarrClients   map[string]*sonarr.Sonarr   // key: instance name
+	sonarrClients   map[string]SonarrClient     // key: instance name
 	lidarrClients   map[string]*lidarr.Lidarr   // key: instance name
 	readarrClients  map[string]*readarr.Readarr // key: instance name
-	whisparrClients map[string]*sonarr.Sonarr   // key: instance name
+	whisparrClients map[string]SonarrClient     // key: instance name
 	sportarrClients map[string]*Sportarr        // key: instance name (native client)
 }
 
@@ -37,10 +36,10 @@ func NewManager(httpClient *http.Client) *Manager {
 	return &Manager{
 		httpClient:      httpClient,
 		radarrClients:   make(map[string]*radarr.Radarr),
-		sonarrClients:   make(map[string]*sonarr.Sonarr),
+		sonarrClients:   make(map[string]SonarrClient),
 		lidarrClients:   make(map[string]*lidarr.Lidarr),
 		readarrClients:  make(map[string]*readarr.Readarr),
-		whisparrClients: make(map[string]*sonarr.Sonarr),
+		whisparrClients: make(map[string]SonarrClient),
 		sportarrClients: make(map[string]*Sportarr),
 	}
 }
@@ -65,18 +64,33 @@ func (m *Manager) GetOrCreateRadarrClient(instanceName, url, apiKey string) (*ra
 	return client, nil
 }
 
-// GetOrCreateSonarrClient gets or creates a Sonarr client for an instance
-func (m *Manager) GetOrCreateSonarrClient(instanceName, url, apiKey string) (*sonarr.Sonarr, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// GetOrCreateSonarrClient gets or creates a Sonarr client for an instance (auto-detects version if unspecified)
+func (m *Manager) GetOrCreateSonarrClient(instanceName, url, apiKey string) (SonarrClient, error) {
+	return m.GetOrCreateSonarrClientWithVersion(instanceName, url, apiKey, "")
+}
 
-	if client, exists := m.sonarrClients[instanceName]; exists {
+// GetOrCreateSonarrClientWithVersion gets or creates a Sonarr client with an explicit or auto-detected version.
+func (m *Manager) GetOrCreateSonarrClientWithVersion(instanceName, url, apiKey, version string) (SonarrClient, error) {
+	m.mu.RLock()
+	client, exists := m.sonarrClients[instanceName]
+	m.mu.RUnlock()
+	if exists {
 		return client, nil
 	}
 
-	client := sonarr.New(m.starrConfig(url, apiKey))
-	m.sonarrClients[instanceName] = client
-	return client, nil
+	// Probe/create outside global lock to prevent network delays from blocking other instances
+	newClient, err := NewSonarrClient(context.Background(), m.starrConfig(url, apiKey), version)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if client, exists := m.sonarrClients[instanceName]; exists {
+		return client, nil
+	}
+	m.sonarrClients[instanceName] = newClient
+	return newClient, nil
 }
 
 // GetOrCreateLidarrClient gets or creates a Lidarr client for an instance
@@ -108,17 +122,32 @@ func (m *Manager) GetOrCreateReadarrClient(instanceName, url, apiKey string) (*r
 }
 
 // GetOrCreateWhisparrClient gets or creates a Whisparr client for an instance (using Sonarr client)
-func (m *Manager) GetOrCreateWhisparrClient(instanceName, url, apiKey string) (*sonarr.Sonarr, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+func (m *Manager) GetOrCreateWhisparrClient(instanceName, url, apiKey string) (SonarrClient, error) {
+	return m.GetOrCreateWhisparrClientWithVersion(instanceName, url, apiKey, "")
+}
 
-	if client, exists := m.whisparrClients[instanceName]; exists {
+// GetOrCreateWhisparrClientWithVersion gets or creates a Whisparr client with an explicit or auto-detected version.
+func (m *Manager) GetOrCreateWhisparrClientWithVersion(instanceName, url, apiKey, version string) (SonarrClient, error) {
+	m.mu.RLock()
+	client, exists := m.whisparrClients[instanceName]
+	m.mu.RUnlock()
+	if exists {
 		return client, nil
 	}
 
-	client := sonarr.New(m.starrConfig(url, apiKey))
-	m.whisparrClients[instanceName] = client
-	return client, nil
+	// Probe/create outside global lock to prevent network delays from blocking other instances
+	newClient, err := NewSonarrClient(context.Background(), m.starrConfig(url, apiKey), version)
+	if err != nil {
+		return nil, err
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if client, exists := m.whisparrClients[instanceName]; exists {
+		return client, nil
+	}
+	m.whisparrClients[instanceName] = newClient
+	return newClient, nil
 }
 
 // GetOrCreateSportarrClient gets or creates a native Sportarr client for an instance
@@ -141,13 +170,13 @@ func (m *Manager) GetOrCreateClient(instance *model.ConfigInstance) (any, error)
 	case "radarr":
 		return m.GetOrCreateRadarrClient(instance.Name, instance.URL, instance.APIKey)
 	case "sonarr":
-		return m.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+		return m.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	case "lidarr":
 		return m.GetOrCreateLidarrClient(instance.Name, instance.URL, instance.APIKey)
 	case "readarr":
 		return m.GetOrCreateReadarrClient(instance.Name, instance.URL, instance.APIKey)
 	case "whisparr":
-		return m.GetOrCreateWhisparrClient(instance.Name, instance.URL, instance.APIKey)
+		return m.GetOrCreateWhisparrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	case "sportarr":
 		return m.GetOrCreateSportarrClient(instance.Name, instance.URL, instance.APIKey)
 	default:
@@ -167,8 +196,11 @@ func (m *Manager) TestConnection(ctx context.Context, instanceType, url, apiKey 
 		return nil
 
 	case "sonarr":
-		client := sonarr.New(m.starrConfig(url, apiKey))
-		_, err := client.GetSystemStatus()
+		client, err := NewSonarrClient(ctx, m.starrConfig(url, apiKey), "")
+		if err != nil {
+			return fmt.Errorf("failed to connect to Sonarr: %w", err)
+		}
+		_, err = client.GetSystemStatusContext(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to Sonarr: %w", err)
 		}
@@ -191,8 +223,11 @@ func (m *Manager) TestConnection(ctx context.Context, instanceType, url, apiKey 
 		return nil
 
 	case "whisparr":
-		client := sonarr.New(m.starrConfig(url, apiKey))
-		_, err := client.GetSystemStatus()
+		client, err := NewSonarrClient(ctx, m.starrConfig(url, apiKey), "")
+		if err != nil {
+			return fmt.Errorf("failed to connect to Whisparr: %w", err)
+		}
+		_, err = client.GetSystemStatusContext(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to connect to Whisparr: %w", err)
 		}

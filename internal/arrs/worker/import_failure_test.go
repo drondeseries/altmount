@@ -74,7 +74,7 @@ func newImportFailureTestWorker(serverURL string, maxFailures int) *Worker {
 	cfg.Arrs.Enabled = &enabled
 	cfg.Arrs.QueueCleanupMaxFailures = maxFailures
 	cfg.Arrs.SonarrInstances = []config.ArrsInstanceConfig{
-		{Name: "test-sonarr", URL: serverURL, APIKey: "key", Category: "tv", Enabled: &enabled},
+		{Name: "test-sonarr", URL: serverURL, APIKey: "key", Category: "tv", Enabled: &enabled, APIVersion: "v3"},
 	}
 	configGetter := func() *config.Config { return cfg }
 	return NewWorker(configGetter, instances.NewManager(configGetter, nil), clients.NewManager(nil), nil, nil)
@@ -179,4 +179,82 @@ func TestHandleImportFailure_Gates(t *testing.T) {
 			t.Fatalf("no matching download must mean no actions; deletes=%v unmonitored=%v", fake.deletes, fake.unmonitored)
 		}
 	})
+}
+
+func TestHandleImportFailure_SonarrV5MultiEpisodeRecord(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		unmonitored [][]int64
+		deletes     []string
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api":
+			_ = json.NewEncoder(w).Encode(map[string]any{"current": "5.0.0"})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v5/queue":
+			// Sonarr v5 queue record has episodeIds array and NO singular episodeId
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"page": 1, "pageSize": 500, "totalRecords": 1,
+				"records": []map[string]any{
+					{
+						"id":             201,
+						"seriesId":       10,
+						"episodeIds":     []int{55, 56},
+						"title":          "Test.Show.MultiEp.V5",
+						"downloadId":     "SABnzbd_nzo_v5",
+						"downloadClient": "AltMount",
+						"protocol":       "usenet",
+					},
+				},
+			})
+		case r.Method == http.MethodPut && r.URL.Path == "/api/v5/episode/monitor":
+			var body struct {
+				EpisodeIDs []int64 `json:"episodeIds"`
+				Monitored  bool    `json:"monitored"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			if !body.Monitored {
+				unmonitored = append(unmonitored, body.EpisodeIDs)
+			}
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodDelete && strings.HasPrefix(r.URL.Path, "/api/v5/queue/"):
+			deletes = append(deletes, r.URL.Path+"?"+r.URL.RawQuery)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	enabled := true
+	cfg := &config.Config{}
+	cfg.Arrs.Enabled = &enabled
+	cfg.Arrs.QueueCleanupMaxFailures = 1
+	cfg.Arrs.SonarrInstances = []config.ArrsInstanceConfig{
+		{Name: "v5-sonarr", URL: srv.URL, APIKey: "key", Category: "tv", Enabled: &enabled, APIVersion: "v5"},
+	}
+	configGetter := func() *config.Config { return cfg }
+	w := NewWorker(configGetter, instances.NewManager(configGetter, nil), clients.NewManager(nil), nil, nil)
+
+	w.HandleImportFailure(context.Background(), "SABnzbd_nzo_v5", "tv")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(unmonitored) != 1 || len(unmonitored[0]) != 2 {
+		t.Fatalf("expected unmonitoring of both episodes [55, 56], got: %v", unmonitored)
+	}
+	if unmonitored[0][0] != 55 || unmonitored[0][1] != 56 {
+		t.Errorf("expected episode IDs [55, 56], got: %v", unmonitored[0])
+	}
+	if len(deletes) != 1 {
+		t.Fatalf("expected 1 queue delete, got: %v", deletes)
+	}
+	if !strings.Contains(deletes[0], "/api/v5/queue/201") || !strings.Contains(deletes[0], "blocklist=true") {
+		t.Errorf("delete request mismatch: %s", deletes[0])
+	}
 }

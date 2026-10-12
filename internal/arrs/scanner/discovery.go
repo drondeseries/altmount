@@ -184,7 +184,10 @@ func (m *Manager) discoverSonarrStrict(ctx context.Context, inst *model.ConfigIn
 	// type would miss whisparr instances and return a nil config, causing a
 	// nil-pointer dereference. inst is guaranteed non-nil by runStrictDiscovery.
 	instanceName := inst.Name
-	client, _ := m.clients.GetOrCreateSonarrClient(instanceName, inst.URL, inst.APIKey)
+	client, err := m.clients.GetOrCreateSonarrClientWithVersion(instanceName, inst.URL, inst.APIKey, inst.APIVersion)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get Sonarr client for discovery: %w", err)
+	}
 
 	// 1. Check Library (Active Files)
 	series, err := m.data.GetSeries(ctx, client, instanceName)

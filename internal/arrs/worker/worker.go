@@ -407,7 +407,7 @@ func (w *Worker) resolveIndexerFromArrs(ctx context.Context, downloadID string) 
 			continue
 		}
 		if instance.Type == "sonarr" {
-			client, err := w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+			client, err := w.clients.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 			if err != nil {
 				continue
 			}

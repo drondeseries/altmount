@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
 	"github.com/kipsilabs/altmount/internal/config"
 	"golift.io/starr"
 	"golift.io/starr/radarr"
@@ -177,9 +178,9 @@ func remarshal(in any, out any) {
 	_ = json.Unmarshal(data, out)
 }
 
-func sonarrClient(t *testing.T, srv *httptest.Server) *sonarr.Sonarr {
+func sonarrClient(t *testing.T, srv *httptest.Server) clients.SonarrClient {
 	t.Helper()
-	return sonarr.New(&starr.Config{URL: srv.URL, APIKey: "test", Client: srv.Client()})
+	return clients.NewSonarrV3Client(&starr.Config{URL: srv.URL, APIKey: "test", Client: srv.Client()})
 }
 
 func radarrClient(t *testing.T, srv *httptest.Server) *radarr.Radarr {
@@ -269,7 +270,7 @@ func TestSettleSonarrAutoRedownload_WaitsForAutoSearchThenDeletesAndSearchesOnce
 	if statusAt == -1 || deleteAt == -1 || postAt == -1 || clearedAt == -1 {
 		t.Fatalf("missing expected events: %v", events)
 	}
-	if !(statusAt < deleteAt && deleteAt < clearedAt && clearedAt < postAt) {
+	if statusAt >= deleteAt || deleteAt >= clearedAt || clearedAt >= postAt {
 		t.Errorf("unexpected ordering %v (status=%d delete=%d cleared=%d post=%d)",
 			events, statusAt, deleteAt, clearedAt, postAt)
 	}
@@ -333,7 +334,7 @@ func TestSendSonarrSearch_RetriesOnceWhenDeduplicated(t *testing.T) {
 	firstPost := indexOf(events, "post")
 	statusAt := indexOf(events, "status:completed")
 	lastPost := lastIndexOf(events, "post")
-	if statusAt == -1 || !(firstPost < statusAt && statusAt < lastPost) {
+	if statusAt == -1 || firstPost >= statusAt || statusAt >= lastPost {
 		t.Errorf("retry was not issued after the deduplicated command finished: %v", events)
 	}
 }
@@ -473,7 +474,7 @@ func TestSettleRadarrAutoRedownload_WaitsThenDeletesAndSearches(t *testing.T) {
 	deleteAt := indexOf(events, "delete")
 	postAt := indexOf(events, "post")
 	clearedAt := lastIndexOf(events, "movie:0")
-	if deleteAt == -1 || postAt == -1 || clearedAt == -1 || !(deleteAt < clearedAt && clearedAt < postAt) {
+	if deleteAt == -1 || postAt == -1 || clearedAt == -1 || deleteAt >= clearedAt || clearedAt >= postAt {
 		t.Errorf("unexpected ordering %v", events)
 	}
 }
@@ -613,5 +614,73 @@ func TestCommandWasDeduplicated(t *testing.T) {
 				t.Errorf("got %v; want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestSettleSonarrAutoRedownload_SonarrV5MultiEpisodeQueue(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Reject v3 requests to ensure strict v5 operation
+		if strings.Contains(r.URL.Path, "/v3/") {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v5/command":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{
+					"id":      1,
+					"name":    "EpisodeSearch",
+					"status":  "completed",
+					"trigger": "unspecified",
+					"body":    map[string]any{"episodeIds": []any{float64(10)}},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v5/command/1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":      1,
+				"name":    "EpisodeSearch",
+				"status":  "completed",
+				"trigger": "unspecified",
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v5/episode":
+			_ = json.NewEncoder(w).Encode([]map[string]any{
+				{"id": 10, "episodeFileId": 500},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/api/v5/queue":
+			// Sonarr v5 queue record has episodeIds array [10, 11]
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"page": 1, "pageSize": 500, "totalRecords": 1,
+				"records": []map[string]any{
+					{
+						"id":         101,
+						"seriesId":   3,
+						"episodeIds": []int{10, 11},
+						"title":      "Test.Show.MultiEp.V5",
+						"status":     "downloading",
+					},
+				},
+			})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	cfg := &starr.Config{URL: srv.URL, APIKey: "test", Client: srv.Client()}
+	v5Client := clients.NewSonarrV5Client(cfg)
+	m := testManager(10, 5)
+
+	_, state, err := m.settleSonarrAutoRedownload(context.Background(), v5Client, "sonarr-v5", sonarrRedownloadTarget{
+		seriesID:      3,
+		episodeIDs:    []int64{10},
+		episodeFileID: 500,
+	}, time.Now().Add(-time.Second))
+	if err != nil {
+		t.Fatalf("settle returned error: %v", err)
+	}
+	if state != redownloadHandled {
+		t.Fatalf("state = %v; want redownloadHandled", state)
 	}
 }

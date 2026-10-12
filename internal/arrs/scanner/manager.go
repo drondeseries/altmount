@@ -151,6 +151,16 @@ func rootFolderScore(filePath, rootPath string) int {
 	return 0
 }
 
+func toSonarrClient(client any) clients.SonarrClient {
+	if sc, ok := client.(clients.SonarrClient); ok {
+		return sc
+	}
+	if sc, ok := client.(*sonarr.Sonarr); ok {
+		return clients.NewSonarrV3ClientFromSonarr(sc)
+	}
+	return nil
+}
+
 // managesFile reports how specifically instanceType's root folders claim
 // filePath: the length of the longest matching root folder, or 0 when none
 // matches. Callers compare scores across instances so the most specific root
@@ -163,9 +173,9 @@ func (m *Manager) managesFile(ctx context.Context, instanceType string, client a
 			return 0
 		}
 		return m.radarrManagesFile(ctx, rc, filePath)
-	case "sonarr":
-		sc, ok := client.(*sonarr.Sonarr)
-		if !ok {
+	case "sonarr", "whisparr":
+		sc := toSonarrClient(client)
+		if sc == nil {
 			return 0
 		}
 		return m.sonarrManagesFile(ctx, sc, filePath)
@@ -181,12 +191,6 @@ func (m *Manager) managesFile(ctx context.Context, instanceType string, client a
 			return 0
 		}
 		return m.readarrManagesFile(ctx, rc, filePath)
-	case "whisparr":
-		wc, ok := client.(*sonarr.Sonarr)
-		if !ok {
-			return 0
-		}
-		return m.sonarrManagesFile(ctx, wc, filePath)
 	default:
 		return 0
 	}
@@ -200,13 +204,13 @@ func (m *Manager) hasFile(ctx context.Context, instanceType string, client any, 
 			return false
 		}
 		return m.radarrHasFile(ctx, rc, instanceName, relativePath)
-	case "sonarr":
-		sc, ok := client.(*sonarr.Sonarr)
-		if !ok {
+	case "sonarr", "whisparr":
+		sc := toSonarrClient(client)
+		if sc == nil {
 			return false
 		}
 		return m.sonarrHasFile(ctx, sc, instanceName, relativePath)
-	case "lidarr", "readarr", "whisparr":
+	case "lidarr", "readarr":
 		// For now, these don't have a slow path search implementation
 		// They rely on the Root Folder (Strategy 1) or Category (Strategy 2)
 		return false
@@ -245,7 +249,7 @@ func (m *Manager) radarrManagesFile(ctx context.Context, client *radarr.Radarr, 
 
 // sonarrManagesFile scores how specifically Sonarr's root folders claim
 // filePath (checkrr approach). See rootFolderScore for the match rule.
-func (m *Manager) sonarrManagesFile(ctx context.Context, client *sonarr.Sonarr, filePath string) int {
+func (m *Manager) sonarrManagesFile(ctx context.Context, client clients.SonarrClient, filePath string) int {
 	slog.DebugContext(ctx, "Checking Sonarr root folders for file ownership",
 		"file_path", filePath)
 
@@ -327,7 +331,7 @@ func (m *Manager) radarrHasFile(ctx context.Context, client *radarr.Radarr, inst
 }
 
 // sonarrHasFile checks if any series in the instance contains the given relative path
-func (m *Manager) sonarrHasFile(ctx context.Context, client *sonarr.Sonarr, instanceName, relativePath string) bool {
+func (m *Manager) sonarrHasFile(ctx context.Context, client clients.SonarrClient, instanceName, relativePath string) bool {
 	seriesList, err := m.data.GetSeries(ctx, client, instanceName)
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get series for relative path check", "instance", instanceName, "error", err)
@@ -419,7 +423,7 @@ func (m *Manager) TriggerFileRescan(ctx context.Context, pathForRescan string, r
 			return nil, m.triggerRadarrRescanByPath(bgCtx, client, pathForRescan, relativePath, instanceName, metadata)
 
 		case "sonarr":
-			client, err := m.clients.GetOrCreateSonarrClient(instanceName, instanceConfig.URL, instanceConfig.APIKey)
+			client, err := m.clients.GetOrCreateSonarrClientWithVersion(instanceName, instanceConfig.URL, instanceConfig.APIKey, instanceConfig.APIVersion)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create Sonarr client: %w", err)
 			}
@@ -440,7 +444,7 @@ func (m *Manager) TriggerFileRescan(ctx context.Context, pathForRescan string, r
 			return nil, m.triggerReadarrRescanByPath(bgCtx, client, pathForRescan, relativePath, instanceName, metadata)
 
 		case "whisparr":
-			client, err := m.clients.GetOrCreateWhisparrClient(instanceName, instanceConfig.URL, instanceConfig.APIKey)
+			client, err := m.clients.GetOrCreateWhisparrClientWithVersion(instanceName, instanceConfig.URL, instanceConfig.APIKey, instanceConfig.APIVersion)
 			if err != nil {
 				return nil, fmt.Errorf("failed to create Whisparr client: %w", err)
 			}
@@ -500,7 +504,7 @@ func (m *Manager) TriggerScanForFile(ctx context.Context, filePath string) error
 			}
 
 		case "sonarr":
-			client, err := m.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+			client, err := m.clients.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 			if err != nil {
 				slog.ErrorContext(bgCtx, "Failed to create Sonarr client for scan trigger", "instance", instance.Name, "error", err)
 				return
@@ -523,7 +527,7 @@ func (m *Manager) TriggerScanForFile(ctx context.Context, filePath string) error
 				_, _ = client.SendCommandContext(bgCtx, &readarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
 			}
 		case "whisparr":
-			client, err := m.clients.GetOrCreateWhisparrClient(instance.Name, instance.URL, instance.APIKey)
+			client, err := m.clients.GetOrCreateWhisparrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 			if err == nil {
 				_, _ = client.SendCommandContext(bgCtx, &sonarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
 			}
@@ -564,7 +568,7 @@ func (m *Manager) TriggerDownloadScan(ctx context.Context, instanceType string) 
 					}
 
 				case "sonarr":
-					client, err := m.clients.GetOrCreateSonarrClient(inst.Name, inst.URL, inst.APIKey)
+					client, err := m.clients.GetOrCreateSonarrClientWithVersion(inst.Name, inst.URL, inst.APIKey, inst.APIVersion)
 					if err != nil {
 						slog.ErrorContext(bgCtx, "Failed to create Sonarr client for scan trigger", "instance", inst.Name, "error", err)
 						return nil, err
@@ -587,7 +591,7 @@ func (m *Manager) TriggerDownloadScan(ctx context.Context, instanceType string) 
 						_, _ = client.SendCommandContext(bgCtx, &readarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
 					}
 				case "whisparr":
-					client, err := m.clients.GetOrCreateWhisparrClient(inst.Name, inst.URL, inst.APIKey)
+					client, err := m.clients.GetOrCreateWhisparrClientWithVersion(inst.Name, inst.URL, inst.APIKey, inst.APIVersion)
 					if err == nil {
 						_, _ = client.SendCommandContext(bgCtx, &sonarr.CommandRequest{Name: "RefreshMonitoredDownloads"})
 					}
@@ -868,7 +872,7 @@ func (m *Manager) triggerRadarrRescanByPath(ctx context.Context, client *radarr.
 }
 
 // triggerSonarrRescanByPath triggers a rescan in Sonarr for the given file path
-func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client *sonarr.Sonarr, filePath, relativePath, instanceName string, metadata *model.WebhookMetadata) error {
+func (m *Manager) triggerSonarrRescanByPath(ctx context.Context, client clients.SonarrClient, filePath, relativePath, instanceName string, metadata *model.WebhookMetadata) error {
 	slog.InfoContext(ctx, "Searching Sonarr for matching series",
 		"instance", instanceName,
 		"file_path", filePath,
@@ -1173,7 +1177,7 @@ func (m *Manager) failRadarrQueueItemByPath(ctx context.Context, client *radarr.
 }
 
 // failSonarrQueueItemByPath searches for an item in the active Sonarr queue by path and marks it as failed
-func (m *Manager) failSonarrQueueItemByPath(ctx context.Context, client *sonarr.Sonarr, path string) error {
+func (m *Manager) failSonarrQueueItemByPath(ctx context.Context, client clients.SonarrClient, path string) error {
 	queue, err := client.GetQueueContext(ctx, 0, 500)
 	if err != nil {
 		return fmt.Errorf("failed to get Sonarr queue: %w", err)
@@ -1286,7 +1290,7 @@ func (m *Manager) blocklistRadarrMovieFile(ctx context.Context, client *radarr.R
 }
 
 // blocklistSonarrEpisodeFile finds the grabbed history event for the given file and marks it as failed (blocklisting the release)
-func (m *Manager) blocklistSonarrEpisodeFile(ctx context.Context, client *sonarr.Sonarr, seriesID int64, fileID int64, relativePath string, episodeIDs []int64, sceneName string) error {
+func (m *Manager) blocklistSonarrEpisodeFile(ctx context.Context, client clients.SonarrClient, seriesID int64, fileID int64, relativePath string, episodeIDs []int64, sceneName string) error {
 	slog.DebugContext(ctx, "Attempting to find and blocklist release for episode file", "series_id", seriesID, "file_id", fileID, "scene_name", sceneName)
 
 	var downloadID string

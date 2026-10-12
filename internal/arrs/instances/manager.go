@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
 	"github.com/kipsilabs/altmount/internal/arrs/model"
 	"github.com/kipsilabs/altmount/internal/config"
 	"golift.io/starr"
@@ -15,7 +16,7 @@ import (
 	"golift.io/starr/radarr"
 	"golift.io/starr/readarr"
 	"golift.io/starr/sonarr"
-	)
+)
 
 type Manager struct {
 	configGetter  config.ConfigGetter
@@ -53,12 +54,13 @@ func (m *Manager) GetAllInstances() []*model.ConfigInstance {
 	if len(cfg.Arrs.SonarrInstances) > 0 {
 		for _, sonarrConfig := range cfg.Arrs.SonarrInstances {
 			instance := &model.ConfigInstance{
-				Name:     sonarrConfig.Name,
-				Type:     "sonarr",
-				URL:      sonarrConfig.URL,
-				APIKey:   sonarrConfig.APIKey,
-				Category: sonarrConfig.Category,
-				Enabled:  sonarrConfig.Enabled != nil && *sonarrConfig.Enabled,
+				Name:       sonarrConfig.Name,
+				Type:       "sonarr",
+				URL:        sonarrConfig.URL,
+				APIKey:     sonarrConfig.APIKey,
+				Category:   sonarrConfig.Category,
+				Enabled:    sonarrConfig.Enabled != nil && *sonarrConfig.Enabled,
+				APIVersion: sonarrConfig.APIVersion,
 			}
 			instances = append(instances, instance)
 		}
@@ -97,12 +99,13 @@ func (m *Manager) GetAllInstances() []*model.ConfigInstance {
 	if len(cfg.Arrs.WhisparrInstances) > 0 {
 		for _, whisparrConfig := range cfg.Arrs.WhisparrInstances {
 			instance := &model.ConfigInstance{
-				Name:     whisparrConfig.Name,
-				Type:     "whisparr",
-				URL:      whisparrConfig.URL,
-				APIKey:   whisparrConfig.APIKey,
-				Category: whisparrConfig.Category,
-				Enabled:  whisparrConfig.Enabled != nil && *whisparrConfig.Enabled,
+				Name:       whisparrConfig.Name,
+				Type:       "whisparr",
+				URL:        whisparrConfig.URL,
+				APIKey:     whisparrConfig.APIKey,
+				Category:   whisparrConfig.Category,
+				Enabled:    whisparrConfig.Enabled != nil && *whisparrConfig.Enabled,
+				APIVersion: whisparrConfig.APIVersion,
 			}
 			instances = append(instances, instance)
 		}
@@ -242,7 +245,7 @@ func (m *Manager) RegisterInstance(ctx context.Context, arrURL, apiKey string) (
 
 	// Determine category based on ARR type
 	var category string
-	
+
 	// Check if instance already exists in config to respect pre-configured category
 	existingInstances := m.GetAllInstances()
 	found := false
@@ -365,9 +368,13 @@ func (m *Manager) detectARRType(ctx context.Context, arrURL, apiKey string) (str
 		}
 	}
 
-	// Try Sonarr
+	// Try Sonarr (v3 then v5)
 	sonarrClient := sonarr.New(&starr.Config{URL: arrURL, APIKey: apiKey})
 	sonarrStatus, err := sonarrClient.GetSystemStatusContext(ctx)
+	if err != nil {
+		v5Client := clients.NewSonarrV5Client(&starr.Config{URL: arrURL, APIKey: apiKey})
+		sonarrStatus, err = v5Client.GetSystemStatusContext(ctx)
+	}
 	if err == nil {
 		switch sonarrStatus.AppName {
 		case "Radarr":

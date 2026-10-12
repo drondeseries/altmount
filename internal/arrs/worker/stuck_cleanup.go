@@ -7,13 +7,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kipsilabs/altmount/internal/arrs/clients"
 	"github.com/kipsilabs/altmount/internal/arrs/failures"
 	"github.com/kipsilabs/altmount/internal/arrs/model"
 	"github.com/kipsilabs/altmount/internal/arrs/registrar"
 	"github.com/kipsilabs/altmount/internal/config"
 	"golift.io/starr"
 	"golift.io/starr/radarr"
-	"golift.io/starr/sonarr"
 )
 
 // stuckItem is a normalized view of an *arr queue record across all client types,
@@ -31,11 +31,13 @@ type stuckItem struct {
 	// episode) that survives re-grabs of different releases for the same item. It
 	// keys the failure circuit breaker. Empty when the *arr type does not support
 	// the breaker, which disables it for that item.
-	BreakerKey string
+	BreakerKey  string
+	BreakerKeys []string
 	// Unmonitor stops the *arr from automatically re-grabbing this target. It is
 	// invoked once the breaker trips. Nil when the *arr type has no unmonitor
 	// wrapper (the breaker still blocklists-without-search in that case).
-	Unmonitor func(ctx context.Context) error
+	Unmonitor       func(ctx context.Context) error
+	UnmonitorTarget func(ctx context.Context, trippedKeys []string) error
 }
 
 // CleanupStuckQueue scans every enabled *arr instance for items AltMount sent that
@@ -173,7 +175,13 @@ func (w *Worker) selectStuckActions(ctx context.Context, instance *model.ConfigI
 		// blocklisted) and never count toward the breaker — the release was not bad,
 		// the queue entry is just stale.
 		if w.checkGhostByImportHistory(ctx, item.OutputPath, cfg, instance.Name, item.Title) {
-			w.resetBreaker(item.BreakerKey)
+			if len(item.BreakerKeys) > 0 {
+				for _, k := range item.BreakerKeys {
+					w.resetBreaker(k)
+				}
+			} else {
+				w.resetBreaker(item.BreakerKey)
+			}
 			actions = append(actions, stuckAction{ID: item.ID, Action: config.StuckActionRemove})
 			clearFirstSeen()
 			continue
@@ -216,25 +224,50 @@ func (w *Worker) selectStuckActions(ctx context.Context, instance *model.ConfigI
 	return actions
 }
 
-// applyBreaker records one failure against the item's target and decides the
+// applyBreaker records failures against the item's targets and decides the
 // final action. Below the configured threshold (or when the breaker is disabled
 // or the item has no breaker key) it returns the rule's base action unchanged.
-// Once the threshold is reached it escalates to a give-up: blocklist the release
-// without re-searching and return the item's unmonitor closure so the *arr stops
-// automatically re-grabbing a target that keeps failing.
+// Once the threshold is reached for any target it escalates to a give-up: blocklist the release
+// without re-searching and return an unmonitor closure that unmonitors the tripped targets so the *arr stops
+// automatically re-grabbing targets that keep failing.
 func (w *Worker) applyBreaker(ctx context.Context, item stuckItem, baseAction string, maxFailures int, instanceName string) (string, func(ctx context.Context) error) {
-	if maxFailures <= 0 || item.BreakerKey == "" {
+	if maxFailures <= 0 {
 		return baseAction, nil
 	}
 
-	failures := w.bumpBreaker(item.BreakerKey)
-	if failures < maxFailures {
+	keys := item.BreakerKeys
+	if len(keys) == 0 && item.BreakerKey != "" {
+		keys = []string{item.BreakerKey}
+	}
+	if len(keys) == 0 {
+		return baseAction, nil
+	}
+
+	var trippedKeys []string
+	for _, key := range keys {
+		failures := w.bumpBreaker(key)
+		if failures >= maxFailures {
+			trippedKeys = append(trippedKeys, key)
+		}
+	}
+
+	if len(trippedKeys) == 0 {
 		return baseAction, nil
 	}
 
 	slog.WarnContext(ctx, "Failure threshold reached, giving up on target (blocklist without re-search + unmonitor)",
-		"title", item.Title, "instance", instanceName, "failures", failures, "max_failures", maxFailures)
-	return config.StuckActionBlocklist, item.Unmonitor
+		"title", item.Title, "instance", instanceName, "tripped_count", len(trippedKeys), "max_failures", maxFailures)
+
+	unmonitor := func(ctx context.Context) error {
+		if item.UnmonitorTarget != nil {
+			return item.UnmonitorTarget(ctx, trippedKeys)
+		}
+		if item.Unmonitor != nil {
+			return item.Unmonitor(ctx)
+		}
+		return nil
+	}
+	return config.StuckActionBlocklist, unmonitor
 }
 
 // starrDeleteOpts maps a stuck action to starr queue-delete options. The item is
@@ -266,19 +299,6 @@ func (w *Worker) runUnmonitor(ctx context.Context, instance *model.ConfigInstanc
 	}
 	slog.InfoContext(ctx, "Unmonitored target after repeated import failures",
 		"instance", instance.Name, "id", a.ID)
-}
-
-// unmonitorSonarrEpisode returns a closure that unmonitors a single Sonarr or
-// Whisparr episode so the *arr stops automatically re-searching for it. Returns
-// nil when there is no usable episode ID.
-func unmonitorSonarrEpisode(client *sonarr.Sonarr, episodeID int64) func(ctx context.Context) error {
-	if episodeID <= 0 {
-		return nil
-	}
-	return func(ctx context.Context) error {
-		_, err := client.MonitorEpisodeContext(ctx, []int64{episodeID}, false)
-		return err
-	}
 }
 
 // unmonitorRadarrMovie returns a closure that unmonitors a Radarr movie so the
@@ -378,13 +398,13 @@ func (w *Worker) cleanupStuckRadarr(ctx context.Context, instance *model.ConfigI
 // cleanupStuckSonarr handles Sonarr and Whisparr (both use the Sonarr client).
 func (w *Worker) cleanupStuckSonarr(ctx context.Context, instance *model.ConfigInstance, cfg *config.Config, whisparr bool) (int, error) {
 	var (
-		client *sonarr.Sonarr
+		client clients.SonarrClient
 		err    error
 	)
 	if whisparr {
-		client, err = w.clients.GetOrCreateWhisparrClient(instance.Name, instance.URL, instance.APIKey)
+		client, err = w.clients.GetOrCreateWhisparrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	} else {
-		client, err = w.clients.GetOrCreateSonarrClient(instance.Name, instance.URL, instance.APIKey)
+		client, err = w.clients.GetOrCreateSonarrClientWithVersion(instance.Name, instance.URL, instance.APIKey, instance.APIVersion)
 	}
 	if err != nil {
 		return 0, fmt.Errorf("failed to get Sonarr client: %w", err)
@@ -408,9 +428,33 @@ func (w *Worker) cleanupStuckSonarr(ctx context.Context, instance *model.ConfigI
 		// Breaker target: the episode. A dead season pack trips each of its
 		// episodes' breakers independently, so the whole pack ends up unmonitored
 		// episode by episode without needing a season lookup.
-		if q.EpisodeID > 0 {
-			item.BreakerKey = failures.EpisodeKey(instance.Name, q.EpisodeID)
-			item.Unmonitor = unmonitorSonarrEpisode(client, q.EpisodeID)
+		epIDs := q.EpisodeIDs
+		if len(epIDs) == 0 && q.EpisodeID > 0 {
+			epIDs = []int64{q.EpisodeID}
+		}
+		if len(epIDs) > 0 {
+			keys := make([]string, 0, len(epIDs))
+			keyToEpID := make(map[string]int64, len(epIDs))
+			for _, epID := range epIDs {
+				k := failures.EpisodeKey(instance.Name, epID)
+				keys = append(keys, k)
+				keyToEpID[k] = epID
+			}
+			item.BreakerKeys = keys
+			item.BreakerKey = keys[0]
+			item.UnmonitorTarget = func(ctx context.Context, trippedKeys []string) error {
+				var toUnmonitor []int64
+				for _, k := range trippedKeys {
+					if id, ok := keyToEpID[k]; ok {
+						toUnmonitor = append(toUnmonitor, id)
+					}
+				}
+				if len(toUnmonitor) == 0 {
+					return nil
+				}
+				_, err := client.MonitorEpisodeContext(ctx, toUnmonitor, false)
+				return err
+			}
 		}
 		items = append(items, item)
 	}
