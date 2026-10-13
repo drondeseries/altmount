@@ -194,6 +194,20 @@ export const HealthTableRow = memo(function HealthTableRow({
 					{playbackImpact && <PlaybackImpactBadge impact={playbackImpact} />}
 					{errorDetails && <PartialCheckBadge details={errorDetails} />}
 					{errorDetails && <ContentVerificationBadge details={errorDetails} />}
+					{item.is_masked && (
+						<span
+							className="badge badge-warning badge-sm gap-1"
+							title={
+								item.streaming_failure_count > 0
+									? `File hidden from the library after ${item.streaming_failure_count} playback failure(s). Playback keeps working — unmask to restore it immediately, or wait for the next scheduled recheck.`
+									: "File hidden from the library after repeated playback failures. Unmask to restore it immediately."
+							}
+						>
+							{item.streaming_failure_count > 0
+								? `Hidden after ${item.streaming_failure_count} playback failure${item.streaming_failure_count === 1 ? "" : "s"} — still playable`
+								: "Hidden after playback failures — still playable"}
+						</span>
+					)}
 					{item.status === "checking" && item.check_progress && (
 						<ArticleCheckProgress progress={item.check_progress} />
 					)}
@@ -248,6 +262,14 @@ export const HealthTableRow = memo(function HealthTableRow({
 								title="Repair retries"
 							>
 								R:{item.repair_retry_count}
+							</span>
+						)}
+						{item.streaming_failure_count > 0 && (
+							<span
+								className="badge badge-warning badge-xs"
+								title={`${item.streaming_failure_count} playback failure(s) detected while streaming. Repair is requested after repeated failures.`}
+							>
+								▶:{item.streaming_failure_count}
 							</span>
 						)}
 					</div>

@@ -508,7 +508,7 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 			releaseDate = &fh.CreatedAt
 		}
 
-		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC())
+		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC(), hw.configGetter().GetHealthRecheckSchedule())
 		update.Type = database.UpdateTypeHealthy
 		update.Status = database.HealthStatusHealthy
 		update.ScheduledCheckAt = nextCheck
@@ -577,7 +577,7 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 		if releaseDate == nil {
 			releaseDate = &fh.CreatedAt
 		}
-		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC())
+		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC(), hw.configGetter().GetHealthRecheckSchedule())
 
 		update.Type = database.UpdateTypeDegraded
 		update.Status = database.HealthStatusDegraded

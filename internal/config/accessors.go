@@ -415,6 +415,83 @@ func (c *Config) GetRepairEnabled() bool {
 	return *c.Health.Repair.Enabled
 }
 
+// RecheckSchedule is the resolved, validated tiered recheck schedule for
+// healthy/degraded files. Tiers are decay-shaped: fresh files recheck often
+// (takedowns + propagation delays cluster in the first days), aged files
+// recheck weekly (retention drift is slow but real).
+type RecheckSchedule struct {
+	FreshAge    time.Duration
+	EarlyAge    time.Duration
+	MidAge      time.Duration
+	Fresh       time.Duration
+	Early       time.Duration
+	Mid         time.Duration
+	Aged        time.Duration
+	MinInterval time.Duration
+}
+
+// DefaultRecheckSchedule returns the default tiered schedule:
+// fresh (0-72h) every 2h, early (3-7d) every 12h, mid (7-30d) daily, aged (>30d) weekly.
+func DefaultRecheckSchedule() RecheckSchedule {
+	return RecheckSchedule{
+		FreshAge:    72 * time.Hour,
+		EarlyAge:    7 * 24 * time.Hour,
+		MidAge:      30 * 24 * time.Hour,
+		Fresh:       2 * time.Hour,
+		Early:       12 * time.Hour,
+		Mid:         24 * time.Hour,
+		Aged:        7 * 24 * time.Hour,
+		MinInterval: 30 * time.Minute,
+	}
+}
+
+// GetHealthRecheckSchedule resolves the configured tiered recheck schedule,
+// falling back to defaults for unset/invalid fields. Invalid values never
+// hard-fail: they resolve to the default and validation logs a warning.
+func (c *Config) GetHealthRecheckSchedule() RecheckSchedule {
+	sched := DefaultRecheckSchedule()
+	h := c.Health.Recheck
+
+	if h.FreshAgeHours > 0 {
+		sched.FreshAge = time.Duration(h.FreshAgeHours) * time.Hour
+	}
+	if h.EarlyAgeDays > 0 {
+		sched.EarlyAge = time.Duration(h.EarlyAgeDays) * 24 * time.Hour
+	}
+	if h.MidAgeDays > 0 {
+		sched.MidAge = time.Duration(h.MidAgeDays) * 24 * time.Hour
+	}
+	if h.FreshHours > 0 {
+		sched.Fresh = time.Duration(h.FreshHours) * time.Hour
+	}
+	if h.EarlyHours > 0 {
+		sched.Early = time.Duration(h.EarlyHours) * time.Hour
+	}
+	if h.MidHours > 0 {
+		sched.Mid = time.Duration(h.MidHours) * time.Hour
+	}
+	if h.AgedDays > 0 {
+		sched.Aged = time.Duration(h.AgedDays) * 24 * time.Hour
+	}
+	if h.MinMinutes > 0 {
+		sched.MinInterval = time.Duration(h.MinMinutes) * time.Minute
+	}
+
+	// Guard ordering: ages must be strictly increasing, intervals non-decreasing.
+	// On violation, fall back to defaults for the offending tier.
+	def := DefaultRecheckSchedule()
+	if sched.FreshAge >= sched.EarlyAge || sched.EarlyAge >= sched.MidAge {
+		sched.FreshAge, sched.EarlyAge, sched.MidAge = def.FreshAge, def.EarlyAge, def.MidAge
+	}
+	if sched.Fresh > sched.Early || sched.Early > sched.Mid || sched.Mid > sched.Aged {
+		sched.Fresh, sched.Early, sched.Mid, sched.Aged = def.Fresh, def.Early, def.Mid, def.Aged
+	}
+	if sched.MinInterval <= 0 {
+		sched.MinInterval = def.MinInterval
+	}
+	return sched
+}
+
 // GetRepairInterval returns the repair check interval
 func (c *Config) GetRepairInterval() time.Duration {
 	if c.Health.Repair.IntervalMinutes <= 0 {

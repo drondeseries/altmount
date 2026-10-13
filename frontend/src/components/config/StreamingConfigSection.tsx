@@ -170,7 +170,9 @@ export function StreamingConfigSection({
 							<h4 className="font-bold text-base-content text-sm">Playback Failure Masking</h4>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Debounce transient streaming errors (like propagation delays) by requiring multiple
-								consecutive playback failures before triggering a redownload.
+								consecutive playback failures before triggering a redownload. While failures stay
+								below the threshold the file keeps playing and stays visible; once the threshold is
+								reached it is hidden from the library (MASKED) and queued for repair.
 							</p>
 						</div>
 						<input
@@ -193,13 +195,14 @@ export function StreamingConfigSection({
 					</div>
 
 					{streamingData.failure_masking?.enabled === true && (
-						<div className="fade-in slide-in-from-top-2 animate-in space-y-4 border-base-300 border-t pt-4">
+						<div className="fade-in slide-in-from-top-2 animate-in space-y-6 border-base-300 border-t pt-4">
 							<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 								<div className="min-w-0">
 									<h5 className="font-bold text-base-content text-xs">Failure Threshold</h5>
 									<p className="mt-1 break-words text-[10px] text-base-content/50 leading-relaxed">
-										Number of consecutive failures required before declaring a file corrupted and
-										requesting repair.
+										Number of consecutive failures required before hiding the file from the
+										library and requesting repair. 1 acts immediately; higher values tolerate
+										more transient hiccups.
 									</p>
 								</div>
 								<div className="flex shrink-0 items-center gap-3">
@@ -232,11 +235,21 @@ export function StreamingConfigSection({
 								}}
 							/>
 							<div className="flex justify-between px-1 font-black text-[10px] text-base-content/50">
-								<span>1</span>
+								<span>1 (strict)</span>
 								<span>3</span>
 								<span>5</span>
 								<span>7</span>
-								<span>10</span>
+								<span>10 (lenient)</span>
+							</div>
+							<div className="alert items-start rounded-xl border border-info/20 bg-info/5 p-3 shadow-sm">
+								<Info className="mt-0.5 h-4 w-4 shrink-0 text-info" />
+								<div className="min-w-0 flex-1 text-[11px] leading-relaxed opacity-80">
+									<span className="font-bold">What happens at each stage: </span>
+									below the threshold the failure is counted and the file is queued for a health
+									recheck — playback and library listing are unaffected. At the threshold the file
+									is hidden (MASKED badge on the Health page) and a repair is requested. Unmask
+									any time from the Health page to restore it immediately.
+								</div>
 							</div>
 						</div>
 					)}

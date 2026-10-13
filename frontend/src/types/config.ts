@@ -123,12 +123,26 @@ export interface SegmentCacheConfig {
 	memory_mb: number; // in-memory tier of decoded articles; 0 disables
 }
 
+// Tiered recheck schedule for healthy/degraded files. Zero = default
+// (fresh 0-72h every 2h, early 3-7d every 12h, mid 7-30d daily, aged >30d weekly).
+export interface HealthRecheckConfig {
+	fresh_age_hours?: number;
+	fresh_hours?: number;
+	early_age_days?: number;
+	early_hours?: number;
+	mid_age_days?: number;
+	mid_hours?: number;
+	aged_days?: number;
+	min_minutes?: number;
+}
+
 // Health configuration
 export interface HealthConfig {
 	enabled?: boolean;
 	library_dir?: string;
 	cleanup_orphaned_metadata?: boolean;
 	check_interval_seconds?: number;
+	recheck?: HealthRecheckConfig;
 	/** Max in-flight STAT checks per sweep. 0 or absent = adapt to pool + stream activity. */
 	max_concurrent_segment_checks?: number;
 	/** @deprecated renamed to max_concurrent_segment_checks; migrated automatically. */

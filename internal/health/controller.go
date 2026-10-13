@@ -55,7 +55,7 @@ func (hsc *HealthSystemController) SyncMetadataDates(ctx context.Context) {
 			}
 
 			releaseDate := time.Unix(meta.ReleaseDate, 0)
-			nextCheck := CalculateNextCheck(releaseDate, time.Now()) // initial check based on age
+			nextCheck := CalculateNextCheck(releaseDate, time.Now(), hsc.healthWorker.configGetter().GetHealthRecheckSchedule()) // initial check based on age
 
 			updates = append(updates, database.BackfillUpdate{
 				ID:               item.ID,

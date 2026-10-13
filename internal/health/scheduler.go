@@ -3,15 +3,18 @@ package health
 import (
 	"math/rand"
 	"time"
+
+	"github.com/kipsilabs/altmount/internal/config"
 )
 
+// Tier jitter spreads bulk imports so files posted together don't recheck in
+// lockstep. Fresh jitter is small (checks are already frequent); aged jitter
+// is a full day (weekly checks would otherwise thunder every Monday).
 const (
-	minInterval              = 1 * time.Hour       // Absolute minimum interval
-	aggressiveCheckThreshold = 7 * 24 * time.Hour  // Files younger than 7 days
-	dailyCheckThreshold      = 30 * 24 * time.Hour // Files between 7 and 30 days
-	aggressiveCheckInterval  = 6 * time.Hour
-	dailyCheckInterval       = 24 * time.Hour
-	normalCheckInterval      = 90 * 24 * time.Hour // Files older than 30 days
+	recheckFreshJitter = 15 * time.Minute
+	recheckEarlyJitter = 1 * time.Hour
+	recheckMidJitter   = 2 * time.Hour
+	recheckAgedJitter  = 24 * time.Hour
 )
 
 // calculateInitialCheck calculates the first check time for a newly discovered file
@@ -28,27 +31,43 @@ func calculateInitialCheckForNewFile() time.Time {
 	return time.Now().UTC().Add(time.Duration(jitterMinutes) * time.Minute)
 }
 
-// CalculateNextCheck calculates the next check time after a successful health check
-// Implements a tiered scheduling strategy based on file age.
-func CalculateNextCheck(releaseDate, lastCheck time.Time) time.Time {
-	age := lastCheck.Sub(releaseDate) // Age at the time of the last successful check
-
-	var interval time.Duration
-	if age < aggressiveCheckThreshold {
-		// For very new files, use their age as the interval but cap at 6 hours
-		interval = min(age, aggressiveCheckInterval)
-	} else if age < dailyCheckThreshold {
-		interval = dailyCheckInterval
-	} else {
-		interval = normalCheckInterval
-		// Add jitter of +/- 7 days (approx 10%) to spread out bulk loads
-		jitterDays := rand.Intn(14) - 7
-		interval += time.Duration(jitterDays) * 24 * time.Hour
+// CalculateNextCheck calculates the next check time after a successful health check.
+// Tiers are decay-shaped by NZB age: fresh files recheck every couple of hours
+// (takedowns + propagation delays cluster in the first days), aged files weekly
+// (retention drift is slow but real). A zero schedule resolves to defaults.
+// Negative/zero age (clock skew, backdated NZBs) is treated as fresh.
+func CalculateNextCheck(releaseDate, lastCheck time.Time, sched ...config.RecheckSchedule) time.Time {
+	s := config.DefaultRecheckSchedule()
+	if len(sched) > 0 {
+		s = sched[0]
 	}
 
-	// Ensure the interval is at least the absolute minimum
-	if interval < minInterval {
-		interval = minInterval
+	age := lastCheck.Sub(releaseDate) // Age at the time of the last successful check
+	if age < 0 {
+		age = 0
+	}
+
+	var interval time.Duration
+	var jitter time.Duration
+	switch {
+	case age < s.FreshAge:
+		interval, jitter = s.Fresh, recheckFreshJitter
+	case age < s.EarlyAge:
+		interval, jitter = s.Early, recheckEarlyJitter
+	case age < s.MidAge:
+		interval, jitter = s.Mid, recheckMidJitter
+	default:
+		interval, jitter = s.Aged, recheckAgedJitter
+	}
+
+	// Symmetric jitter: interval ± jitter, so a 2h tier spreads over 1h45–2h15.
+	if jitter > 0 {
+		interval += time.Duration(rand.Int63n(int64(2*jitter))) - jitter
+	}
+
+	// Ensure the interval is at least the configured minimum
+	if interval < s.MinInterval {
+		interval = s.MinInterval
 	}
 
 	return lastCheck.Add(interval)

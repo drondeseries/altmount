@@ -789,6 +789,24 @@ type HealthConfig struct {
 	// nil or 0 means keep forever, which is what every install did before this
 	// setting existed.
 	CorruptedRetentionDays *int `yaml:"corrupted_retention_days" mapstructure:"corrupted_retention_days" json:"corrupted_retention_days,omitempty"`
+	// Recheck controls how often healthy/degraded files are re-verified, in
+	// decay-shaped tiers by NZB age. Zero values mean "use the default"
+	// (fresh 0-72h every 2h, early 3-7d every 12h, mid 7-30d daily, aged >30d
+	// weekly, 30min floor). Existing configs upgrade silently.
+	Recheck HealthRecheckConfig `yaml:"recheck" mapstructure:"recheck" json:"recheck,omitempty"`
+}
+
+// HealthRecheckConfig configures the tiered recheck schedule for
+// healthy/degraded files. All fields are optional; zero means default.
+type HealthRecheckConfig struct {
+	FreshAgeHours int `yaml:"fresh_age_hours" mapstructure:"fresh_age_hours" json:"fresh_age_hours,omitempty"`
+	FreshHours    int `yaml:"fresh_hours" mapstructure:"fresh_hours" json:"fresh_hours,omitempty"`
+	EarlyAgeDays  int `yaml:"early_age_days" mapstructure:"early_age_days" json:"early_age_days,omitempty"`
+	EarlyHours    int `yaml:"early_hours" mapstructure:"early_hours" json:"early_hours,omitempty"`
+	MidAgeDays    int `yaml:"mid_age_days" mapstructure:"mid_age_days" json:"mid_age_days,omitempty"`
+	MidHours      int `yaml:"mid_hours" mapstructure:"mid_hours" json:"mid_hours,omitempty"`
+	AgedDays      int `yaml:"aged_days" mapstructure:"aged_days" json:"aged_days,omitempty"`
+	MinMinutes    int `yaml:"min_minutes" mapstructure:"min_minutes" json:"min_minutes,omitempty"`
 }
 
 // Path validation functions have been moved to internal/utils/path.go
@@ -1167,6 +1185,21 @@ func (c *Config) GetDownloadClientBaseURL() string {
 	return fmt.Sprintf("http://%s:%d/sabnzbd", host, c.WebDAV.Port)
 }
 
+// clampRecheckInt normalizes a recheck field: 0 (unset) resolves to the
+// default, out-of-range values clamp to the nearest bound.
+func clampRecheckInt(v, lo, hi, def int) int {
+	if v == 0 {
+		return def
+	}
+	if v < lo {
+		return lo
+	}
+	if v > hi {
+		return hi
+	}
+	return v
+}
+
 // Validate validates the configuration
 func (c *Config) Validate() error {
 	if c.WebDAV.Port <= 0 || c.WebDAV.Port > 65535 {
@@ -1310,6 +1343,24 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate streaming configuration
+
+	// Validate health recheck schedule: clamp individual fields to sane
+	// ranges (zero means unset → default, applied in GetHealthRecheckSchedule;
+	// Validate() normalizes to explicit defaults). Ages must be ordered.
+	c.Health.Recheck.FreshAgeHours = clampRecheckInt(c.Health.Recheck.FreshAgeHours, 0, 24*365, 72)
+	c.Health.Recheck.EarlyAgeDays = clampRecheckInt(c.Health.Recheck.EarlyAgeDays, 0, 365, 7)
+	c.Health.Recheck.MidAgeDays = clampRecheckInt(c.Health.Recheck.MidAgeDays, 0, 365, 30)
+	c.Health.Recheck.FreshHours = clampRecheckInt(c.Health.Recheck.FreshHours, 0, 24*30, 2)
+	c.Health.Recheck.EarlyHours = clampRecheckInt(c.Health.Recheck.EarlyHours, 0, 24*30, 12)
+	c.Health.Recheck.MidHours = clampRecheckInt(c.Health.Recheck.MidHours, 0, 24*30, 24)
+	c.Health.Recheck.AgedDays = clampRecheckInt(c.Health.Recheck.AgedDays, 0, 365, 7)
+	c.Health.Recheck.MinMinutes = clampRecheckInt(c.Health.Recheck.MinMinutes, 0, 60*24*30, 30)
+	if h := c.Health.Recheck; h.FreshAgeHours >= h.EarlyAgeDays*24 || h.EarlyAgeDays >= h.MidAgeDays {
+		return fmt.Errorf("health recheck ages must be strictly increasing (fresh_age_hours < early_age_days*24 < mid_age_days*24)")
+	}
+	if h := c.Health.Recheck; h.FreshHours > h.EarlyHours || h.EarlyHours > h.MidHours {
+		return fmt.Errorf("health recheck intervals must be non-decreasing (fresh_hours <= early_hours <= mid_hours)")
+	}
 
 	// Validate health configuration (always active)
 	if c.Health.CheckIntervalSeconds <= 0 {
