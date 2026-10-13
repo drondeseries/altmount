@@ -2,27 +2,18 @@ package utils
 
 import (
 	"path/filepath"
-	"regexp"
 	"strings"
 
 	"github.com/kipsilabs/altmount/internal/importer/parser"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
 )
 
 // sampleProofPattern matches filenames containing "sample" or "proof" as a standalone word.
-// Uses symmetric non-alphanumeric boundaries (underscore, digits, punctuation, end-of-string)
-// on both sides. Letters prevent matching, so "samplemovie.mkv" is allowed.
-// Examples matched: "movie.sample.mkv", "_sample.mkv", "movie_sample.mkv", "_sample_clip.mkv"
-// Examples not matched: "samplemovie.mkv", "Free.Samples.mkv" (plural)
-var sampleProofPattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])(sample|proof)(?:[^a-zA-Z0-9]|$)`)
+var sampleProofPattern = fileinfo.SampleProofPattern
 
 // isSampleOrProof checks if a filename looks like a sample or proof file
 func isSampleOrProof(filename string, size int64) bool {
-	// If file is larger than 200MB, it's likely not a sample/proof file
-	if size > 200*1024*1024 {
-		return false
-	}
-
-	return sampleProofPattern.MatchString(filename)
+	return fileinfo.IsSampleOrProof(filename, size)
 }
 
 // createExtensionMap converts a slice of extensions to a map for O(1) lookups

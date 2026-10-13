@@ -23,6 +23,7 @@ import (
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
 	"github.com/kipsilabs/altmount/internal/httpclient"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
 	"github.com/kipsilabs/altmount/internal/newsnab"
 	"github.com/kipsilabs/altmount/internal/prowlarr"
 	"github.com/kipsilabs/altmount/internal/stremio"
@@ -279,7 +280,7 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 		yearNum, _ := strconv.Atoi(movieYear)
 		if healthyFiles, err := s.healthRepo.FindHealthyFilesForMovie(ctx, movieTitle, movieYear, tmdbID); err == nil {
 			for _, h := range healthyFiles {
-				if h != nil && h.FilePath != "" && isMediaExtension(filepath.Ext(h.FilePath)) && !isSampleFile(h.FilePath) {
+				if h != nil && h.FilePath != "" && isMediaExtension(filepath.Ext(h.FilePath)) && !s.isHealthRecordSample(h) {
 					matchPath := h.FilePath
 					if h.LibraryPath != nil && *h.LibraryPath != "" {
 						matchPath = *h.LibraryPath
@@ -303,7 +304,7 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 		tvdbID, _ := strconv.Atoi(tvdbIDStr)
 		if healthyFiles, err := s.healthRepo.FindHealthyFilesForSeries(ctx, seriesTitle, tvdbID); err == nil {
 			for _, h := range healthyFiles {
-				if h != nil && h.FilePath != "" && isMediaExtension(filepath.Ext(h.FilePath)) && !isSampleFile(h.FilePath) {
+				if h != nil && h.FilePath != "" && isMediaExtension(filepath.Ext(h.FilePath)) && !s.isHealthRecordSample(h) {
 					matchPath := h.FilePath
 					if h.LibraryPath != nil && *h.LibraryPath != "" {
 						matchPath = *h.LibraryPath
@@ -364,13 +365,29 @@ func formatLibraryStreamName(h *database.FileHealth) string {
 	return "⚡ Altmount Library"
 }
 
-func isSampleFile(path string) bool {
-	lower := strings.ToLower(path)
-	if strings.Contains(lower, "/sample/") || strings.Contains(lower, "\\sample\\") {
-		return true
+func isSampleFile(path string, size ...int64) bool {
+	var s int64
+	if len(size) > 0 {
+		s = size[0]
 	}
-	base := strings.ToLower(filepath.Base(path))
-	return strings.Contains(base, "sample.") || strings.HasPrefix(base, "sample") || strings.HasSuffix(base, "-sample") || strings.HasSuffix(base, "_sample")
+	return fileinfo.IsSampleOrProof(path, s)
+}
+
+func (s *Server) isHealthRecordSample(h *database.FileHealth) bool {
+	if h == nil || h.FilePath == "" {
+		return false
+	}
+	if h.LibraryPath != nil && *h.LibraryPath != "" {
+		if fi, err := os.Stat(*h.LibraryPath); err == nil && fi.Size() > 0 {
+			return fileinfo.IsSampleOrProof(*h.LibraryPath, fi.Size())
+		}
+	}
+	if s != nil && s.metadataService != nil {
+		if meta, err := s.metadataService.ReadFileMetadataLite(h.FilePath); err == nil && meta != nil && meta.FileSize > 0 {
+			return fileinfo.IsSampleOrProof(h.FilePath, meta.FileSize)
+		}
+	}
+	return fileinfo.IsSampleOrProof(h.FilePath, 0)
 }
 
 // stremioPlayCandidate is one release a /play request may attempt. Candidates are

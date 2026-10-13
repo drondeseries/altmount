@@ -259,6 +259,40 @@ func (r *HealthRepository) UnmaskFile(ctx context.Context, filePath string) erro
 	return nil
 }
 
+// GetMaskedPaths returns a set of normalized paths that are marked is_masked = TRUE among the provided paths.
+func (r *HealthRepository) GetMaskedPaths(ctx context.Context, filePaths []string) (map[string]bool, error) {
+	if len(filePaths) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(filePaths))
+	args := make([]any, len(filePaths))
+	for i, path := range filePaths {
+		placeholders[i] = "?"
+		args[i] = normalizeHealthPath(path)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT file_path
+		FROM file_health
+		WHERE is_masked = TRUE AND file_path IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query masked paths: %w", err)
+	}
+	defer rows.Close()
+
+	masked := make(map[string]bool)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err == nil {
+			masked[p] = true
+		}
+	}
+	return masked, rows.Err()
+}
+
 // GetUnhealthyFiles returns files that need health checks
 func (r *HealthRepository) GetUnhealthyFiles(ctx context.Context, limit int, strategy string, libraryDir string, maxRetries int) ([]*FileHealth, error) {
 	query := `
@@ -761,6 +795,11 @@ type HealthCheckUpsert struct {
 	ReleaseDate      *time.Time
 	Metadata         *string
 	DownloadID       *string
+	// ClearReleaseAuthority strips inherited ARR repair authority (metadata +
+	// download_id) from ancillary sample/proof records. A nil Metadata on a
+	// normal record means "preserve", but samples must actively clear stale
+	// authority left by an earlier import of the same path.
+	ClearReleaseAuthority bool
 }
 
 // BatchAddFileToHealthCheck upserts many health records in a few multi-row statements
@@ -788,6 +827,36 @@ func (r *HealthRepository) BatchAddFileToHealthCheck(ctx context.Context, record
 
 // batchUpsertFileHealthCheck performs a single multi-row upsert.
 func (r *HealthRepository) batchUpsertFileHealthCheck(ctx context.Context, records []HealthCheckUpsert) error {
+	// Ancillary sample records actively clear inherited ARR authority. A NULL
+	// excluded value cannot express "clear" (COALESCE would keep the stale
+	// value), so split the batch: normal rows use the multi-row upsert, sample
+	// rows run a dedicated upsert that writes NULL explicitly on both insert
+	// and conflict.
+	var normal, samples []HealthCheckUpsert
+	for _, rec := range records {
+		if rec.ClearReleaseAuthority {
+			samples = append(samples, rec)
+		} else {
+			normal = append(normal, rec)
+		}
+	}
+
+	if len(normal) > 0 {
+		if err := r.batchUpsertNormalFileHealthCheck(ctx, normal); err != nil {
+			return err
+		}
+	}
+	for _, rec := range samples {
+		if err := r.upsertSampleFileHealthCheck(ctx, rec); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// batchUpsertNormalFileHealthCheck performs a single multi-row upsert for
+// normal records (nil means preserve on conflict).
+func (r *HealthRepository) batchUpsertNormalFileHealthCheck(ctx context.Context, records []HealthCheckUpsert) error {
 	valueStrings := make([]string, len(records))
 	args := make([]any, 0, len(records)*10)
 
@@ -830,6 +899,46 @@ func (r *HealthRepository) batchUpsertFileHealthCheck(ctx context.Context, recor
 
 	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("failed to batch upsert file health checks: %w", err)
+	}
+
+	return nil
+}
+
+// upsertSampleFileHealthCheck upserts one ancillary sample/proof record with
+// NULL metadata and download_id on both insert and conflict, actively clearing
+// any stale ARR release authority left by an earlier import of the same path.
+func (r *HealthRepository) upsertSampleFileHealthCheck(ctx context.Context, rec HealthCheckUpsert) error {
+	var releaseDateStr any = nil
+	if rec.ReleaseDate != nil {
+		releaseDateStr = rec.ReleaseDate.UTC().Format("2006-01-02 15:04:05")
+	}
+
+	query := `
+		INSERT INTO file_health (file_path, library_path, status, last_checked, retry_count, max_retries, repair_retry_count, max_repair_retries, source_nzb_path, priority, release_date, metadata, indexer, download_id, created_at, updated_at, scheduled_check_at)
+		VALUES (?, ?, 'pending', datetime('now'), 0, ?, 0, ?, ?, ?, ?, NULL, ?, NULL, datetime('now'), datetime('now'), datetime('now'))
+		ON CONFLICT(file_path) DO UPDATE SET
+			library_path = COALESCE(excluded.library_path, library_path),
+			status = excluded.status,
+			retry_count = 0,
+			last_error = NULL,
+			error_details = NULL,
+			max_retries = excluded.max_retries,
+			max_repair_retries = excluded.max_repair_retries,
+			source_nzb_path = COALESCE(excluded.source_nzb_path, source_nzb_path),
+			priority = excluded.priority,
+			release_date = COALESCE(excluded.release_date, release_date),
+			metadata = NULL,
+			indexer = COALESCE(excluded.indexer, indexer),
+			download_id = NULL,
+			updated_at = datetime('now'),
+			scheduled_check_at = datetime('now')
+	`
+
+	if _, err := r.db.ExecContext(ctx, query,
+		normalizeHealthPath(rec.FilePath), rec.LibraryPath,
+		rec.MaxRetries, rec.MaxRepairRetries,
+		rec.SourceNzbPath, rec.Priority, releaseDateStr, rec.Indexer); err != nil {
+		return fmt.Errorf("failed to upsert sample file health check: %w", err)
 	}
 
 	return nil

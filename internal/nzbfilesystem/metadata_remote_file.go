@@ -87,6 +87,11 @@ func (mrf *MetadataRemoteFile) SetRepairEnqueuer(re RepairEnqueuer) {
 }
 
 // Configuration is now accessed dynamically through config.ConfigGetter
+
+// isFailureMaskingEnabled checks whether streaming failure masking is explicitly enabled with a valid positive threshold.
+func isFailureMaskingEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.Streaming.FailureMasking.Enabled != nil && *cfg.Streaming.FailureMasking.Enabled && cfg.Streaming.FailureMasking.Threshold > 0
+}
 // No longer need a separate config struct
 
 // NewMetadataRemoteFile creates a new metadata-based remote file handler
@@ -597,7 +602,7 @@ func (mrf *MetadataRemoteFile) Stat(ctx context.Context, name string) (bool, fs.
 	// Filter out masked files if masking is enabled and not showing corrupted
 	if !showCorrupted {
 		cfg := mrf.configGetter()
-		if cfg.Streaming.FailureMasking.Enabled == nil || *cfg.Streaming.FailureMasking.Enabled {
+		if isFailureMaskingEnabled(cfg) {
 			health, err := mrf.healthRepository.GetFileHealth(ctx, normalizedName)
 			if err == nil && health != nil && health.IsMasked {
 				return false, nil, fs.ErrNotExist
@@ -720,9 +725,21 @@ func (mvd *MetadataVirtualDirectory) Readdir(count int) ([]fs.FileInfo, error) {
 
 	// Check if failure masking is enabled
 	cfg := mvd.configGetter()
-	maskingEnabled := cfg.Streaming.FailureMasking.Enabled == nil || *cfg.Streaming.FailureMasking.Enabled
+	maskingEnabled := isFailureMaskingEnabled(cfg)
 
 	ctx := context.Background()
+
+	// Batch masked file lookups to avoid N+1 database queries on every file in the directory
+	var maskedPaths map[string]bool
+	if maskingEnabled && !mvd.showCorrupted && mvd.healthRepository != nil && len(fileNames) > 0 {
+		fullPaths := make([]string, len(fileNames))
+		for i, fileName := range fileNames {
+			fullPaths[i] = filepath.Join(mvd.normalizedPath, fileName)
+		}
+		if mp, err := mvd.healthRepository.GetMaskedPaths(ctx, fullPaths); err == nil {
+			maskedPaths = mp
+		}
+	}
 
 	for _, fileName := range fileNames {
 		virtualFilePath := filepath.Join(mvd.normalizedPath, fileName)
@@ -737,11 +754,8 @@ func (mvd *MetadataVirtualDirectory) Readdir(count int) ([]fs.FileInfo, error) {
 		}
 
 		// Skip masked files if masking is enabled
-		if maskingEnabled && !mvd.showCorrupted {
-			health, err := mvd.healthRepository.GetFileHealth(ctx, virtualFilePath)
-			if err == nil && health != nil && health.IsMasked {
-				continue
-			}
+		if maskingEnabled && !mvd.showCorrupted && maskedPaths != nil && maskedPaths[virtualFilePath] {
+			continue
 		}
 
 		info := &MetadataFileInfo{
@@ -1083,16 +1097,49 @@ func (mvf *MetadataVirtualFile) readContext() context.Context {
 	return context.Background()
 }
 
+// streamingFailureReport carries a captured streaming failure plus the
+// mvf.meta-derived snapshot needed to report it. The snapshot is captured
+// under mvf.mu so the deferred report (which runs after the lock is
+// released) cannot race with Close(), which nils mvf.meta under the same
+// lock. Defined in holes.go next to streamingFailureSnapshot.
+func (mvf *MetadataVirtualFile) captureStreamingFailure(readErr error, pending **streamingFailureReport) error {
+	var dcErr *usenet.DataCorruptionError
+	if !errors.As(readErr, &dcErr) || dcErr == nil {
+		return readErr
+	}
+	if pending != nil && *pending == nil && mvf.meta != nil {
+		*pending = &streamingFailureReport{
+			dataCorruptionErr: dcErr,
+			snap:              mvf.snapshotStreamingFailure(),
+			noRetry:           dcErr.NoRetry,
+		}
+	}
+	return dcErr
+}
+
 // classifyReadError maps a reader error to the error a read should return,
 // reporting data corruption to the health pipeline on the way. This is what
 // feeds streaming failure masking — without it a DMCA'd file never accumulates
-// failures and is never masked. Callers must hold mvf.mu.
-func (mvf *MetadataVirtualFile) classifyReadError(readErr error) error {
+// failures and is never masked. If pending is provided, the report (error +
+// lock-captured snapshot) is captured to run after the handle lock is
+// released; otherwise the report runs inline (callers without the lock, or
+// tests calling updateFileHealthOnError directly).
+func (mvf *MetadataVirtualFile) classifyReadError(readErr error, pending ...**streamingFailureReport) error {
 	var dataCorruptionErr *usenet.DataCorruptionError
 	if errors.As(readErr, &dataCorruptionErr) {
-		mvf.updateFileHealthOnError(dataCorruptionErr, dataCorruptionErr.NoRetry)
+		if len(pending) > 0 && pending[0] != nil {
+			if repErr := mvf.captureStreamingFailure(dataCorruptionErr, pending[0]); repErr != dataCorruptionErr {
+				return repErr
+			}
+		} else {
+			mvf.updateFileHealthOnError(dataCorruptionErr, dataCorruptionErr.NoRetry)
+		}
+		fileSize := int64(0)
+		if mvf.meta != nil {
+			fileSize = mvf.meta.FileSize
+		}
 		return &CorruptedFileError{
-			TotalExpected: mvf.meta.FileSize,
+			TotalExpected: fileSize,
 			UnderlyingErr: dataCorruptionErr,
 		}
 	}
@@ -1221,6 +1268,11 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 		}
 	}()
 
+	var pending *streamingFailureReport
+	defer func() {
+		mvf.reportStreamingFailure(pending)
+	}()
+
 	mvf.mu.Lock()
 	defer mvf.mu.Unlock()
 
@@ -1254,7 +1306,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 				// the range end; rotating once more would spin here holding mvf.mu.
 				if totalRead == 0 && mvf.position == stalledAt {
 					mvf.closeCurrentReader()
-					return n, mvf.classifyReadError(mvf.truncatedTailError(mvf.position))
+					return n, mvf.classifyReadError(mvf.truncatedTailError(mvf.position), &pending)
 				}
 				stalledAt = mvf.position
 				// Close current reader and try to get a new one for the next range in next iteration
@@ -1265,11 +1317,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 			// For data corruption errors, report and mark as corrupted
 			var dataCorruptionErr *usenet.DataCorruptionError
 			if errors.As(readErr, &dataCorruptionErr) {
-				mvf.updateFileHealthOnError(dataCorruptionErr, dataCorruptionErr.NoRetry)
-				return n, &CorruptedFileError{
-					TotalExpected: mvf.meta.FileSize,
-					UnderlyingErr: dataCorruptionErr,
-				}
+				return n, mvf.classifyReadError(dataCorruptionErr, &pending)
 			}
 
 			return n, readErr
@@ -1313,6 +1361,11 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 		if timedOut() && err != nil && !errors.Is(err, ErrReadTimeout) {
 			err = fmt.Errorf("%w: %w", ErrReadTimeout, err)
 		}
+	}()
+
+	var pending *streamingFailureReport
+	defer func() {
+		mvf.reportStreamingFailure(pending)
 	}()
 
 	mvf.mu.Lock()
@@ -1435,7 +1488,7 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 			// next read rebuilds cleanly rather than inheriting the failure.
 			mvf.closeCurrentReader()
 			mvf.readAtSharedNext = -1
-			return n, mvf.classifyReadError(sharedErr)
+			return n, mvf.classifyReadError(sharedErr, &pending)
 		}
 		return n, nil
 	}
@@ -1513,7 +1566,7 @@ ephemeral:
 		// Same reporting as the shared path — scrub-driven reads must feed
 		// failure masking too, otherwise a player that seeks never marks a
 		// DMCA'd file as failing.
-		return n, mvf.classifyReadError(err)
+		return n, mvf.classifyReadError(err, &pending)
 	}
 
 	return n, nil
@@ -2548,6 +2601,28 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	if mvf.healthRepository == nil || mvf.metadataService == nil || mvf.configGetter == nil {
 		return
 	}
+	mvf.updateFileHealthOnErrorWithSnapshot(dataCorruptionErr, nil, noRetry)
+}
+
+// updateFileHealthOnErrorWithSnapshot reports a streaming failure using an
+// optional lock-captured snapshot (see streamingFailureSnapshot). A nil snap
+// means the caller already holds mvf.mu (or guarantees no concurrent Close)
+// and the snapshot is taken inline; a non-nil snap was captured under mvf.mu
+// and is safe to use after the lock is released.
+func (mvf *MetadataVirtualFile) updateFileHealthOnErrorWithSnapshot(dataCorruptionErr *usenet.DataCorruptionError, snap *streamingFailureSnapshot, noRetry bool) {
+	// Health reporting needs both persistence layers. Handles built without
+	// them (nzbdav bridge, tests) have nothing to record — bail rather than
+	// nil-deref. This runs on the read path, where a panic would take the whole
+	// mount down.
+	if mvf.healthRepository == nil || mvf.metadataService == nil || mvf.configGetter == nil {
+		return
+	}
+	if snap == nil {
+		if mvf.meta == nil {
+			return
+		}
+		snap = mvf.snapshotStreamingFailure()
+	}
 
 	// Per-path debounce: short-circuit if this file already triggered a repair
 	// inside the debounce window. ShouldTrigger handles a nil coalescer
@@ -2576,7 +2651,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	// whether this failure triggers a repair at all. Note that with hole
 	// hooks wired, within-caps misses are zero-filled and never reach this
 	// path; a degraded verdict here is the exception (e.g. hooks disabled).
-	classification := mvf.classifyStreamingFailure(dataCorruptionErr)
+	classification := mvf.classifyStreamingFailure(dataCorruptionErr, snap)
 	isDegraded := healthEnabled && classification != nil &&
 		classification.Verdict == holes.VerdictDegraded
 
@@ -2607,12 +2682,13 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 			"deferred_to_health_worker", healthEnabled)
 
 		errMsg := dataCorruptionErr.Error()
-		sourceNzb := &mvf.meta.SourceNzbPath
-		if *sourceNzb == "" {
-			sourceNzb = nil
+		sourceNzb := snap.sourceNzbPath
+		var sourceNzbPtr *string
+		if sourceNzb != "" {
+			sourceNzbPtr = &sourceNzb
 		}
 		if err := mvf.healthRepository.UpdateFileHealthScheduled(ctx,
-			mvf.name, database.HealthStatusPending, &errMsg, sourceNzb, nil, true, time.Now().UTC(),
+			mvf.name, database.HealthStatusPending, &errMsg, sourceNzbPtr, nil, true, time.Now().UTC(),
 		); err != nil {
 			slog.WarnContext(ctx, "Failed to schedule health re-check after an unconfirmed streaming failure",
 				"file", mvf.name, "error", err)
@@ -2634,15 +2710,15 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	// true), suppressing all repairs. Degraded files are also exempt: masking a still-
 	// playable file defeats the point of keeping it available.
 	shouldRepair := true
-	isMasked := false
-	if !isDegraded && cfg.Streaming.FailureMasking.Enabled != nil && *cfg.Streaming.FailureMasking.Enabled && cfg.Streaming.FailureMasking.Threshold > 0 {
+	maskingConfigured := isFailureMaskingEnabled(cfg)
+	if !isDegraded && maskingConfigured {
 		var err error
-		isMasked, shouldRepair, err = mvf.healthRepository.IncrementStreamingFailureCount(ctx, mvf.name, cfg.Streaming.FailureMasking.Threshold)
+		_, shouldRepair, err = mvf.healthRepository.IncrementStreamingFailureCount(ctx, mvf.name, cfg.Streaming.FailureMasking.Threshold)
 		if err != nil {
 			slog.WarnContext(ctx, "Failed to update streaming failure count, proceeding with repair", "file", mvf.name, "error", err)
 			shouldRepair = true
-		} else if isMasked && !shouldRepair {
-			slog.InfoContext(ctx, "File masked due to streaming failure (threshold not reached)", "file", mvf.name)
+		} else if !shouldRepair {
+			slog.InfoContext(ctx, "Streaming failure masked (threshold not reached)", "file", mvf.name)
 		}
 	}
 
@@ -2654,7 +2730,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	metadataStatus := metapb.FileStatus_FILE_STATUS_CORRUPTED
 	if isDegraded {
 		metadataStatus = metapb.FileStatus_FILE_STATUS_DEGRADED
-	} else if isMasked && !shouldRepair {
+	} else if maskingConfigured && !shouldRepair {
 		metadataStatus = metapb.FileStatus_FILE_STATUS_HEALTHY
 	}
 
@@ -2665,15 +2741,16 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 
 	// Update database health tracking (blocking with timeout)
 	errorMsg := dataCorruptionErr.Error()
-	sourceNzbPath := &mvf.meta.SourceNzbPath
-	if *sourceNzbPath == "" {
-		sourceNzbPath = nil
+	sourceNzbPath := snap.sourceNzbPath
+	var sourceNzbPtr *string
+	if sourceNzbPath != "" {
+		sourceNzbPtr = &sourceNzbPath
 	}
 
 	details := database.HealthErrorDetails{
 		ErrorType:       "ArticleNotFound",
 		MissingArticles: 1,
-		TotalArticles:   len(mvf.meta.SegmentData),
+		TotalArticles:   snap.totalSegments,
 		PlaybackImpact:  classification,
 	}
 	errorDetails := details.Marshal()
@@ -2777,7 +2854,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 		mvf.name,
 		dbStatus,
 		&errorMsg,
-		sourceNzbPath,
+		sourceNzbPtr,
 		errorDetails,
 		scheduleImmediately,
 		time.Now().UTC(),
