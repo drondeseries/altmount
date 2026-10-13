@@ -1317,23 +1317,27 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 // "Proof.2005.1080p/movie.mkv") is not misclassified: files over
 // fileinfo.MaxSampleSizeBytes are never samples. With unknown size (e.g. after
 // the streaming path moved metadata to the safety folder) the worker stays
-// conservative and only treats an explicit base-filename token as ancillary —
-// a directory token alone never suppresses ARR repair here.
+// conservative and never suppresses repair: an ambiguous basename token alone
+// (e.g. "Proof.2005.1080p.mkv") cannot prove the file is a small clip, so
+// repair proceeds.
 func (hw *HealthWorker) isAncillarySampleClip(ctx context.Context, filePath string) bool {
 	if hw.metadataService != nil {
 		if meta, err := hw.metadataService.ReadFileMetadata(filePath); err == nil && meta != nil {
 			return fileinfo.IsSampleOrProof(filePath, meta.FileSize)
 		}
 	}
-	return fileinfo.SampleProofPattern.MatchString(filepathBase(filePath))
+	return false
 }
 
-func filepathBase(p string) string {
-	base := filepath.Base(p)
-	if i := strings.LastIndex(base, "\\"); i >= 0 {
-		base = base[i+1:]
+// isAncillarySampleClipWithSize is the size-aware variant used when the caller
+// already resolved live metadata (e.g. triggerFileRepair captured the size
+// before any safety-folder move). A known size is authoritative; an unknown
+// size never suppresses repair (see isAncillarySampleClip).
+func (hw *HealthWorker) isAncillarySampleClipWithSize(ctx context.Context, filePath string, size int64, ok bool) bool {
+	if ok {
+		return fileinfo.IsSampleOrProof(filePath, size)
 	}
-	return base
+	return hw.isAncillarySampleClip(ctx, filePath)
 }
 
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
@@ -1389,6 +1393,8 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// Check if file metadata still exists. If not, the file is gone (likely upgraded/deleted by Sonarr already)
 	// and this health record is a zombie.
 	var metadataErr error
+	var liveMetaSize int64
+	var liveMetaOK bool
 	{
 		meta, err := hw.metadataService.ReadFileMetadata(filePath)
 		if err != nil {
@@ -1405,6 +1411,9 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 				return repairOutcomeDeleted, delErr
 			}
 			return repairOutcomeDeleted, nil
+		} else {
+			liveMetaSize = meta.FileSize
+			liveMetaOK = true
 		}
 	}
 
@@ -1423,8 +1432,11 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// Ancillary sample/proof protection: scene releases frequently bundle small sample
 	// or proof clips. These clips are never tracked as library entities by ARRs, and
 	// attempting an ARR rescan on them using parent metadata would blocklist the entire
-	// release and redownload the healthy main media.
-	if hw.isAncillarySampleClip(ctx, filePath) {
+	// release and redownload the healthy main media. The live metadata size (when
+	// available) is authoritative; after the streaming path moves metadata to the
+	// safety folder the worker falls back to basename-only matching, which never
+	// suppresses repair on a directory token alone.
+	if hw.isAncillarySampleClipWithSize(ctx, filePath, liveMetaSize, liveMetaOK) {
 		slog.WarnContext(ctx, "Corrupted file is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
 			"file_path", filePath)
 		if hw.configGetter().GetHealthDeleteOnCorruption() {
@@ -1504,6 +1516,13 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
 	filePath := item.FilePath
 
+	// After the streaming path moves metadata to the safety folder the size is
+	// unknowable here, so the worker never suppresses repair on an ambiguous
+	// token alone (see isAncillarySampleClip). A genuine small clip that
+	// reaches repair_triggered without live metadata still gets repaired
+	// rather than skipped — the scheduler already strips its ARR authority, so
+	// the rescan resolves to no-op/path-miss instead of blocklisting the
+	// parent release.
 	if hw.isAncillarySampleClip(ctx, filePath) {
 		slog.WarnContext(ctx, "File in repair is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
 			"file_path", filePath)

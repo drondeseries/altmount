@@ -305,6 +305,63 @@ func TestE2E_FileRepairTriggered_ARRResearchCalled(t *testing.T) {
 	assert.NoError(t, readErr, "ReadFileMetadata should return (nil, nil) for missing file")
 }
 
+// TestE2E_FullLengthTitleWithProofToken_StillRepairs verifies that a full-length
+// movie whose basename contains a sample/proof token is NOT treated as an
+// ancillary clip: after its metadata is moved to the safety folder (so size is
+// unknowable), ARR repair must still fire.
+func TestE2E_FullLengthTitleWithProofToken_StillRepairs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	env := newRepairTestEnv(t, tempDir, nil)
+
+	ctx := context.Background()
+	filePath := "movies/Proof.2005.1080p.mkv"
+	libraryPath := "/media/library/Proof.2005.1080p.mkv"
+	maxRetries := 3
+
+	meta := validSegmentMeta(env.metadataService, 4*1024*1024*1024)
+	require.NoError(t, env.metadataService.WriteFileMetadata(filePath, meta))
+	insertFileHealth(t, env.db, filePath, libraryPath, maxRetries-1, maxRetries)
+
+	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
+
+	env.mockARRs.mu.Lock()
+	calls := env.mockARRs.calls
+	env.mockARRs.mu.Unlock()
+
+	require.Len(t, calls, 1, "full-length title with Proof token must still trigger ARR repair")
+	assert.Equal(t, libraryPath, calls[0].pathForRescan)
+}
+
+// TestE2E_SmallSampleClip_SkipsARRRepair verifies that a genuine small sample
+// clip never drives release-level ARR repair.
+func TestE2E_SmallSampleClip_SkipsARRRepair(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	env := newRepairTestEnv(t, tempDir, nil)
+
+	ctx := context.Background()
+	filePath := "movies/Release/sample.mkv"
+	libraryPath := "/media/library/sample.mkv"
+	maxRetries := 3
+
+	meta := validSegmentMeta(env.metadataService, 20*1024*1024)
+	require.NoError(t, env.metadataService.WriteFileMetadata(filePath, meta))
+	insertFileHealth(t, env.db, filePath, libraryPath, maxRetries-1, maxRetries)
+
+	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
+
+	env.mockARRs.mu.Lock()
+	calls := env.mockARRs.calls
+	env.mockARRs.mu.Unlock()
+
+	assert.Empty(t, calls, "small sample clip must not trigger ARR repair")
+}
+
 // TestE2E_FileRepairTriggered_FullRetryFlow verifies that a file starting at retry_count=0
 // requires exactly MaxRetries failed cycles before ARR repair is triggered.
 func TestE2E_FileRepairTriggered_FullRetryFlow(t *testing.T) {
