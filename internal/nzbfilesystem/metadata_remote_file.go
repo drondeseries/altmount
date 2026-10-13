@@ -2682,12 +2682,13 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnErrorWithSnapshot(dataCorrupti
 			"deferred_to_health_worker", healthEnabled)
 
 		errMsg := dataCorruptionErr.Error()
-		sourceNzb := &mvf.meta.SourceNzbPath
-		if *sourceNzb == "" {
-			sourceNzb = nil
+		sourceNzb := snap.sourceNzbPath
+		var sourceNzbPtr *string
+		if sourceNzb != "" {
+			sourceNzbPtr = &sourceNzb
 		}
 		if err := mvf.healthRepository.UpdateFileHealthScheduled(ctx,
-			mvf.name, database.HealthStatusPending, &errMsg, sourceNzb, nil, true, time.Now().UTC(),
+			mvf.name, database.HealthStatusPending, &errMsg, sourceNzbPtr, nil, true, time.Now().UTC(),
 		); err != nil {
 			slog.WarnContext(ctx, "Failed to schedule health re-check after an unconfirmed streaming failure",
 				"file", mvf.name, "error", err)
@@ -2740,15 +2741,16 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnErrorWithSnapshot(dataCorrupti
 
 	// Update database health tracking (blocking with timeout)
 	errorMsg := dataCorruptionErr.Error()
-	sourceNzbPath := &mvf.meta.SourceNzbPath
-	if *sourceNzbPath == "" {
-		sourceNzbPath = nil
+	sourceNzbPath := snap.sourceNzbPath
+	var sourceNzbPtr *string
+	if sourceNzbPath != "" {
+		sourceNzbPtr = &sourceNzbPath
 	}
 
 	details := database.HealthErrorDetails{
 		ErrorType:       "ArticleNotFound",
 		MissingArticles: 1,
-		TotalArticles:   len(mvf.meta.SegmentData),
+		TotalArticles:   snap.totalSegments,
 		PlaybackImpact:  classification,
 	}
 	errorDetails := details.Marshal()
@@ -2852,7 +2854,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnErrorWithSnapshot(dataCorrupti
 		mvf.name,
 		dbStatus,
 		&errorMsg,
-		sourceNzbPath,
+		sourceNzbPtr,
 		errorDetails,
 		scheduleImmediately,
 		time.Now().UTC(),

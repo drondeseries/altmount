@@ -1315,17 +1315,25 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 // is resolved from metadata when available so full-length media whose
 // release-title tokens contain "sample"/"proof" (e.g.
 // "Proof.2005.1080p/movie.mkv") is not misclassified: files over
-// fileinfo.MaxSampleSizeBytes are never samples. Unknown sizes fall back to
-// the conservative token match (which excludes Sample/Proof directory layouts
-// for importer compatibility).
+// fileinfo.MaxSampleSizeBytes are never samples. With unknown size (e.g. after
+// the streaming path moved metadata to the safety folder) the worker stays
+// conservative and only treats an explicit base-filename token as ancillary —
+// a directory token alone never suppresses ARR repair here.
 func (hw *HealthWorker) isAncillarySampleClip(ctx context.Context, filePath string) bool {
-	var size int64
 	if hw.metadataService != nil {
 		if meta, err := hw.metadataService.ReadFileMetadata(filePath); err == nil && meta != nil {
-			size = meta.FileSize
+			return fileinfo.IsSampleOrProof(filePath, meta.FileSize)
 		}
 	}
-	return fileinfo.IsSampleOrProof(filePath, size)
+	return fileinfo.SampleProofPattern.MatchString(filepathBase(filePath))
+}
+
+func filepathBase(p string) string {
+	base := filepath.Base(p)
+	if i := strings.LastIndex(base, "\\"); i >= 0 {
+		base = base[i+1:]
+	}
+	return base
 }
 
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
