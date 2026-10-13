@@ -307,8 +307,7 @@ func TestE2E_FileRepairTriggered_ARRResearchCalled(t *testing.T) {
 
 // TestE2E_FullLengthTitleWithProofToken_StillRepairs verifies that a full-length
 // movie whose basename contains a sample/proof token is NOT treated as an
-// ancillary clip: after its metadata is moved to the safety folder (so size is
-// unknowable), ARR repair must still fire.
+// ancillary clip on the initial repair path (live metadata size authoritative).
 func TestE2E_FullLengthTitleWithProofToken_StillRepairs(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks not supported on Windows")
@@ -332,6 +331,57 @@ func TestE2E_FullLengthTitleWithProofToken_StillRepairs(t *testing.T) {
 	env.mockARRs.mu.Unlock()
 
 	require.Len(t, calls, 1, "full-length title with Proof token must still trigger ARR repair")
+	assert.Equal(t, libraryPath, calls[0].pathForRescan)
+}
+
+// TestE2E_FullLengthTitleWithProofToken_RetriggerAfterMoveStillRepairs locks
+// the exact regression: after the initial repair moves metadata to the safety
+// folder (size unknowable), a repair_triggered re-notification must still fire
+// ARR repair rather than suppressing it as a sample.
+func TestE2E_FullLengthTitleWithProofToken_RetriggerAfterMoveStillRepairs(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+	tempDir := t.TempDir()
+	env := newRepairTestEnv(t, tempDir, nil)
+
+	ctx := context.Background()
+	filePath := "movies/Proof.2005.1080p.mkv"
+	libraryPath := "/media/library/Proof.2005.1080p.mkv"
+	maxRetries := 3
+
+	meta := validSegmentMeta(env.metadataService, 4*1024*1024*1024)
+	require.NoError(t, env.metadataService.WriteFileMetadata(filePath, meta))
+	insertFileHealth(t, env.db, filePath, libraryPath, maxRetries-1, maxRetries)
+
+	require.NoError(t, env.hw.runHealthCheckCycle(ctx))
+
+	env.mockARRs.mu.Lock()
+	require.Len(t, env.mockARRs.calls, 1, "initial repair must fire before the move")
+	env.mockARRs.calls = nil
+	env.mockARRs.mu.Unlock()
+
+	// Metadata is now in the safety folder; the live path is unreadable.
+	original, readErr := env.metadataService.ReadFileMetadata(filePath)
+	require.Nil(t, original, "metadata must be moved to the safety folder")
+	require.NoError(t, readErr)
+
+	// Drive the repair_triggered re-notification path directly.
+	fh, err := env.healthRepo.GetFileHealth(ctx, filePath)
+	require.NoError(t, err)
+	require.NotNil(t, fh)
+	require.Equal(t, database.HealthStatusRepairTriggered, fh.Status)
+
+	update, sideEffect := env.hw.prepareRepairNotificationUpdate(ctx, fh)
+	require.NotNil(t, update)
+	require.NotNil(t, sideEffect)
+	require.NoError(t, sideEffect())
+
+	env.mockARRs.mu.Lock()
+	calls := env.mockARRs.calls
+	env.mockARRs.mu.Unlock()
+
+	require.Len(t, calls, 1, "retrigger after metadata move must still fire ARR repair")
 	assert.Equal(t, libraryPath, calls[0].pathForRescan)
 }
 

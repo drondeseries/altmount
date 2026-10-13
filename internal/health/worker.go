@@ -1433,9 +1433,9 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// or proof clips. These clips are never tracked as library entities by ARRs, and
 	// attempting an ARR rescan on them using parent metadata would blocklist the entire
 	// release and redownload the healthy main media. The live metadata size (when
-	// available) is authoritative; after the streaming path moves metadata to the
-	// safety folder the worker falls back to basename-only matching, which never
-	// suppresses repair on a directory token alone.
+	// available) is authoritative; with unknown size (e.g. after the streaming path
+	// moved metadata to the safety folder) repair is never suppressed on an
+	// ambiguous token alone.
 	if hw.isAncillarySampleClipWithSize(ctx, filePath, liveMetaSize, liveMetaOK) {
 		slog.WarnContext(ctx, "Corrupted file is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
 			"file_path", filePath)
