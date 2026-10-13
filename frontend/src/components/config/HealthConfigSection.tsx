@@ -40,6 +40,22 @@ export function HealthConfigSection({
 				return "Library Directory is required when file cleanup is enabled";
 			}
 		}
+		const r = data.recheck;
+		if (r) {
+			const fA = r.fresh_age_hours || 72;
+			const eA = r.early_age_days || 7;
+			const mA = r.mid_age_days || 30;
+			if (fA >= eA * 24 || eA >= mA) {
+				return "Recheck ages must increase: fresh hours < early days × 24 < mid days × 24";
+			}
+			const fH = r.fresh_hours || 2;
+			const eH = r.early_hours || 12;
+			const mH = r.mid_hours || 24;
+			const aD = r.aged_days || 7;
+			if (fH > eH || eH > mH || mH > aD * 24) {
+				return "Recheck intervals must not decrease with age: fresh ≤ early ≤ mid ≤ aged";
+			}
+		}
 		return "";
 	};
 
@@ -114,6 +130,38 @@ export function HealthConfigSection({
 		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.health));
 		setValidationError(validateFormData(newData));
 	};
+
+	const handleRecheckChange = (
+		field: keyof NonNullable<HealthConfig["recheck"]>,
+		value: number | undefined,
+	) => {
+		// Blank input → explicit 0, which the backend treats as "default".
+		// Sending 0 (not omitting) is what makes clear→save→reload restore
+		// the default instead of keeping the old value: the PATCH handler
+		// merges into a copy of the existing config, so omitted fields would
+		// retain their previous values. The block is always retained (even
+		// all-zeros) for the same reason — an omitted block preserves every
+		// previously saved override.
+		const v = value === undefined || Number.isNaN(value) ? 0 : value;
+		const newData = { ...formData, recheck: { ...(formData.recheck ?? {}), [field]: v } };
+		setFormData(newData);
+		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.health));
+		setValidationError(validateFormData(newData));
+	};
+
+	// Human preview of the effective schedule (0/blank resolve to defaults,
+	// mirroring GetHealthRecheckSchedule).
+	const recheckPreview = (() => {
+		const r = formData.recheck ?? {};
+		const fH = r.fresh_hours || 2;
+		const fA = r.fresh_age_hours || 72;
+		const eH = r.early_hours || 12;
+		const eA = r.early_age_days || 7;
+		const mH = r.mid_hours || 24;
+		const mA = r.mid_age_days || 30;
+		const aD = r.aged_days || 7;
+		return `Effective: every ${fH}h for the first ${fA}h → every ${eH}h until day ${eA} → every ${mH}h until day ${mA} → every ${aD}d after. Blank fields use defaults. New intervals apply to subsequently scheduled checks; files already queued keep their current slot.`;
+	})();
 
 	const handleSave = async () => {
 		if (onUpdate && hasChanges && !validationError) {
@@ -395,6 +443,161 @@ export function HealthConfigSection({
 				</div>
 
 				<CorruptedMetadataCard isReadOnly={isReadOnly} />
+
+				{/* Recheck Schedule — decay-shaped tiers by NZB age */}
+				<div className="space-y-6 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">
+					<div className="min-w-0">
+						<h4 className="break-words font-bold text-base-content text-sm">Recheck Schedule</h4>
+						<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
+							How often healthy files are re-verified, by age of the Usenet post. Takedowns and
+							propagation delays cluster in the first days, so fresh files check every couple of
+							hours; old files decay to weekly. Leave blank for defaults.
+						</p>
+					</div>
+
+					<div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+						<fieldset className="fieldset rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+							<legend className="fieldset-legend px-1 font-semibold text-xs">
+								Fresh — every (hours)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.fresh_hours || ""}
+								placeholder="2"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("fresh_hours", Number.parseInt(e.target.value, 10))
+								}
+							/>
+							<p className="label break-words text-[10px] text-base-content/50">
+								Recheck interval for new posts.
+							</p>
+							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
+								Fresh until (hours old)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.fresh_age_hours || ""}
+								placeholder="72"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("fresh_age_hours", Number.parseInt(e.target.value, 10))
+								}
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+							<legend className="fieldset-legend px-1 font-semibold text-xs">
+								Early — every (hours)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.early_hours || ""}
+								placeholder="12"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("early_hours", Number.parseInt(e.target.value, 10))
+								}
+							/>
+							<p className="label break-words text-[10px] text-base-content/50">
+								Catches week-one late takedowns.
+							</p>
+							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
+								Early until (days old)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.early_age_days || ""}
+								placeholder="7"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("early_age_days", Number.parseInt(e.target.value, 10))
+								}
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+							<legend className="fieldset-legend px-1 font-semibold text-xs">
+								Mid — every (hours)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.mid_hours || ""}
+								placeholder="24"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("mid_hours", Number.parseInt(e.target.value, 10))
+								}
+							/>
+							<p className="label break-words text-[10px] text-base-content/50">
+								Daily steady-state coverage.
+							</p>
+							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
+								Mid until (days old)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.mid_age_days || ""}
+								placeholder="30"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("mid_age_days", Number.parseInt(e.target.value, 10))
+								}
+							/>
+						</fieldset>
+
+						<fieldset className="fieldset rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+							<legend className="fieldset-legend px-1 font-semibold text-xs">
+								Aged — every (days)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.aged_days || ""}
+								placeholder="7"
+								disabled={isReadOnly}
+								min={1}
+								onChange={(e) =>
+									handleRecheckChange("aged_days", Number.parseInt(e.target.value, 10))
+								}
+							/>
+							<p className="label break-words text-[10px] text-base-content/50">
+								Retention-drift coverage for old files.
+							</p>
+							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
+								Minimum gap (minutes)
+							</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.recheck?.min_minutes || ""}
+								placeholder="30"
+								disabled={isReadOnly}
+								min={5}
+								onChange={(e) =>
+									handleRecheckChange("min_minutes", Number.parseInt(e.target.value, 10))
+								}
+							/>
+						</fieldset>
+					</div>
+					{recheckPreview && (
+						<p className="rounded-xl border border-primary/10 bg-primary/5 p-3 text-[11px] text-base-content/70 leading-relaxed">
+							{recheckPreview}
+						</p>
+					)}
+				</div>
 
 				{/* Directory Configuration */}
 				<div className="space-y-6 rounded-2xl border-2 border-base-300/80 bg-base-200/60 p-6">

@@ -789,6 +789,24 @@ type HealthConfig struct {
 	// nil or 0 means keep forever, which is what every install did before this
 	// setting existed.
 	CorruptedRetentionDays *int `yaml:"corrupted_retention_days" mapstructure:"corrupted_retention_days" json:"corrupted_retention_days,omitempty"`
+	// Recheck controls how often healthy/degraded files are re-verified, in
+	// decay-shaped tiers by NZB age. Zero values mean "use the default"
+	// (fresh 0-72h every 2h, early 3-7d every 12h, mid 7-30d daily, aged >30d
+	// weekly, 30min floor). Existing configs upgrade silently.
+	Recheck HealthRecheckConfig `yaml:"recheck" mapstructure:"recheck" json:"recheck,omitempty"`
+}
+
+// HealthRecheckConfig configures the tiered recheck schedule for
+// healthy/degraded files. All fields are optional; zero means default.
+type HealthRecheckConfig struct {
+	FreshAgeHours int `yaml:"fresh_age_hours" mapstructure:"fresh_age_hours" json:"fresh_age_hours,omitempty"`
+	FreshHours    int `yaml:"fresh_hours" mapstructure:"fresh_hours" json:"fresh_hours,omitempty"`
+	EarlyAgeDays  int `yaml:"early_age_days" mapstructure:"early_age_days" json:"early_age_days,omitempty"`
+	EarlyHours    int `yaml:"early_hours" mapstructure:"early_hours" json:"early_hours,omitempty"`
+	MidAgeDays    int `yaml:"mid_age_days" mapstructure:"mid_age_days" json:"mid_age_days,omitempty"`
+	MidHours      int `yaml:"mid_hours" mapstructure:"mid_hours" json:"mid_hours,omitempty"`
+	AgedDays      int `yaml:"aged_days" mapstructure:"aged_days" json:"aged_days,omitempty"`
+	MinMinutes    int `yaml:"min_minutes" mapstructure:"min_minutes" json:"min_minutes,omitempty"`
 }
 
 // Path validation functions have been moved to internal/utils/path.go
@@ -1310,6 +1328,68 @@ func (c *Config) Validate() error {
 	}
 
 	// Validate streaming configuration
+
+	// Validate health recheck schedule. Zero means unset (resolved to the
+	// default in GetHealthRecheckSchedule); negatives are rejected so
+	// validation stays idempotent (a negative must not normalize to 0 on one
+	// pass and then to the default on the next). Ages must be ordered and the
+	// full interval chain fresh <= early <= mid <= aged must hold.
+	if c.Health.Recheck.FreshAgeHours < 0 || c.Health.Recheck.FreshAgeHours > 24*365 {
+		return fmt.Errorf("health recheck fresh_age_hours must be between 0 (default) and %d", 24*365)
+	}
+	if c.Health.Recheck.EarlyAgeDays < 0 || c.Health.Recheck.EarlyAgeDays > 365 {
+		return fmt.Errorf("health recheck early_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MidAgeDays < 0 || c.Health.Recheck.MidAgeDays > 365 {
+		return fmt.Errorf("health recheck mid_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.FreshHours < 0 || c.Health.Recheck.FreshHours > 24*30 {
+		return fmt.Errorf("health recheck fresh_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.EarlyHours < 0 || c.Health.Recheck.EarlyHours > 24*30 {
+		return fmt.Errorf("health recheck early_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.MidHours < 0 || c.Health.Recheck.MidHours > 24*30 {
+		return fmt.Errorf("health recheck mid_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.AgedDays < 0 || c.Health.Recheck.AgedDays > 365 {
+		return fmt.Errorf("health recheck aged_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MinMinutes < 0 || c.Health.Recheck.MinMinutes > 60*24*30 {
+		return fmt.Errorf("health recheck min_minutes must be between 0 (default) and %d", 60*24*30)
+	}
+	// Ordering checks resolve zeros to defaults first (mirrors the accessor),
+	// so partially-set configs validate against what will actually execute.
+	rh := c.Health.Recheck
+	fA, eA, mA := rh.FreshAgeHours, rh.EarlyAgeDays*24, rh.MidAgeDays*24
+	if fA == 0 {
+		fA = 72
+	}
+	if eA == 0 {
+		eA = 7 * 24
+	}
+	if mA == 0 {
+		mA = 30 * 24
+	}
+	if fA >= eA || eA >= mA {
+		return fmt.Errorf("health recheck ages must be strictly increasing (fresh_age_hours < early_age_days*24 < mid_age_days*24)")
+	}
+	fH, eH, mH, aI := rh.FreshHours, rh.EarlyHours, rh.MidHours, rh.AgedDays*24
+	if fH == 0 {
+		fH = 2
+	}
+	if eH == 0 {
+		eH = 12
+	}
+	if mH == 0 {
+		mH = 24
+	}
+	if aI == 0 {
+		aI = 7 * 24
+	}
+	if fH > eH || eH > mH || mH > aI {
+		return fmt.Errorf("health recheck intervals must be non-decreasing (fresh_hours <= early_hours <= mid_hours <= aged_days*24)")
+	}
 
 	// Validate health configuration (always active)
 	if c.Health.CheckIntervalSeconds <= 0 {

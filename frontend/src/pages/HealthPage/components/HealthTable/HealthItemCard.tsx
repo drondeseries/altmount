@@ -153,6 +153,20 @@ export const HealthItemCard = memo(function HealthItemCard({
 								<ArticleCheckProgress progress={item.check_progress} />
 							)}
 
+							{item.is_masked && (
+								<span
+									className="badge badge-warning badge-sm gap-1"
+									title={
+										item.streaming_failure_count > 0
+											? `Hidden from the library after ${item.streaming_failure_count} recorded playback failure(s). Unmask clears the mask and requests a health recheck; whether playback resumes depends on file health and repair state.`
+											: "Hidden from the library after repeated playback failures. Unmask clears the mask and requests a health recheck."
+									}
+								>
+									{item.streaming_failure_count > 0
+										? `Hidden after ${item.streaming_failure_count} playback failure${item.streaming_failure_count === 1 ? "" : "s"}`
+										: "Hidden after playback failures"}
+								</span>
+							)}
 							<button
 								type="button"
 								className="badge badge-sm cursor-pointer transition-transform hover:scale-110"
@@ -184,6 +198,16 @@ export const HealthItemCard = memo(function HealthItemCard({
 							{(item.status === "repair_triggered" || item.repair_retry_count > 0) && (
 								<span className="badge badge-info badge-xs" title="Repair retries">
 									R: {item.repair_retry_count}/{item.max_repair_retries}
+								</span>
+							)}
+
+							{item.streaming_failure_count > 0 && (
+								<span
+									className="badge badge-warning badge-xs"
+									title={`${item.streaming_failure_count} playback failure(s) detected while streaming. Repair is requested after repeated failures.`}
+								>
+									▶ {item.streaming_failure_count} playback failure
+									{item.streaming_failure_count === 1 ? "" : "s"}
 								</span>
 							)}
 						</div>
