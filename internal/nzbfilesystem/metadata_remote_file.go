@@ -1097,16 +1097,40 @@ func (mvf *MetadataVirtualFile) readContext() context.Context {
 	return context.Background()
 }
 
+// streamingFailureReport carries a captured streaming failure plus the
+// mvf.meta-derived snapshot needed to report it. The snapshot is captured
+// under mvf.mu so the deferred report (which runs after the lock is
+// released) cannot race with Close(), which nils mvf.meta under the same
+// lock. Defined in holes.go next to streamingFailureSnapshot.
+func (mvf *MetadataVirtualFile) captureStreamingFailure(readErr error, pending **streamingFailureReport) error {
+	var dcErr *usenet.DataCorruptionError
+	if !errors.As(readErr, &dcErr) || dcErr == nil {
+		return readErr
+	}
+	if pending != nil && *pending == nil && mvf.meta != nil {
+		*pending = &streamingFailureReport{
+			dataCorruptionErr: dcErr,
+			snap:              mvf.snapshotStreamingFailure(),
+			noRetry:           dcErr.NoRetry,
+		}
+	}
+	return dcErr
+}
+
 // classifyReadError maps a reader error to the error a read should return,
 // reporting data corruption to the health pipeline on the way. This is what
 // feeds streaming failure masking — without it a DMCA'd file never accumulates
-// failures and is never masked. If pendingErr is provided, the health update
-// is captured to run after the handle lock is released.
-func (mvf *MetadataVirtualFile) classifyReadError(readErr error, pendingErr ...**usenet.DataCorruptionError) error {
+// failures and is never masked. If pending is provided, the report (error +
+// lock-captured snapshot) is captured to run after the handle lock is
+// released; otherwise the report runs inline (callers without the lock, or
+// tests calling updateFileHealthOnError directly).
+func (mvf *MetadataVirtualFile) classifyReadError(readErr error, pending ...**streamingFailureReport) error {
 	var dataCorruptionErr *usenet.DataCorruptionError
 	if errors.As(readErr, &dataCorruptionErr) {
-		if len(pendingErr) > 0 && pendingErr[0] != nil {
-			*pendingErr[0] = dataCorruptionErr
+		if len(pending) > 0 && pending[0] != nil {
+			if repErr := mvf.captureStreamingFailure(dataCorruptionErr, pending[0]); repErr != dataCorruptionErr {
+				return repErr
+			}
 		} else {
 			mvf.updateFileHealthOnError(dataCorruptionErr, dataCorruptionErr.NoRetry)
 		}
@@ -1244,11 +1268,9 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 		}
 	}()
 
-	var pendingErr *usenet.DataCorruptionError
+	var pending *streamingFailureReport
 	defer func() {
-		if pendingErr != nil {
-			mvf.updateFileHealthOnError(pendingErr, pendingErr.NoRetry)
-		}
+		mvf.reportStreamingFailure(pending)
 	}()
 
 	mvf.mu.Lock()
@@ -1284,7 +1306,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 				// the range end; rotating once more would spin here holding mvf.mu.
 				if totalRead == 0 && mvf.position == stalledAt {
 					mvf.closeCurrentReader()
-					return n, mvf.classifyReadError(mvf.truncatedTailError(mvf.position), &pendingErr)
+					return n, mvf.classifyReadError(mvf.truncatedTailError(mvf.position), &pending)
 				}
 				stalledAt = mvf.position
 				// Close current reader and try to get a new one for the next range in next iteration
@@ -1295,7 +1317,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 			// For data corruption errors, report and mark as corrupted
 			var dataCorruptionErr *usenet.DataCorruptionError
 			if errors.As(readErr, &dataCorruptionErr) {
-				return n, mvf.classifyReadError(dataCorruptionErr, &pendingErr)
+				return n, mvf.classifyReadError(dataCorruptionErr, &pending)
 			}
 
 			return n, readErr
@@ -1341,11 +1363,9 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 		}
 	}()
 
-	var pendingErr *usenet.DataCorruptionError
+	var pending *streamingFailureReport
 	defer func() {
-		if pendingErr != nil {
-			mvf.updateFileHealthOnError(pendingErr, pendingErr.NoRetry)
-		}
+		mvf.reportStreamingFailure(pending)
 	}()
 
 	mvf.mu.Lock()
@@ -1468,7 +1488,7 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 			// next read rebuilds cleanly rather than inheriting the failure.
 			mvf.closeCurrentReader()
 			mvf.readAtSharedNext = -1
-			return n, mvf.classifyReadError(sharedErr, &pendingErr)
+			return n, mvf.classifyReadError(sharedErr, &pending)
 		}
 		return n, nil
 	}
@@ -1546,7 +1566,7 @@ ephemeral:
 		// Same reporting as the shared path — scrub-driven reads must feed
 		// failure masking too, otherwise a player that seeks never marks a
 		// DMCA'd file as failing.
-		return n, mvf.classifyReadError(err, &pendingErr)
+		return n, mvf.classifyReadError(err, &pending)
 	}
 
 	return n, nil
@@ -2581,6 +2601,28 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	if mvf.healthRepository == nil || mvf.metadataService == nil || mvf.configGetter == nil {
 		return
 	}
+	mvf.updateFileHealthOnErrorWithSnapshot(dataCorruptionErr, nil, noRetry)
+}
+
+// updateFileHealthOnErrorWithSnapshot reports a streaming failure using an
+// optional lock-captured snapshot (see streamingFailureSnapshot). A nil snap
+// means the caller already holds mvf.mu (or guarantees no concurrent Close)
+// and the snapshot is taken inline; a non-nil snap was captured under mvf.mu
+// and is safe to use after the lock is released.
+func (mvf *MetadataVirtualFile) updateFileHealthOnErrorWithSnapshot(dataCorruptionErr *usenet.DataCorruptionError, snap *streamingFailureSnapshot, noRetry bool) {
+	// Health reporting needs both persistence layers. Handles built without
+	// them (nzbdav bridge, tests) have nothing to record — bail rather than
+	// nil-deref. This runs on the read path, where a panic would take the whole
+	// mount down.
+	if mvf.healthRepository == nil || mvf.metadataService == nil || mvf.configGetter == nil {
+		return
+	}
+	if snap == nil {
+		if mvf.meta == nil {
+			return
+		}
+		snap = mvf.snapshotStreamingFailure()
+	}
 
 	// Per-path debounce: short-circuit if this file already triggered a repair
 	// inside the debounce window. ShouldTrigger handles a nil coalescer
@@ -2609,7 +2651,7 @@ func (mvf *MetadataVirtualFile) updateFileHealthOnError(dataCorruptionErr *usene
 	// whether this failure triggers a repair at all. Note that with hole
 	// hooks wired, within-caps misses are zero-filled and never reach this
 	// path; a degraded verdict here is the exception (e.g. hooks disabled).
-	classification := mvf.classifyStreamingFailure(dataCorruptionErr)
+	classification := mvf.classifyStreamingFailure(dataCorruptionErr, snap)
 	isDegraded := healthEnabled && classification != nil &&
 		classification.Verdict == holes.VerdictDegraded
 

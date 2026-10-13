@@ -142,11 +142,29 @@ var SampleProofPattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])(sample|proof)(
 
 // IsSampleOrProof checks if a path and size (if known) indicate an ancillary sample or proof clip.
 // Files larger than 200MB are considered full media, not sample clips.
+// Matching is conservative with unknown sizes: the standalone-token pattern
+// must hit the base filename. Only when the size is known-small do we also
+// treat Sample/Proof directory components as ancillary — scene releases
+// frequently bundle small clips under a Sample/ folder, while a directory
+// token alone (e.g. "sample/movie.mkv" with unknown size) keeps the old
+// full-path behavior for importer filtering compatibility.
 func IsSampleOrProof(path string, size int64) bool {
 	if path == "" {
 		return false
 	}
 	if size > MaxSampleSizeBytes {
+		return false
+	}
+	base := filepath.Base(path)
+	if SampleProofPattern.MatchString(base) {
+		return true
+	}
+	if size > 0 {
+		lower := strings.ToLower(path)
+		if strings.Contains(lower, "/sample/") || strings.Contains(lower, "\\sample\\") ||
+			strings.Contains(lower, "/proof/") || strings.Contains(lower, "\\proof\\") {
+			return true
+		}
 		return false
 	}
 	return SampleProofPattern.MatchString(path)

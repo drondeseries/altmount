@@ -102,21 +102,24 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 		// of the entire 50GB release).
 		fileMetadata := itemMetadata
 		fileDownloadID := downloadID
+		clearAuthority := false
 		if fileinfo.IsSampleOrProof(p, fileMeta.FileSize) {
 			fileMetadata = nil
 			fileDownloadID = nil
+			clearAuthority = true
 		}
 
 		records = append(records, database.HealthCheckUpsert{
-			FilePath:         filePath,
-			LibraryPath:      &filePath,
-			SourceNzbPath:    &srcNzb,
-			Indexer:          indexer,
-			Priority:         database.HealthPriorityNext,
-			MaxRetries:       cfg.GetMaxRetries(),
-			MaxRepairRetries: cfg.GetMaxRepairRetries(),
-			DownloadID:       fileDownloadID,
-			Metadata:         fileMetadata,
+			FilePath:              filePath,
+			LibraryPath:           &filePath,
+			SourceNzbPath:         &srcNzb,
+			Indexer:               indexer,
+			Priority:              database.HealthPriorityNext,
+			MaxRetries:            cfg.GetMaxRetries(),
+			MaxRepairRetries:      cfg.GetMaxRepairRetries(),
+			DownloadID:            fileDownloadID,
+			Metadata:              fileMetadata,
+			ClearReleaseAuthority: clearAuthority,
 		})
 		repairDirs[filepath.Dir(p)] = struct{}{}
 	}
@@ -168,15 +171,26 @@ var arrAudioBookExtensions = map[string]bool{
 // isArrImportableMedia reports whether the virtual path is a media file an ARR could
 // import into the library — i.e. one that can ever be relinked to a real library path
 // by a Download webhook and so become eligible for health checks under SYMLINK/STRM.
-// Sample and proof files are never imported into libraries by ARRs.
+// Sample and proof files are never imported into libraries by ARRs. This
+// pre-metadata filter stays conservative (base-filename token match only) so a
+// release-title token such as "Proof.2005.1080p/movie.mkv" is not excluded here;
+// the per-file size-aware check below is authoritative once metadata is read.
 func isArrImportableMedia(p string) bool {
-	if fileinfo.IsSampleOrProof(p, 0) {
+	if fileinfo.SampleProofPattern.MatchString(filepathBase(p)) {
 		return false
 	}
 	if fileinfo.IsVideoFile(p) {
 		return true
 	}
 	return arrAudioBookExtensions[strings.ToLower(path.Ext(p))]
+}
+
+func filepathBase(p string) string {
+	base := path.Base(p)
+	if i := strings.LastIndex(base, "\\"); i >= 0 {
+		base = base[i+1:]
+	}
+	return base
 }
 // expandWrittenPaths resolves "DIR:"-prefixed entries (whole-directory imports such
 // as RAR/7z archives, which only report their NZB folder) into the per-file virtual

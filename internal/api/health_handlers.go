@@ -1204,15 +1204,31 @@ func (s *Server) handleUnmaskHealth(c *fiber.Ctx) error {
 		return RespondInternalError(c, "Failed to unmask file", err.Error())
 	}
 
-	// Re-arm file for immediate health verification
-	_ = s.healthRepo.UpdateScheduledCheckTime(c.Context(), item.FilePath, time.Now().UTC())
+	// Re-arm file for immediate health verification. A failure here must not
+	// be silent: the endpoint promises recovery, so surface it explicitly.
+	if err := s.healthRepo.UpdateScheduledCheckTime(c.Context(), item.FilePath, time.Now().UTC()); err != nil {
+		slog.WarnContext(c.Context(), "Unmasked file but failed to re-arm health verification",
+			"id", id, "file_path", item.FilePath, "error", err)
+		return RespondInternalError(c, "File unmasked but failed to schedule re-verification", err.Error())
+	}
 
 	// Reconcile metadata: if the metadata file is still present and was marked corrupted
 	// while the DB item status is pending, restore it to healthy so it can be re-accessed and re-verified.
+	// Uses the pre-unmask status snapshot; the worker may concurrently transition the
+	// record, so this is best-effort and failures are logged, not fatal.
+	metadataReconciled := false
 	if s.metadataService != nil {
-		if meta, metaErr := s.metadataService.ReadFileMetadata(item.FilePath); metaErr == nil && meta != nil {
+		if meta, metaErr := s.metadataService.ReadFileMetadata(item.FilePath); metaErr != nil {
+			slog.WarnContext(c.Context(), "Unmasked file but failed to read metadata for reconciliation",
+				"id", id, "file_path", item.FilePath, "error", metaErr)
+		} else if meta != nil {
 			if meta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED && item.Status == database.HealthStatusPending {
-				_ = s.metadataService.UpdateFileStatus(item.FilePath, metapb.FileStatus_FILE_STATUS_HEALTHY)
+				if updErr := s.metadataService.UpdateFileStatus(item.FilePath, metapb.FileStatus_FILE_STATUS_HEALTHY); updErr != nil {
+					slog.WarnContext(c.Context(), "Unmasked file but failed to reconcile metadata status",
+						"id", id, "file_path", item.FilePath, "error", updErr)
+				} else {
+					metadataReconciled = true
+				}
 			}
 		}
 	}
@@ -1224,11 +1240,12 @@ func (s *Server) handleUnmaskHealth(c *fiber.Ctx) error {
 	}
 
 	response := map[string]any{
-		"message":     "File unmasked successfully",
-		"id":          id,
-		"file_path":   item.FilePath,
-		"updated_at":  time.Now().Format(time.RFC3339),
-		"health_data": ToHealthItemResponse(updatedItem),
+		"message":             "File unmasked successfully",
+		"id":                  id,
+		"file_path":           item.FilePath,
+		"updated_at":          time.Now().Format(time.RFC3339),
+		"health_data":         ToHealthItemResponse(updatedItem),
+		"metadata_reconciled": metadataReconciled,
 	}
 
 	return RespondSuccess(c, response)

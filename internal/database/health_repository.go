@@ -795,6 +795,11 @@ type HealthCheckUpsert struct {
 	ReleaseDate      *time.Time
 	Metadata         *string
 	DownloadID       *string
+	// ClearReleaseAuthority strips inherited ARR repair authority (metadata +
+	// download_id) from ancillary sample/proof records. A nil Metadata on a
+	// normal record means "preserve", but samples must actively clear stale
+	// authority left by an earlier import of the same path.
+	ClearReleaseAuthority bool
 }
 
 // BatchAddFileToHealthCheck upserts many health records in a few multi-row statements
@@ -835,10 +840,26 @@ func (r *HealthRepository) batchUpsertFileHealthCheck(ctx context.Context, recor
 			releaseDateStr = rec.ReleaseDate.UTC().Format("2006-01-02 15:04:05")
 		}
 
+		// Ancillary sample records actively clear inherited ARR authority by
+		// binding an empty (not NULL) sentinel: COALESCE picks the empty string
+		// over the stale value, and the CASE below converts it back to NULL so
+		// the stored record carries no release authority at all. Normal records
+		// keep "nil means preserve" semantics.
+		metadataVal := rec.Metadata
+		if rec.ClearReleaseAuthority && metadataVal == nil {
+			empty := ""
+			metadataVal = &empty
+		}
+		downloadVal := rec.DownloadID
+		if rec.ClearReleaseAuthority && downloadVal == nil {
+			empty := ""
+			downloadVal = &empty
+		}
+
 		args = append(args,
 			normalizeHealthPath(rec.FilePath), rec.LibraryPath,
 			rec.MaxRetries, rec.MaxRepairRetries,
-			rec.SourceNzbPath, rec.Priority, releaseDateStr, rec.Metadata, rec.Indexer, rec.DownloadID)
+			rec.SourceNzbPath, rec.Priority, releaseDateStr, metadataVal, rec.Indexer, downloadVal)
 	}
 
 	query := fmt.Sprintf(`
@@ -855,9 +876,9 @@ func (r *HealthRepository) batchUpsertFileHealthCheck(ctx context.Context, recor
 			source_nzb_path = COALESCE(excluded.source_nzb_path, source_nzb_path),
 			priority = excluded.priority,
 			release_date = COALESCE(excluded.release_date, release_date),
-			metadata = COALESCE(excluded.metadata, metadata),
+			metadata = NULLIF(COALESCE(excluded.metadata, metadata), ''),
 			indexer = COALESCE(excluded.indexer, indexer),
-			download_id = COALESCE(excluded.download_id, download_id),
+			download_id = NULLIF(COALESCE(excluded.download_id, download_id), ''),
 			updated_at = datetime('now'),
 			scheduled_check_at = datetime('now')
 	`, strings.Join(valueStrings, ","))

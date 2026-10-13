@@ -1310,6 +1310,24 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 	}
 }
 
+// isAncillarySampleClip reports whether filePath is an ancillary scene
+// sample/proof clip that must never drive ARR release-level repair. The size
+// is resolved from metadata when available so full-length media whose
+// release-title tokens contain "sample"/"proof" (e.g.
+// "Proof.2005.1080p/movie.mkv") is not misclassified: files over
+// fileinfo.MaxSampleSizeBytes are never samples. Unknown sizes fall back to
+// the conservative token match (which excludes Sample/Proof directory layouts
+// for importer compatibility).
+func (hw *HealthWorker) isAncillarySampleClip(ctx context.Context, filePath string) bool {
+	var size int64
+	if hw.metadataService != nil {
+		if meta, err := hw.metadataService.ReadFileMetadata(filePath); err == nil && meta != nil {
+			size = meta.FileSize
+		}
+	}
+	return fileinfo.IsSampleOrProof(filePath, size)
+}
+
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
 // It checks LibraryPath first, then LibraryDir, then ImportDir, and falls back to MountPath.
 func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
@@ -1398,7 +1416,7 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// or proof clips. These clips are never tracked as library entities by ARRs, and
 	// attempting an ARR rescan on them using parent metadata would blocklist the entire
 	// release and redownload the healthy main media.
-	if fileinfo.IsSampleOrProof(filePath, 0) {
+	if hw.isAncillarySampleClip(ctx, filePath) {
 		slog.WarnContext(ctx, "Corrupted file is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
 			"file_path", filePath)
 		if hw.configGetter().GetHealthDeleteOnCorruption() {
@@ -1478,7 +1496,7 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
 	filePath := item.FilePath
 
-	if fileinfo.IsSampleOrProof(filePath, 0) {
+	if hw.isAncillarySampleClip(ctx, filePath) {
 		slog.WarnContext(ctx, "File in repair is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
 			"file_path", filePath)
 		if hw.configGetter().GetHealthDeleteOnCorruption() {
