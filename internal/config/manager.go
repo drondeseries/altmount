@@ -1185,21 +1185,6 @@ func (c *Config) GetDownloadClientBaseURL() string {
 	return fmt.Sprintf("http://%s:%d/sabnzbd", host, c.WebDAV.Port)
 }
 
-// clampRecheckInt normalizes a recheck field: 0 (unset) resolves to the
-// default, out-of-range values clamp to the nearest bound.
-func clampRecheckInt(v, lo, hi, def int) int {
-	if v == 0 {
-		return def
-	}
-	if v < lo {
-		return lo
-	}
-	if v > hi {
-		return hi
-	}
-	return v
-}
-
 // Validate validates the configuration
 func (c *Config) Validate() error {
 	if c.WebDAV.Port <= 0 || c.WebDAV.Port > 65535 {
@@ -1344,22 +1329,66 @@ func (c *Config) Validate() error {
 
 	// Validate streaming configuration
 
-	// Validate health recheck schedule: clamp individual fields to sane
-	// ranges (zero means unset → default, applied in GetHealthRecheckSchedule;
-	// Validate() normalizes to explicit defaults). Ages must be ordered.
-	c.Health.Recheck.FreshAgeHours = clampRecheckInt(c.Health.Recheck.FreshAgeHours, 0, 24*365, 72)
-	c.Health.Recheck.EarlyAgeDays = clampRecheckInt(c.Health.Recheck.EarlyAgeDays, 0, 365, 7)
-	c.Health.Recheck.MidAgeDays = clampRecheckInt(c.Health.Recheck.MidAgeDays, 0, 365, 30)
-	c.Health.Recheck.FreshHours = clampRecheckInt(c.Health.Recheck.FreshHours, 0, 24*30, 2)
-	c.Health.Recheck.EarlyHours = clampRecheckInt(c.Health.Recheck.EarlyHours, 0, 24*30, 12)
-	c.Health.Recheck.MidHours = clampRecheckInt(c.Health.Recheck.MidHours, 0, 24*30, 24)
-	c.Health.Recheck.AgedDays = clampRecheckInt(c.Health.Recheck.AgedDays, 0, 365, 7)
-	c.Health.Recheck.MinMinutes = clampRecheckInt(c.Health.Recheck.MinMinutes, 0, 60*24*30, 30)
-	if h := c.Health.Recheck; h.FreshAgeHours >= h.EarlyAgeDays*24 || h.EarlyAgeDays >= h.MidAgeDays {
+	// Validate health recheck schedule. Zero means unset (resolved to the
+	// default in GetHealthRecheckSchedule); negatives are rejected so
+	// validation stays idempotent (a negative must not normalize to 0 on one
+	// pass and then to the default on the next). Ages must be ordered and the
+	// full interval chain fresh <= early <= mid <= aged must hold.
+	if c.Health.Recheck.FreshAgeHours < 0 || c.Health.Recheck.FreshAgeHours > 24*365 {
+		return fmt.Errorf("health recheck fresh_age_hours must be between 0 (default) and %d", 24*365)
+	}
+	if c.Health.Recheck.EarlyAgeDays < 0 || c.Health.Recheck.EarlyAgeDays > 365 {
+		return fmt.Errorf("health recheck early_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MidAgeDays < 0 || c.Health.Recheck.MidAgeDays > 365 {
+		return fmt.Errorf("health recheck mid_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.FreshHours < 0 || c.Health.Recheck.FreshHours > 24*30 {
+		return fmt.Errorf("health recheck fresh_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.EarlyHours < 0 || c.Health.Recheck.EarlyHours > 24*30 {
+		return fmt.Errorf("health recheck early_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.MidHours < 0 || c.Health.Recheck.MidHours > 24*30 {
+		return fmt.Errorf("health recheck mid_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.AgedDays < 0 || c.Health.Recheck.AgedDays > 365 {
+		return fmt.Errorf("health recheck aged_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MinMinutes < 0 || c.Health.Recheck.MinMinutes > 60*24*30 {
+		return fmt.Errorf("health recheck min_minutes must be between 0 (default) and %d", 60*24*30)
+	}
+	// Ordering checks resolve zeros to defaults first (mirrors the accessor),
+	// so partially-set configs validate against what will actually execute.
+	rh := c.Health.Recheck
+	fA, eA, mA := rh.FreshAgeHours, rh.EarlyAgeDays*24, rh.MidAgeDays*24
+	if fA == 0 {
+		fA = 72
+	}
+	if eA == 0 {
+		eA = 7 * 24
+	}
+	if mA == 0 {
+		mA = 30 * 24
+	}
+	if fA >= eA || eA >= mA {
 		return fmt.Errorf("health recheck ages must be strictly increasing (fresh_age_hours < early_age_days*24 < mid_age_days*24)")
 	}
-	if h := c.Health.Recheck; h.FreshHours > h.EarlyHours || h.EarlyHours > h.MidHours {
-		return fmt.Errorf("health recheck intervals must be non-decreasing (fresh_hours <= early_hours <= mid_hours)")
+	fH, eH, mH, aI := rh.FreshHours, rh.EarlyHours, rh.MidHours, rh.AgedDays*24
+	if fH == 0 {
+		fH = 2
+	}
+	if eH == 0 {
+		eH = 12
+	}
+	if mH == 0 {
+		mH = 24
+	}
+	if aI == 0 {
+		aI = 7 * 24
+	}
+	if fH > eH || eH > mH || mH > aI {
+		return fmt.Errorf("health recheck intervals must be non-decreasing (fresh_hours <= early_hours <= mid_hours <= aged_days*24)")
 	}
 
 	// Validate health configuration (always active)

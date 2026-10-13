@@ -445,9 +445,11 @@ func DefaultRecheckSchedule() RecheckSchedule {
 	}
 }
 
-// GetHealthRecheckSchedule resolves the configured tiered recheck schedule,
-// falling back to defaults for unset/invalid fields. Invalid values never
-// hard-fail: they resolve to the default and validation logs a warning.
+// GetHealthRecheckSchedule resolves the configured tiered recheck schedule.
+// Zero fields resolve to defaults; Validate() guarantees ranges and ordering,
+// so the guards here are defensive only (direct struct construction in tests,
+// stale configs). Every successfully validated configuration resolves
+// faithfully — no silent tier replacement.
 func (c *Config) GetHealthRecheckSchedule() RecheckSchedule {
 	sched := DefaultRecheckSchedule()
 	h := c.Health.Recheck
@@ -477,9 +479,16 @@ func (c *Config) GetHealthRecheckSchedule() RecheckSchedule {
 		sched.MinInterval = time.Duration(h.MinMinutes) * time.Minute
 	}
 
-	// Guard ordering: ages must be strictly increasing, intervals non-decreasing.
-	// On violation, fall back to defaults for the offending tier.
+	// Defensive guards for direct struct construction (bypassing Validate):
+	// clamp non-positive values to defaults and repair broken ordering the
+	// same way, so resolution never returns a degenerate schedule.
 	def := DefaultRecheckSchedule()
+	if sched.FreshAge <= 0 || sched.EarlyAge <= 0 || sched.MidAge <= 0 {
+		sched.FreshAge, sched.EarlyAge, sched.MidAge = def.FreshAge, def.EarlyAge, def.MidAge
+	}
+	if sched.Fresh <= 0 || sched.Early <= 0 || sched.Mid <= 0 || sched.Aged <= 0 {
+		sched.Fresh, sched.Early, sched.Mid, sched.Aged = def.Fresh, def.Early, def.Mid, def.Aged
+	}
 	if sched.FreshAge >= sched.EarlyAge || sched.EarlyAge >= sched.MidAge {
 		sched.FreshAge, sched.EarlyAge, sched.MidAge = def.FreshAge, def.EarlyAge, def.MidAge
 	}

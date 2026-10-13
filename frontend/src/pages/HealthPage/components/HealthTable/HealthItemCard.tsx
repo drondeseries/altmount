@@ -158,13 +158,13 @@ export const HealthItemCard = memo(function HealthItemCard({
 									className="badge badge-warning badge-sm gap-1"
 									title={
 										item.streaming_failure_count > 0
-											? `File hidden from the library after ${item.streaming_failure_count} playback failure(s). Playback keeps working — unmask to restore it immediately, or wait for the next scheduled recheck.`
-											: "File hidden from the library after repeated playback failures. Unmask to restore it immediately."
+											? `Hidden from the library after ${item.streaming_failure_count} recorded playback failure(s). Unmask clears the mask and requests a health recheck; whether playback resumes depends on file health and repair state.`
+											: "Hidden from the library after repeated playback failures. Unmask clears the mask and requests a health recheck."
 									}
 								>
 									{item.streaming_failure_count > 0
-										? `Hidden after ${item.streaming_failure_count} playback failure${item.streaming_failure_count === 1 ? "" : "s"} — still playable`
-										: "Hidden after playback failures — still playable"}
+										? `Hidden after ${item.streaming_failure_count} playback failure${item.streaming_failure_count === 1 ? "" : "s"}`
+										: "Hidden after playback failures"}
 								</span>
 							)}
 							<button

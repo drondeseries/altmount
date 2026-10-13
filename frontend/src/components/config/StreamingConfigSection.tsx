@@ -170,9 +170,8 @@ export function StreamingConfigSection({
 							<h4 className="font-bold text-base-content text-sm">Playback Failure Masking</h4>
 							<p className="mt-1 break-words text-[11px] text-base-content/50 leading-relaxed">
 								Debounce transient streaming errors (like propagation delays) by requiring multiple
-								consecutive playback failures before triggering a redownload. While failures stay
-								below the threshold the file keeps playing and stays visible; once the threshold is
-								reached it is hidden from the library (MASKED) and queued for repair.
+								consecutive playback failures before hiding a file from the library and requesting
+								repair. Failures below the threshold are counted and queued for a health recheck.
 							</p>
 						</div>
 						<input
@@ -245,10 +244,10 @@ export function StreamingConfigSection({
 								<Info className="mt-0.5 h-4 w-4 shrink-0 text-info" />
 								<div className="min-w-0 flex-1 text-[11px] leading-relaxed opacity-80">
 									<span className="font-bold">What happens at each stage: </span>
-									below the threshold the failure is counted and the file is queued for a health
-									recheck — playback and library listing are unaffected. At the threshold the file
-									is hidden (MASKED badge on the Health page) and a repair is requested. Unmask
-									any time from the Health page to restore it immediately.
+									failures below the threshold are counted and the file is queued for a health
+									recheck. At the threshold the file is hidden from the library (MASKED badge on
+									the Health page) and repair is requested when health repair is enabled. Unmask
+									from the Health page to clear the mask and request verification.
 								</div>
 							</div>
 						</div>

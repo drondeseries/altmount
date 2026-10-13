@@ -34,13 +34,14 @@ func calculateInitialCheckForNewFile() time.Time {
 // CalculateNextCheck calculates the next check time after a successful health check.
 // Tiers are decay-shaped by NZB age: fresh files recheck every couple of hours
 // (takedowns + propagation delays cluster in the first days), aged files weekly
-// (retention drift is slow but real). A zero schedule resolves to defaults.
+// (retention drift is slow but real). Pass an explicit schedule from
+// GetHealthRecheckSchedule; a zero RecheckSchedule is degenerate (all-zero
+// tiers clamp to MinInterval), so callers should not rely on it for defaults.
 // Negative/zero age (clock skew, backdated NZBs) is treated as fresh.
-func CalculateNextCheck(releaseDate, lastCheck time.Time, sched ...config.RecheckSchedule) time.Time {
-	s := config.DefaultRecheckSchedule()
-	if len(sched) > 0 {
-		s = sched[0]
-	}
+// Jitter is fixed per tier (±15m/±1h/±2h/±1d): with very short custom
+// intervals it can dominate (e.g. a 1d aged interval spans ~min..2d).
+func CalculateNextCheck(releaseDate, lastCheck time.Time, sched config.RecheckSchedule) time.Time {
+	s := sched
 
 	age := lastCheck.Sub(releaseDate) // Age at the time of the last successful check
 	if age < 0 {

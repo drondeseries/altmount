@@ -11,6 +11,7 @@ import (
 
 func TestCalculateNextCheck_Tiers(t *testing.T) {
 	now := time.Now().UTC()
+	sched := config.DefaultRecheckSchedule()
 	tests := []struct {
 		name     string
 		age      time.Duration
@@ -19,45 +20,41 @@ func TestCalculateNextCheck_Tiers(t *testing.T) {
 	}{
 		{"fresh 1h", 1 * time.Hour, 2 * time.Hour, recheckFreshJitter},
 		{"fresh boundary 71h", 71 * time.Hour, 2 * time.Hour, recheckFreshJitter},
+		{"exact fresh boundary 72h falls to early", 72 * time.Hour, 12 * time.Hour, recheckEarlyJitter},
 		{"early 73h", 73 * time.Hour, 12 * time.Hour, recheckEarlyJitter},
 		{"early 6d", 6 * 24 * time.Hour, 12 * time.Hour, recheckEarlyJitter},
+		{"exact early boundary 7d falls to mid", 7 * 24 * time.Hour, 24 * time.Hour, recheckMidJitter},
 		{"mid 8d", 8 * 24 * time.Hour, 24 * time.Hour, recheckMidJitter},
 		{"mid 29d", 29 * 24 * time.Hour, 24 * time.Hour, recheckMidJitter},
+		{"exact mid boundary 30d falls to aged", 30 * 24 * time.Hour, 7 * 24 * time.Hour, recheckAgedJitter},
 		{"aged 31d", 31 * 24 * time.Hour, 7 * 24 * time.Hour, recheckAgedJitter},
 		{"aged 1y", 365 * 24 * time.Hour, 7 * 24 * time.Hour, recheckAgedJitter},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			release := now.Add(-tt.age)
-			next := CalculateNextCheck(release, now)
+			next := CalculateNextCheck(release, now, sched)
 			delta := next.Sub(now)
-			assert.GreaterOrEqual(t, delta, tt.wantTier-tt.jitter-30*time.Minute,
+			assert.GreaterOrEqual(t, delta, tt.wantTier-tt.jitter,
 				"next check should be within jitter below the tier interval")
-			assert.LessOrEqual(t, delta, tt.wantTier+tt.jitter+30*time.Minute,
+			assert.Less(t, delta, tt.wantTier+tt.jitter,
 				"next check should be within jitter above the tier interval")
 		})
 	}
 }
 
-func TestCalculateNextCheck_ZeroScheduleDefaults(t *testing.T) {
-	now := time.Now().UTC()
-	// An empty RecheckSchedule struct (zero value) on its own is degenerate
-	// (all-zero tiers), so callers pass no schedule at all for defaults.
-	// Here we assert the resolver maps a zero HealthRecheckConfig to defaults.
+func TestCalculateNextCheck_ZeroConfigDefaults(t *testing.T) {
+	// A zero HealthRecheckConfig (unset) resolves to defaults via the accessor.
 	cfg := config.DefaultConfig()
 	sched := cfg.GetHealthRecheckSchedule()
-	def := config.DefaultRecheckSchedule()
-	require.Equal(t, def, sched)
-	next := CalculateNextCheck(now.Add(-time.Hour), now)
-	delta := next.Sub(now)
-	assert.GreaterOrEqual(t, delta, def.Fresh-recheckFreshJitter-time.Minute)
-	assert.LessOrEqual(t, delta, def.Fresh+recheckFreshJitter+time.Minute)
+	require.Equal(t, config.DefaultRecheckSchedule(), sched)
 }
 
 func TestCalculateNextCheck_FutureReleaseDate(t *testing.T) {
 	now := time.Now().UTC()
+	sched := config.DefaultRecheckSchedule()
 	// Clock skew / backdated NZB: treated as fresh, never scheduled in the past.
-	next := CalculateNextCheck(now.Add(time.Hour), now)
+	next := CalculateNextCheck(now.Add(time.Hour), now, sched)
 	assert.True(t, next.After(now), "next check must be in the future")
 }
 
@@ -81,6 +78,6 @@ func TestCalculateNextCheck_CustomSchedule(t *testing.T) {
 	now := time.Now().UTC()
 	next := CalculateNextCheck(now.Add(-time.Hour), now, sched)
 	delta := next.Sub(now)
-	assert.GreaterOrEqual(t, delta, 3*time.Hour-recheckFreshJitter-time.Minute)
-	assert.LessOrEqual(t, delta, 3*time.Hour+recheckFreshJitter+time.Minute)
+	assert.GreaterOrEqual(t, delta, 3*time.Hour-recheckFreshJitter)
+	assert.Less(t, delta, 3*time.Hour+recheckFreshJitter)
 }

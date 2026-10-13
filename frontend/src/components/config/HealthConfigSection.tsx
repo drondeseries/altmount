@@ -42,17 +42,18 @@ export function HealthConfigSection({
 		}
 		const r = data.recheck;
 		if (r) {
-			const fA = r.fresh_age_hours ?? 72;
-			const eA = r.early_age_days ?? 7;
-			const mA = r.mid_age_days ?? 30;
+			const fA = r.fresh_age_hours || 72;
+			const eA = r.early_age_days || 7;
+			const mA = r.mid_age_days || 30;
 			if (fA >= eA * 24 || eA >= mA) {
 				return "Recheck ages must increase: fresh hours < early days × 24 < mid days × 24";
 			}
-			const fH = r.fresh_hours ?? 2;
-			const eH = r.early_hours ?? 12;
-			const mH = r.mid_hours ?? 24;
-			if (fH > eH || eH > mH) {
-				return "Recheck intervals must not decrease with age: fresh ≤ early ≤ mid";
+			const fH = r.fresh_hours || 2;
+			const eH = r.early_hours || 12;
+			const mH = r.mid_hours || 24;
+			const aD = r.aged_days || 7;
+			if (fH > eH || eH > mH || mH > aD * 24) {
+				return "Recheck intervals must not decrease with age: fresh ≤ early ≤ mid ≤ aged";
 			}
 		}
 		return "";
@@ -134,18 +135,24 @@ export function HealthConfigSection({
 		field: keyof NonNullable<HealthConfig["recheck"]>,
 		value: number | undefined,
 	) => {
-		const v = value === undefined || Number.isNaN(value) ? undefined : value;
+		// Blank input → explicit 0, which the backend treats as "default".
+		// Sending 0 (not omitting) is what makes clear→save→reload restore
+		// the default instead of keeping the old value: the PATCH handler
+		// merges into a copy of the existing config, so omitted fields would
+		// retain their previous values.
+		const v = value === undefined || Number.isNaN(value) ? 0 : value;
 		const next = { ...(formData.recheck ?? {}), [field]: v };
-		// Drop the block entirely when every field is empty so the payload
-		// stays clean and the backend resolves pure defaults.
-		const allEmpty = Object.values(next).every((x) => x === undefined);
-		const newData = { ...formData, recheck: allEmpty ? undefined : next };
+		// Drop the block entirely when every field is default/empty so the
+		// payload stays clean and the backend resolves pure defaults.
+		const allDefault = Object.values(next).every((x) => x === undefined || x === 0);
+		const newData = { ...formData, recheck: allDefault ? undefined : next };
 		setFormData(newData);
 		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.health));
 		setValidationError(validateFormData(newData));
 	};
 
-	// Human preview of the effective schedule (defaults fill blanks).
+	// Human preview of the effective schedule (0/blank resolve to defaults,
+	// mirroring GetHealthRecheckSchedule).
 	const recheckPreview = (() => {
 		const r = formData.recheck ?? {};
 		const fH = r.fresh_hours || 2;
@@ -155,7 +162,7 @@ export function HealthConfigSection({
 		const mH = r.mid_hours || 24;
 		const mA = r.mid_age_days || 30;
 		const aD = r.aged_days || 7;
-		return `Effective: every ${fH}h for the first ${fA}h → every ${eH}h until day ${eA} → every ${mH}h until day ${mA} → every ${aD}d after.`;
+		return `Effective: every ${fH}h for the first ${fA}h → every ${eH}h until day ${eA} → every ${mH}h until day ${mA} → every ${aD}d after. Blank fields use defaults. New intervals apply to subsequently scheduled checks; files already queued keep their current slot.`;
 	})();
 
 	const handleSave = async () => {
@@ -458,7 +465,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.fresh_hours ?? ""}
+								value={formData.recheck?.fresh_hours || ""}
 								placeholder="2"
 								disabled={isReadOnly}
 								min={1}
@@ -475,7 +482,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.fresh_age_hours ?? ""}
+								value={formData.recheck?.fresh_age_hours || ""}
 								placeholder="72"
 								disabled={isReadOnly}
 								min={1}
@@ -492,7 +499,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.early_hours ?? ""}
+								value={formData.recheck?.early_hours || ""}
 								placeholder="12"
 								disabled={isReadOnly}
 								min={1}
@@ -509,7 +516,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.early_age_days ?? ""}
+								value={formData.recheck?.early_age_days || ""}
 								placeholder="7"
 								disabled={isReadOnly}
 								min={1}
@@ -526,7 +533,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.mid_hours ?? ""}
+								value={formData.recheck?.mid_hours || ""}
 								placeholder="24"
 								disabled={isReadOnly}
 								min={1}
@@ -543,7 +550,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.mid_age_days ?? ""}
+								value={formData.recheck?.mid_age_days || ""}
 								placeholder="30"
 								disabled={isReadOnly}
 								min={1}
@@ -560,7 +567,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.aged_days ?? ""}
+								value={formData.recheck?.aged_days || ""}
 								placeholder="7"
 								disabled={isReadOnly}
 								min={1}
@@ -577,7 +584,7 @@ export function HealthConfigSection({
 							<input
 								type="number"
 								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.recheck?.min_minutes ?? ""}
+								value={formData.recheck?.min_minutes || ""}
 								placeholder="30"
 								disabled={isReadOnly}
 								min={5}
