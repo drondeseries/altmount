@@ -19,6 +19,7 @@ import (
 	"github.com/kipsilabs/altmount/internal/database"
 	"github.com/kipsilabs/altmount/internal/holes"
 	"github.com/kipsilabs/altmount/internal/importer"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
 	"github.com/kipsilabs/altmount/internal/metadata"
 	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/progress"
@@ -1393,6 +1394,20 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		}
 	}
 
+	// Ancillary sample/proof protection: scene releases frequently bundle small sample
+	// or proof clips. These clips are never tracked as library entities by ARRs, and
+	// attempting an ARR rescan on them using parent metadata would blocklist the entire
+	// release and redownload the healthy main media.
+	if fileinfo.IsSampleOrProof(filePath, 0) {
+		slog.WarnContext(ctx, "Corrupted file is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
+			"file_path", filePath)
+		if hw.configGetter().GetHealthDeleteOnCorruption() {
+			hw.cleanupZombieRecord(ctx, item)
+			return repairOutcomeDeleted, nil
+		}
+		return repairOutcomeCorrupted, nil
+	}
+
 	slog.InfoContext(ctx, "Triggering file repair using direct ARR API approach", "file_path", filePath)
 
 	pathForRescan := hw.resolvePathForRescan(item)
@@ -1462,6 +1477,16 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 // Callers must apply the returned outcome to the HealthStatusUpdate before the bulk DB write.
 func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
 	filePath := item.FilePath
+
+	if fileinfo.IsSampleOrProof(filePath, 0) {
+		slog.WarnContext(ctx, "File in repair is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
+			"file_path", filePath)
+		if hw.configGetter().GetHealthDeleteOnCorruption() {
+			hw.cleanupZombieRecord(ctx, item)
+			return repairOutcomeDeleted, nil
+		}
+		return repairOutcomeCorrupted, nil
+	}
 
 	pathForRescan := hw.resolvePathForRescan(item)
 	metadataStr := hw.ensureMetadata(ctx, item)

@@ -259,6 +259,40 @@ func (r *HealthRepository) UnmaskFile(ctx context.Context, filePath string) erro
 	return nil
 }
 
+// GetMaskedPaths returns a set of normalized paths that are marked is_masked = TRUE among the provided paths.
+func (r *HealthRepository) GetMaskedPaths(ctx context.Context, filePaths []string) (map[string]bool, error) {
+	if len(filePaths) == 0 {
+		return nil, nil
+	}
+	placeholders := make([]string, len(filePaths))
+	args := make([]any, len(filePaths))
+	for i, path := range filePaths {
+		placeholders[i] = "?"
+		args[i] = normalizeHealthPath(path)
+	}
+
+	query := fmt.Sprintf(`
+		SELECT file_path
+		FROM file_health
+		WHERE is_masked = TRUE AND file_path IN (%s)
+	`, strings.Join(placeholders, ","))
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query masked paths: %w", err)
+	}
+	defer rows.Close()
+
+	masked := make(map[string]bool)
+	for rows.Next() {
+		var p string
+		if err := rows.Scan(&p); err == nil {
+			masked[p] = true
+		}
+	}
+	return masked, rows.Err()
+}
+
 // GetUnhealthyFiles returns files that need health checks
 func (r *HealthRepository) GetUnhealthyFiles(ctx context.Context, limit int, strategy string, libraryDir string, maxRetries int) ([]*FileHealth, error) {
 	query := `

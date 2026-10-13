@@ -17,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/utils"
 )
 
@@ -1201,6 +1202,19 @@ func (s *Server) handleUnmaskHealth(c *fiber.Ctx) error {
 	err = s.healthRepo.UnmaskFile(c.Context(), item.FilePath)
 	if err != nil {
 		return RespondInternalError(c, "Failed to unmask file", err.Error())
+	}
+
+	// Re-arm file for immediate health verification
+	_ = s.healthRepo.UpdateScheduledCheckTime(c.Context(), item.FilePath, time.Now().UTC())
+
+	// Reconcile metadata: if the metadata file is still present and was marked corrupted
+	// while the DB item status is pending, restore it to healthy so it can be re-accessed and re-verified.
+	if s.metadataService != nil {
+		if meta, metaErr := s.metadataService.ReadFileMetadata(item.FilePath); metaErr == nil && meta != nil {
+			if meta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED && item.Status == database.HealthStatusPending {
+				_ = s.metadataService.UpdateFileStatus(item.FilePath, metapb.FileStatus_FILE_STATUS_HEALTHY)
+			}
+		}
 	}
 
 	// Get the updated health record

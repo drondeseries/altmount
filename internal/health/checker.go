@@ -542,8 +542,12 @@ func (hc *HealthChecker) batchOptions(preps []preparedCheck, opts ...CheckOption
 			if fileIdx >= len(preps) {
 				return false
 			}
+			total := preps[fileIdx].totalSegments
+			if len(preps[fileIdx].sampledIDs) > 0 && len(preps[fileIdx].sampledIDs) < total {
+				total = len(preps[fileIdx].sampledIDs)
+			}
 			return holes.ExceedsAcceptableMissing(
-				result.MissingCount, preps[fileIdx].totalSegments, acceptable)
+				result.MissingCount, total, acceptable)
 		},
 	}
 }

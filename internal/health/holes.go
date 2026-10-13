@@ -80,8 +80,15 @@ func (hc *HealthChecker) classifyHoles(
 	// (worker.go) kicks in instead of leaving it degraded forever.
 	if verdict != holes.VerdictFailed {
 		acceptable := hc.configGetter().GetAcceptableMissingSegmentsPercentage()
-		if holes.ExceedsAcceptableMissing(acc.Total(), totalSegments, acceptable) {
-			verdict = holes.VerdictFailed
+		if fullCheck {
+			if holes.ExceedsAcceptableMissing(acc.Total(), totalSegments, acceptable) {
+				verdict = holes.VerdictFailed
+			}
+		} else {
+			if holes.ExceedsAcceptableMissing(result.MissingCount, result.TotalChecked, acceptable) ||
+				holes.ExceedsAcceptableMissing(acc.Total(), totalSegments, acceptable) {
+				verdict = holes.VerdictFailed
+			}
 		}
 	}
 

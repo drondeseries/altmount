@@ -129,12 +129,28 @@ func IsKnownMediaExtension(filename string) bool {
 	return verifiableVideoExtensions[ext] || audioExtensions[ext]
 }
 
-// samplePattern matches scene-release sample/proof clips, which are
-// legitimately short and would false-positive as truncated/invalid content.
-// Matched only against the base filename — a directory named e.g.
-// "Samples" elsewhere in the path must not disqualify an otherwise valid
-// file (see /data/Samples/Movie.mkv, which is a real release layout).
-var samplePattern = regexp.MustCompile(`(?i)sample`)
+// MaxSampleSizeBytes is the upper threshold (200MB) beyond which a file is considered
+// full media, never an ancillary scene sample or proof clip.
+const MaxSampleSizeBytes = 200 * 1024 * 1024
+
+// SampleProofPattern matches filenames containing "sample" or "proof" as a standalone word.
+// Uses symmetric non-alphanumeric boundaries (underscore, digits, punctuation, end-of-string)
+// on both sides. Letters prevent matching, so "samplemovie.mkv" is allowed.
+// Examples matched: "movie.sample.mkv", "_sample.mkv", "movie_sample.mkv", "_sample_clip.mkv"
+// Examples not matched: "samplemovie.mkv", "Free.Samples.mkv" (plural)
+var SampleProofPattern = regexp.MustCompile(`(?i)(^|[^a-zA-Z0-9])(sample|proof)(?:[^a-zA-Z0-9]|$)`)
+
+// IsSampleOrProof checks if a path and size (if known) indicate an ancillary sample or proof clip.
+// Files larger than 200MB are considered full media, not sample clips.
+func IsSampleOrProof(path string, size int64) bool {
+	if path == "" {
+		return false
+	}
+	if size > MaxSampleSizeBytes {
+		return false
+	}
+	return SampleProofPattern.MatchString(path)
+}
 
 // IsVerifiableMediaFile reports whether filename is eligible for content
 // signature verification: a video or audio file that is not a sample clip.
@@ -143,7 +159,7 @@ func IsVerifiableMediaFile(filename string) bool {
 	if filename == "" {
 		return false
 	}
-	if samplePattern.MatchString(filepath.Base(filename)) {
+	if IsSampleOrProof(filepath.Base(filename), 0) {
 		return false
 	}
 	return IsKnownMediaExtension(filename)

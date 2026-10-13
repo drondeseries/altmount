@@ -96,6 +96,17 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 		// the batch outlive the loop and do not retain the proto message.
 		filePath := p
 		srcNzb := fileMeta.SourceNzbPath
+
+		// Sample and proof files must never inherit ARR repair authority from the
+		// release (which would cause a corrupted 20MB sample to trigger an ARR redownload
+		// of the entire 50GB release).
+		fileMetadata := itemMetadata
+		fileDownloadID := downloadID
+		if fileinfo.IsSampleOrProof(p, fileMeta.FileSize) {
+			fileMetadata = nil
+			fileDownloadID = nil
+		}
+
 		records = append(records, database.HealthCheckUpsert{
 			FilePath:         filePath,
 			LibraryPath:      &filePath,
@@ -104,8 +115,8 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 			Priority:         database.HealthPriorityNext,
 			MaxRetries:       cfg.GetMaxRetries(),
 			MaxRepairRetries: cfg.GetMaxRepairRetries(),
-			DownloadID:       downloadID,
-			Metadata:         itemMetadata,
+			DownloadID:       fileDownloadID,
+			Metadata:         fileMetadata,
 		})
 		repairDirs[filepath.Dir(p)] = struct{}{}
 	}
@@ -157,7 +168,11 @@ var arrAudioBookExtensions = map[string]bool{
 // isArrImportableMedia reports whether the virtual path is a media file an ARR could
 // import into the library — i.e. one that can ever be relinked to a real library path
 // by a Download webhook and so become eligible for health checks under SYMLINK/STRM.
+// Sample and proof files are never imported into libraries by ARRs.
 func isArrImportableMedia(p string) bool {
+	if fileinfo.IsSampleOrProof(p, 0) {
+		return false
+	}
 	if fileinfo.IsVideoFile(p) {
 		return true
 	}
