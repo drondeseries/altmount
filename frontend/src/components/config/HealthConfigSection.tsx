@@ -139,13 +139,11 @@ export function HealthConfigSection({
 		// Sending 0 (not omitting) is what makes clear→save→reload restore
 		// the default instead of keeping the old value: the PATCH handler
 		// merges into a copy of the existing config, so omitted fields would
-		// retain their previous values.
+		// retain their previous values. The block is always retained (even
+		// all-zeros) for the same reason — an omitted block preserves every
+		// previously saved override.
 		const v = value === undefined || Number.isNaN(value) ? 0 : value;
-		const next = { ...(formData.recheck ?? {}), [field]: v };
-		// Drop the block entirely when every field is default/empty so the
-		// payload stays clean and the backend resolves pure defaults.
-		const allDefault = Object.values(next).every((x) => x === undefined || x === 0);
-		const newData = { ...formData, recheck: allDefault ? undefined : next };
+		const newData = { ...formData, recheck: { ...(formData.recheck ?? {}), [field]: v } };
 		setFormData(newData);
 		setHasChanges(JSON.stringify(newData) !== JSON.stringify(config.health));
 		setValidationError(validateFormData(newData));
