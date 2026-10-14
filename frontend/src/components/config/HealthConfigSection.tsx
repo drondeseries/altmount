@@ -254,7 +254,7 @@ export function HealthConfigSection({
 							<option value="repair">Trigger repair</option>
 							<option value="delete">Delete file</option>
 						</select>
-						<p className="label break-words text-[10px] text-base-content/50">
+						<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 							What to do when a confirmed (non-degraded) corruption is detected, whether from a
 							scheduled health check or a live streaming failure. "Delete file" removes the file's
 							metadata, health record, and any now-empty parent directories instead of asking an ARR
