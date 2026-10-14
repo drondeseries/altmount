@@ -653,30 +653,51 @@ export function HealthConfigSection({
 					</div>
 
 					{formData.cleanup_orphaned_metadata && (
-						<fieldset className="fieldset">
-							<legend className="fieldset-legend font-semibold">Orphan Cleanup Max Ratio</legend>
-							<input
-								type="number"
-								className="input input-bordered w-full bg-base-100 font-mono text-sm"
-								value={formData.orphan_cleanup_max_ratio ?? 0.2}
-								disabled={isReadOnly}
-								min="0"
-								max="1"
-								step="0.05"
-								onChange={(e) => {
-									const parsed = Number.parseFloat(e.target.value);
-									handleInputChange(
-										"orphan_cleanup_max_ratio",
-										Number.isFinite(parsed) ? parsed : undefined,
-									);
-								}}
-							/>
-							<p className="label break-words text-[10px] text-base-content/50">
-								Max share of metadata that may look orphaned before cleanup aborts as
-								suspicious (0-1, default 0.2). Set to 1 to clear a verified backlog, run
-								two syncs, then restore the default.
+						<div className="mt-6 space-y-6">
+							<div className="flex items-center justify-between">
+								<div className="flex items-center gap-2">
+									<h5 className="font-bold text-xs">Orphan Cleanup Max Ratio</h5>
+									<div
+										className="tooltip tooltip-right"
+										data-tip="Max share of metadata that may look orphaned before cleanup aborts as suspicious. Set to 100% to clear a verified backlog, run two syncs, then restore the default."
+									>
+										<Info className="h-3.5 w-3.5 text-base-content/60" />
+									</div>
+								</div>
+								<div className="font-black font-mono text-lg text-primary">
+									{Math.round((formData.orphan_cleanup_max_ratio ?? 0.2) * 100)}%
+								</div>
+							</div>
+							<div className="space-y-4">
+								<input
+									type="range"
+									min="0"
+									max="100"
+									value={Math.round((formData.orphan_cleanup_max_ratio ?? 0.2) * 100)}
+									className="range range-primary range-sm w-full"
+									step="5"
+									disabled={isReadOnly}
+									onChange={(e) =>
+										handleInputChange(
+											"orphan_cleanup_max_ratio",
+											Number.parseInt(e.target.value, 10) / 100,
+										)
+									}
+								/>
+								<div className="flex justify-between px-2 font-black text-base-content/50 text-xs">
+									<span>0% (STRICT)</span>
+									<span>25%</span>
+									<span>50%</span>
+									<span>75%</span>
+									<span>100% (OPEN)</span>
+								</div>
+							</div>
+							<p className="break-words text-[10px] text-base-content/50">
+								Cleanup aborts when more than this share of metadata looks orphaned
+								(default 20%). Set to 100% to clear a verified backlog, run two syncs,
+								then restore the default.
 							</p>
-						</fieldset>
+						</div>
 					)}
 
 					<div className="flex justify-start">
