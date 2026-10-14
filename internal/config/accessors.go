@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -393,6 +394,23 @@ func (c *Config) GetHealthEnabled() bool {
 		return true
 	}
 	return *c.Health.Enabled
+}
+
+// GetOrphanCleanupMaxRatio returns the maximum fraction of metadata files
+// that may look orphaned in a single library sync before cleanup is aborted
+// as suspicious. Unset preserves the historical 0.20 default; 1.0 permits
+// any ratio for one-off backlog recovery (two qualifying syncs still apply).
+func (c *Config) GetOrphanCleanupMaxRatio() float64 {
+	if c.Health.OrphanCleanupMaxRatio == nil {
+		return DefaultOrphanCleanupMaxRatio
+	}
+	if math.IsNaN(*c.Health.OrphanCleanupMaxRatio) || *c.Health.OrphanCleanupMaxRatio < 0 {
+		return 0
+	}
+	if *c.Health.OrphanCleanupMaxRatio > 1 {
+		return 1
+	}
+	return *c.Health.OrphanCleanupMaxRatio
 }
 
 // GetHealthExcludedCategories returns the SABnzbd category names whose files

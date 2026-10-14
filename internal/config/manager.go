@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -647,6 +648,11 @@ const (
 // DefaultConfig and the accessor fallbacks.
 const defaultVerifyContentTimeoutSeconds = 15
 
+// DefaultOrphanCleanupMaxRatio is the default ceiling for the fraction of
+// metadata files that may look orphaned in a single library sync before
+// cleanup is aborted as suspicious (e.g. a dead mount). 1.0 permits any ratio.
+const DefaultOrphanCleanupMaxRatio = 0.20
+
 // ImportConfig represents import processing configuration
 type ImportConfig struct {
 	MaxProcessorWorkers            int      `yaml:"max_processor_workers" mapstructure:"max_processor_workers" json:"max_processor_workers"`
@@ -737,7 +743,12 @@ type HealthConfig struct {
 	Enabled                 *bool   `yaml:"enabled" mapstructure:"enabled" json:"enabled,omitempty"`
 	LibraryDir              *string `yaml:"library_dir" mapstructure:"library_dir" json:"library_dir,omitempty"`
 	CleanupOrphanedMetadata *bool   `yaml:"cleanup_orphaned_metadata" mapstructure:"cleanup_orphaned_metadata" json:"cleanup_orphaned_metadata,omitempty"`
-	CheckIntervalSeconds    int     `yaml:"check_interval_seconds" mapstructure:"check_interval_seconds" json:"check_interval_seconds,omitempty"`
+	// OrphanCleanupMaxRatio bounds the fraction of metadata files that may
+	// look orphaned in a single library sync before cleanup is aborted as
+	// suspicious (a dead mount looks like mass deletion). Valid range is
+	// 0-1; 1.0 permits any ratio. nil preserves the historical 0.20 default.
+	OrphanCleanupMaxRatio *float64 `yaml:"orphan_cleanup_max_ratio" mapstructure:"orphan_cleanup_max_ratio" json:"orphan_cleanup_max_ratio,omitempty"`
+	CheckIntervalSeconds  int      `yaml:"check_interval_seconds" mapstructure:"check_interval_seconds" json:"check_interval_seconds,omitempty"`
 	// MaxConcurrentSegmentChecks bounds how many STAT checks a health sweep keeps
 	// in flight. STAT is bodyless and pipelines many per connection, so connection
 	// count is the wrong unit — the import path already sizes its sweep by STAT
@@ -1409,6 +1420,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.VerifyContentTimeoutSeconds != nil && *c.Health.VerifyContentTimeoutSeconds <= 0 {
 		return fmt.Errorf("health verify_content_timeout_seconds must be greater than 0")
+	}
+	if c.Health.OrphanCleanupMaxRatio != nil && (math.IsNaN(*c.Health.OrphanCleanupMaxRatio) || *c.Health.OrphanCleanupMaxRatio < 0 || *c.Health.OrphanCleanupMaxRatio > 1) {
+		return fmt.Errorf("health orphan_cleanup_max_ratio must be between 0 and 1")
 	}
 	if c.Health.CorruptedRetentionDays != nil && *c.Health.CorruptedRetentionDays < 0 {
 		return fmt.Errorf("health corrupted_retention_days must be zero (keep forever) or greater")
@@ -2187,6 +2201,7 @@ func DefaultConfig(configDir ...string) *Config {
 	healthVerifyContent := false // Content verification disabled by default (destructive if misfired)
 	healthVerifyContentTimeoutSeconds := defaultVerifyContentTimeoutSeconds
 	healthCorruptedRetentionDays := 0
+	orphanCleanupMaxRatio := DefaultOrphanCleanupMaxRatio
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
@@ -2345,6 +2360,7 @@ func DefaultConfig(configDir ...string) *Config {
 		Health: HealthConfig{
 			Enabled:                             &healthEnabled,           // Disabled by default
 			CleanupOrphanedMetadata:             &cleanupOrphanedMetadata, // Disabled by default
+			OrphanCleanupMaxRatio:               &orphanCleanupMaxRatio,   // Default: abort cleanup above 20% orphans
 			CheckIntervalSeconds:                5,
 			CheckBatchSize:                      50,
 			MaxConcurrentJobs:                   1,                                  // Default: 1 concurrent job

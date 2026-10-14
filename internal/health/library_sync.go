@@ -583,10 +583,17 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		len(importDirFiles.Symlinks) + len(importDirFiles.StrmFiles)
 
 	shouldCleanup := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
+	cleanupBlockedReason := ""
+	if !shouldCleanup {
+		cleanupBlockedReason = "cleanup_orphaned_metadata is disabled"
+	}
 	if shouldCleanup && totalFilesFound == 0 && len(metadataFiles) > 0 {
 		slog.WarnContext(ctx, "Library scan returned zero files while metadata exists. Possible mount failure? Aborting cleanup for safety.",
-			"metadata_count", len(metadataFiles))
+			"metadata_count", len(metadataFiles),
+			"cleanup_blocked_reason", "empty_scan",
+			"pending_reset", !dryRun)
 		shouldCleanup = false
+		cleanupBlockedReason = "library scan returned zero files while metadata exists (possible mount failure)"
 	}
 
 	// Guard: Walk errors detected — skip cleanup to prevent accidental deletion
@@ -595,8 +602,11 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		slog.WarnContext(ctx, "Walk errors detected during library scan, skipping cleanup",
 			"walk_errors", totalWalkErrors,
 			"library_walk_errors", libraryWalkErrors,
-			"import_walk_errors", importWalkErrors)
+			"import_walk_errors", importWalkErrors,
+			"cleanup_blocked_reason", "walk_errors",
+			"pending_reset", !dryRun)
 		shouldCleanup = false
+		cleanupBlockedReason = "walk errors detected during library scan"
 	}
 
 	// Update total files count
@@ -808,6 +818,9 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	const pendingLibraryDeletionKey = "pending_library_deletions"
 
 	metadataDeletedCount := 0
+	// metaOrphanTotal / libOrphanTotal count this run's orphan candidates for
+	// dry-run reporting, independent of the two-pass pending state.
+	metaOrphanTotal := 0
 	if shouldCleanup {
 		// Build current orphan set
 		currentMetaOrphans := make(map[string]string) // mount_relative_path -> meta_path
@@ -817,16 +830,30 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 				currentMetaOrphans[relativeMountPath] = metaPath
 			}
 		}
+		metaOrphanTotal = len(currentMetaOrphans)
 
-		// Ratio guard: if >20% of metadata files would be orphaned, something is wrong
+		// Ratio guard: if more than the configured share of metadata files
+		// would be orphaned, something is wrong (a dead mount looks like mass
+		// deletion). Historical default 0.20; 1.0 permits any ratio for backlog
+		// recovery. Other guards (zero-files, walk errors) always still apply.
 		if len(metaFileSet) > 0 {
+			maxRatio := cfg.GetOrphanCleanupMaxRatio()
 			orphanRatio := float64(len(currentMetaOrphans)) / float64(len(metaFileSet))
-			if orphanRatio > 0.20 {
+			if orphanRatio > maxRatio {
 				slog.WarnContext(ctx, "Suspiciously high orphan ratio, skipping cleanup",
 					"orphan_ratio", orphanRatio,
+					"max_ratio", maxRatio,
 					"potential_orphans", len(currentMetaOrphans),
-					"total_metadata", len(metaFileSet))
+					"total_metadata", len(metaFileSet),
+					"cleanup_blocked_reason", "orphan_ratio_exceeded",
+					"pending_reset", !dryRun,
+					"recovery_hint", "verify mounts, then raise health.orphan_cleanup_max_ratio (1.0 permits any ratio) and allow two qualifying syncs")
 				shouldCleanup = false
+				if dryRun {
+					cleanupBlockedReason = "orphan ratio exceeded health.orphan_cleanup_max_ratio (dry run: pending candidates unchanged; a real run would reset them and need two qualifying syncs)"
+				} else {
+					cleanupBlockedReason = "orphan ratio exceeded health.orphan_cleanup_max_ratio; pending candidates were reset and cleanup needs two qualifying syncs"
+				}
 			}
 		}
 
@@ -896,21 +923,25 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 				}
 			}
 
-			// Persist current first-time orphans as pending for next run
-			pendingPaths := make(map[string]bool, len(currentMetaOrphans))
-			for path := range currentMetaOrphans {
-				if !previousPending[path] {
-					pendingPaths[path] = true
+			// Persist current first-time orphans as pending for next run.
+			// Dry runs must not mutate pending state.
+			if !dryRun {
+				pendingPaths := make(map[string]bool, len(currentMetaOrphans))
+				for path := range currentMetaOrphans {
+					if !previousPending[path] {
+						pendingPaths[path] = true
+					}
 				}
-			}
-			if data, mErr := json.Marshal(pendingPaths); mErr == nil {
-				_ = lsw.healthRepo.UpdateSystemState(ctx, pendingMetaDeletionKey, string(data))
+				if data, mErr := json.Marshal(pendingPaths); mErr == nil {
+					_ = lsw.healthRepo.UpdateSystemState(ctx, pendingMetaDeletionKey, string(data))
+				}
 			}
 		}
 	}
 
 	// If cleanup was disabled (e.g. by ratio guard), clear the pending metadata set
-	if !shouldCleanup {
+	// (real runs only — dry runs are read-only).
+	if !shouldCleanup && !dryRun {
 		_ = lsw.healthRepo.UpdateSystemState(ctx, pendingMetaDeletionKey, "")
 	}
 
@@ -1024,15 +1055,18 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			}
 		}
 
-		// Persist current first-time orphans as pending for next run
-		pendingLibPaths := make(map[string]bool, len(currentLibOrphans))
-		for path := range currentLibOrphans {
-			if !previousLibPending[path] {
-				pendingLibPaths[path] = true
+		// Persist current first-time orphans as pending for next run.
+		// Dry runs must not mutate pending state.
+		if !dryRun {
+			pendingLibPaths := make(map[string]bool, len(currentLibOrphans))
+			for path := range currentLibOrphans {
+				if !previousLibPending[path] {
+					pendingLibPaths[path] = true
+				}
 			}
-		}
-		if data, mErr := json.Marshal(pendingLibPaths); mErr == nil {
-			_ = lsw.healthRepo.UpdateSystemState(ctx, pendingLibraryDeletionKey, string(data))
+			if data, mErr := json.Marshal(pendingLibPaths); mErr == nil {
+				_ = lsw.healthRepo.UpdateSystemState(ctx, pendingLibraryDeletionKey, string(data))
+			}
 		}
 
 		// Remove empty directories after file cleanup (only if not dry run and cleanup is safe)
@@ -1048,7 +1082,8 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	}
 
 	// If cleanup was disabled, clear the pending library set
-	if !shouldCleanup {
+	// (real runs only — dry runs are read-only).
+	if !shouldCleanup && !dryRun {
 		_ = lsw.healthRepo.UpdateSystemState(ctx, pendingLibraryDeletionKey, "")
 	}
 
@@ -1077,12 +1112,20 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 
 	// Return dry run results or record sync results
 	if dryRun {
-		wouldCleanup := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
+		maxRatio := cfg.GetOrphanCleanupMaxRatio()
+		orphanRatio := 0.0
+		if len(metaFileSet) > 0 {
+			orphanRatio = float64(metaOrphanTotal) / float64(len(metaFileSet))
+		}
 		return &DryRunResult{
 			OrphanedMetadataCount:  metadataDeletedCount,
 			OrphanedLibraryFiles:   libraryFilesDeletedCount,
 			DatabaseRecordsToClean: dbCounts.deleted,
-			WouldCleanup:           wouldCleanup,
+			WouldCleanup:           shouldCleanup,
+			OrphanCandidates:       metaOrphanTotal,
+			OrphanRatio:            orphanRatio,
+			OrphanMaxRatio:         maxRatio,
+			CleanupBlockedReason:   cleanupBlockedReason,
 		}
 	}
 
@@ -1096,12 +1139,40 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	return nil
 }
 
-// DryRunResult holds the results of a dry run sync
+// cleanupBlockedReasonForMetadataOnly reports why metadata-only (NONE strategy,
+// no library dir) dry runs cannot clean library-side orphans: there is no
+// library to compare against, so only DB-record pruning applies.
+func cleanupBlockedReasonForMetadataOnly(wouldCleanup bool, recordsToClean int) string {
+	if !wouldCleanup {
+		return "cleanup_orphaned_metadata is disabled"
+	}
+	if recordsToClean > 0 {
+		return ""
+	}
+	return "metadata-only sync: no library to compare against"
+}
+
+// DryRunResult holds the results of a dry run sync.
+//
+// WouldCleanup reports whether cleanup passed all guards (enabled flag,
+// empty-scan, walk errors, ratio). It does NOT guarantee any deletion this
+// run: items still need to be orphaned in two consecutive syncs.
 type DryRunResult struct {
 	OrphanedMetadataCount  int
 	OrphanedLibraryFiles   int
 	DatabaseRecordsToClean int
 	WouldCleanup           bool
+	// OrphanCandidates reports the number of metadata files that look
+	// orphaned in this run, regardless of the two-pass pending state.
+	OrphanCandidates int `json:"orphan_candidates"`
+	// OrphanRatio is OrphanCandidates / total metadata files scanned.
+	OrphanRatio float64 `json:"orphan_ratio"`
+	// OrphanMaxRatio is the configured health.orphan_cleanup_max_ratio
+	// threshold that was applied to this run.
+	OrphanMaxRatio float64 `json:"orphan_max_ratio"`
+	// CleanupBlockedReason is empty when cleanup would proceed; otherwise a
+	// short machine-readable reason (disabled, walk_errors, ratio_exceeded…).
+	CleanupBlockedReason string `json:"cleanup_blocked_reason,omitempty"`
 }
 
 // getAllMetadataFiles collects all .meta files from the filesystem
@@ -1954,12 +2025,17 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 
 	// Return dry run results or record sync results
 	if dryRun {
-		wouldCleanup := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
+		maxRatio := cfg.GetOrphanCleanupMaxRatio()
+		wouldClean := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
 		return &DryRunResult{
 			OrphanedMetadataCount:  0, // No orphaned metadata in NONE strategy
 			OrphanedLibraryFiles:   0, // No library files in NONE strategy
 			DatabaseRecordsToClean: dbCounts.deleted,
-			WouldCleanup:           wouldCleanup,
+			WouldCleanup:           wouldClean,
+			OrphanCandidates:       0,
+			OrphanRatio:            0,
+			OrphanMaxRatio:         maxRatio,
+			CleanupBlockedReason:   cleanupBlockedReasonForMetadataOnly(wouldClean, dbCounts.deleted),
 		}
 	}
 

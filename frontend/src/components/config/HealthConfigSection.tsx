@@ -56,6 +56,14 @@ export function HealthConfigSection({
 				return "Recheck intervals must not decrease with age: fresh ≤ early ≤ mid ≤ aged";
 			}
 		}
+		if (
+			data.orphan_cleanup_max_ratio !== undefined &&
+			(!Number.isFinite(data.orphan_cleanup_max_ratio) ||
+				data.orphan_cleanup_max_ratio < 0 ||
+				data.orphan_cleanup_max_ratio > 1)
+		) {
+			return "Orphan cleanup max ratio must be between 0 and 1";
+		}
 		return "";
 	};
 
@@ -644,6 +652,33 @@ export function HealthConfigSection({
 						/>
 					</div>
 
+					{formData.cleanup_orphaned_metadata && (
+						<fieldset className="fieldset">
+							<legend className="fieldset-legend font-semibold">Orphan Cleanup Max Ratio</legend>
+							<input
+								type="number"
+								className="input input-bordered w-full bg-base-100 font-mono text-sm"
+								value={formData.orphan_cleanup_max_ratio ?? 0.2}
+								disabled={isReadOnly}
+								min="0"
+								max="1"
+								step="0.05"
+								onChange={(e) => {
+									const parsed = Number.parseFloat(e.target.value);
+									handleInputChange(
+										"orphan_cleanup_max_ratio",
+										Number.isFinite(parsed) ? parsed : undefined,
+									);
+								}}
+							/>
+							<p className="label break-words text-[10px] text-base-content/50">
+								Max share of metadata that may look orphaned before cleanup aborts as
+								suspicious (0-1, default 0.2). Set to 1 to clear a verified backlog, run
+								two syncs, then restore the default.
+							</p>
+						</fieldset>
+					)}
+
 					<div className="flex justify-start">
 						<button
 							type="button"
@@ -664,6 +699,18 @@ export function HealthConfigSection({
 								<h5 className="flex items-center gap-2 font-black text-base-content/80 text-xs uppercase tracking-widest">
 									<TestTube className="h-3 w-3" /> Potential Cleanup Results
 								</h5>
+								{dryRunResult.cleanup_blocked_reason && (
+									<p className="break-words text-[11px] text-base-content/70 leading-relaxed">
+										Cleanup blocked: {dryRunResult.cleanup_blocked_reason}
+									</p>
+								)}
+								{dryRunResult.orphan_candidates !== undefined && (
+									<p className="break-words font-mono text-[11px] text-base-content/70">
+										{dryRunResult.orphan_candidates} orphan candidates (
+										{((dryRunResult.orphan_ratio ?? 0) * 100).toFixed(1)}% of scanned,
+										limit {((dryRunResult.orphan_max_ratio ?? 0.2) * 100).toFixed(0)}%)
+									</p>
+								)}
 								<div className="grid grid-cols-3 gap-2 text-center">
 									<div className="rounded-lg border border-base-300/50 bg-base-100 p-2">
 										<div className="font-bold font-mono text-lg">

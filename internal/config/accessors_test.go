@@ -1,8 +1,12 @@
 package config
 
 import (
+	"math"
+	"os"
 	"testing"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 func TestGetImportVerifyContent(t *testing.T) {
@@ -45,6 +49,102 @@ func TestGetHealthVerifyContentTimeout(t *testing.T) {
 	c := &Config{}
 	if got := c.GetHealthVerifyContentTimeout(); got != 15*time.Second {
 		t.Errorf("got %v, want 15s default", got)
+	}
+}
+
+func TestGetOrphanCleanupMaxRatio(t *testing.T) {
+	c := &Config{}
+	if got := c.GetOrphanCleanupMaxRatio(); got != DefaultOrphanCleanupMaxRatio {
+		t.Errorf("got %v, want default %v", got, DefaultOrphanCleanupMaxRatio)
+	}
+	half := 0.5
+	c.Health.OrphanCleanupMaxRatio = &half
+	if got := c.GetOrphanCleanupMaxRatio(); got != 0.5 {
+		t.Errorf("got %v, want 0.5", got)
+	}
+	negative := -0.1
+	c.Health.OrphanCleanupMaxRatio = &negative
+	if got := c.GetOrphanCleanupMaxRatio(); got != 0 {
+		t.Errorf("got %v, want clamped 0", got)
+	}
+	over := 1.5
+	c.Health.OrphanCleanupMaxRatio = &over
+	if got := c.GetOrphanCleanupMaxRatio(); got != 1 {
+		t.Errorf("got %v, want clamped 1", got)
+	}
+	nan := math.NaN()
+	c.Health.OrphanCleanupMaxRatio = &nan
+	if got := c.GetOrphanCleanupMaxRatio(); got != 0 {
+		t.Errorf("got %v, want clamped 0 for NaN", got)
+	}
+}
+
+func TestValidate_OrphanCleanupMaxRatio(t *testing.T) {
+	base := func() *Config {
+		c := DefaultConfig()
+		c.WebDAV.Port = 8080
+		c.MountType = MountTypeNone
+		c.Metadata.RootPath = "/metadata"
+		c.Streaming.MaxPrefetch = 30
+		c.Import.MaxProcessorWorkers = 2
+		c.Import.QueueProcessingIntervalSeconds = 5
+		c.Import.MaxDownloadPrefetch = 3
+		c.Import.SegmentSamplePercentage = 1
+		c.Import.ImportStrategy = ImportStrategyNone
+		c.Health.CheckIntervalSeconds = 5
+		c.Health.MaxConcurrentJobs = 1
+		c.Health.SegmentSamplePercentage = 5
+		return c
+	}
+
+	good := base()
+	if err := good.Validate(); err != nil {
+		t.Errorf("default ratio should validate: %v", err)
+	}
+
+	bad := base()
+	over := 1.5
+	bad.Health.OrphanCleanupMaxRatio = &over
+	if err := bad.Validate(); err == nil {
+		t.Error("expected validation error for ratio > 1")
+	}
+
+	negative := base()
+	under := -0.1
+	negative.Health.OrphanCleanupMaxRatio = &under
+	if err := negative.Validate(); err == nil {
+		t.Error("expected validation error for ratio < 0")
+	}
+
+	notANumber := base()
+	nan := math.NaN()
+	notANumber.Health.OrphanCleanupMaxRatio = &nan
+	if err := notANumber.Validate(); err == nil {
+		t.Error("expected validation error for NaN ratio")
+	}
+}
+
+func TestValidate_OrphanCleanupMaxRatio_YAMLNaN(t *testing.T) {
+	// YAML 1.1 decodes `.nan` into NaN, which comparisons accept silently
+	// (every comparison with NaN is false). Validation must reject it so a
+	// hand-edited config cannot silently disable the ratio guard.
+	path := writeConfig(t, `
+health:
+  orphan_cleanup_max_ratio: .nan
+`)
+	cfg := DefaultConfig()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	if err := yaml.Unmarshal(data, cfg); err != nil {
+		t.Fatalf("unmarshal config: %v", err)
+	}
+	if err := cfg.Validate(); err == nil {
+		t.Error("expected validation error for YAML .nan ratio")
+	}
+	if got := cfg.GetOrphanCleanupMaxRatio(); got != 0 {
+		t.Errorf("got %v, want clamped 0 for NaN", got)
 	}
 }
 

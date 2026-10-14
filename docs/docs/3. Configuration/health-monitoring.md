@@ -125,6 +125,12 @@ When **Orphan Cleanup** is enabled in the configuration, sync performs bidirecti
 
 This keeps both sides consistent when files are intentionally removed from either location.
 
+Cleanup is deliberately conservative:
+
+- An item is deleted only after it looks orphaned in **two consecutive syncs**.
+- Cleanup aborts when the scan finds **zero library files** while metadata exists (likely a dead mount) or when **walk errors** occur.
+- Cleanup also aborts when the orphan share exceeds `health.orphan_cleanup_max_ratio` (default `0.2`): tripping it clears the pending candidates, so recovery needs two qualifying syncs after the cause is fixed. To clear a legitimate backlog, verify mounts first, temporarily set the ratio to `1.0`, run two syncs, then restore the default.
+
 :::warning
 Orphan cleanup permanently deletes files. Use the **Dry Run Test** button on the configuration page first — it shows exactly what would be deleted (orphaned metadata count, orphaned library files, and database records to clean) without making any changes.
 :::
@@ -286,6 +292,7 @@ health:
   enabled: true
   library_dir: "/path/to/library"
   cleanup_orphaned_metadata: false
+  orphan_cleanup_max_ratio: 0.2 # abort orphan cleanup when more than this fraction (0-1) of metadata looks orphaned; 1.0 permits any ratio for backlog recovery
   check_interval_seconds: 5
   max_concurrent_segment_checks: 0 # 0/unset = adapt to stream activity (default); a positive number pins a hard cap. Renamed from max_connections_for_health_checks, which is migrated automatically.
   max_concurrent_jobs: 1

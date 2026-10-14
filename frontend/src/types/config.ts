@@ -141,6 +141,8 @@ export interface HealthConfig {
 	enabled?: boolean;
 	library_dir?: string;
 	cleanup_orphaned_metadata?: boolean;
+	/** Max share (0-1) of metadata that may look orphaned before cleanup aborts; 1.0 permits any ratio. */
+	orphan_cleanup_max_ratio?: number;
 	check_interval_seconds?: number;
 	recheck?: HealthRecheckConfig;
 	/** Max in-flight STAT checks per sweep. 0 or absent = adapt to pool + stream activity. */
@@ -183,12 +185,18 @@ export interface RepairConfig {
 	file_delete_confirm_seconds: number; // Wait for the ARR to report the deleted file record as unlinked; 0 disables
 }
 
-// Dry run result for library sync
+// Dry run result for library sync. would_cleanup reports whether cleanup
+// passed all guards; it does not guarantee any deletion (two-pass
+// confirmation still applies).
 export interface DryRunSyncResult {
 	orphaned_metadata_count: number; // Number of orphaned metadata files
 	orphaned_library_files: number; // Number of orphaned library files (symlinks/STRM)
 	database_records_to_clean: number; // Number of database records to clean
-	would_cleanup: boolean; // Whether cleanup would occur based on config
+	would_cleanup: boolean; // Whether cleanup passed all guards (two-pass confirmation still applies)
+	orphan_candidates?: number;
+	orphan_ratio?: number;
+	orphan_max_ratio?: number;
+	cleanup_blocked_reason?: string;
 }
 
 // RClone configuration (sanitized)
@@ -448,6 +456,7 @@ export interface HealthUpdateRequest {
 	enabled?: boolean;
 	library_dir?: string;
 	cleanup_orphaned_metadata?: boolean;
+	orphan_cleanup_max_ratio?: number;
 	check_interval_seconds?: number; // Interval in seconds (optional)
 	/** Max in-flight STAT checks per sweep. 0 or absent = adapt to pool + stream activity. */
 	max_concurrent_segment_checks?: number;
