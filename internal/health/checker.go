@@ -73,6 +73,13 @@ type CheckOptions struct {
 	// file's current status or the configured default. Used by the
 	// manual recheck API to let a user force a re-probe.
 	VerifyContentOverride *bool
+	// IsCancelled, when non-nil, reports whether the check for the given file
+	// was cancelled. The batch sweep consults it to stop spending STAT work on
+	// a cancelled file as soon as possible (fail-fast), and the judge phase
+	// skips content probes for cancelled files. Without this the shared sweep
+	// context keeps burning network work for files whose result will be
+	// discarded anyway.
+	IsCancelled func(filePath string) bool
 }
 
 // PatchIndex reports articles restored locally by PAR2 repair.
@@ -180,19 +187,78 @@ func baseResultEvent(filePath, sourceNzbPath string) HealthEvent {
 	}
 }
 
+// metadataFileConfirmedAbsent reports whether filePath's absence from the
+// metadata store is a confirmed file removal rather than unavailable
+// storage. It opens the root with os.OpenRoot FIRST and performs both the
+// liveness proof and the target lookup THROUGH that same handle, so the
+// decision is pinned to one backing-store view: a root replacement between
+// the probes cannot silently redirect the lookup into an exposed underlying
+// dir (the mixed-view race that deleted tracking on a pre-loss liveness
+// proof + post-loss ENOENT).
+//
+// Residual limitation (documented, accepted): if the mount vanished BEFORE
+// the handle opened and the exposed underlying dir is itself populated
+// (stale .ids/.meta), the pinned view looks live and a missing target
+// reads as removed. Pinning cannot certify store identity — only that both
+// probes saw the same view. Operators must therefore ensure the metadata
+// root's underlying path is an empty dir (standard mount hygiene), so the
+// pre-loss-vanished case presents as a bare dir and stays inconclusive.
+// A lazy-unmount that keeps serving the old view through the held handle
+// is equally safe: both probes see the same pre-loss store, and a file
+// absent from that view is genuinely absent from it.
+func (hc *HealthChecker) metadataFileConfirmedAbsent(filePath string) bool {
+	if hc.metadataService == nil {
+		return false
+	}
+	return hc.metadataService.ConfirmFileAbsent(filePath)
+}
+
 // prepareCheck runs the local (non-network) stages of a health check: metadata
 // read, integrity verification, and segment sampling. It returns either an
 // early terminal event or the sampled segment IDs for the network sweep.
 func (hc *HealthChecker) prepareCheck(ctx context.Context, filePath string, opts ...CheckOptions) preparedCheck {
 	prep := preparedCheck{filePath: filePath}
+	var isCancelled func(filePath string) bool
 	if len(opts) > 0 {
 		prep.currentStatus = opts[0].CurrentStatus
 		prep.verifyContentOverride = opts[0].VerifyContentOverride
+		isCancelled = opts[0].IsCancelled
+	}
+
+	// A file cancelled while queued never reaches the network: emit an
+	// inconclusive event up front so no STAT work is spent on it.
+	if isCancelled != nil && isCancelled(filePath) {
+		event := baseResultEvent(filePath, "")
+		event.Type = EventTypeCheckInconclusive
+		event.Status = database.HealthStatusPending
+		event.Error = fmt.Errorf("health check cancelled before metadata read")
+		details := database.HealthErrorDetails{ErrorType: "check_inconclusive", Message: event.Error.Error()}
+		event.Details = details.Marshal()
+		prep.earlyEvent = &event
+		return prep
 	}
 
 	// Get file metadata
 	fileMeta, err := hc.metadataService.ReadFileMetadata(filePath)
 	if err != nil {
+		// Only definitive metadata corruption (bad payload, unresolvable
+		// refs) is a verdict. Transient storage/permission failures prove
+		// nothing about the file — mark them inconclusive so they reschedule
+		// without consuming retries or entering repair (same rule as the
+		// library-sync discovery pass via isDefinitiveMetadataError).
+		if !isDefinitiveMetadataError(err) {
+			event := baseResultEvent(filePath, "")
+			event.Type = EventTypeCheckInconclusive
+			event.Status = database.HealthStatusPending
+			event.Error = fmt.Errorf("metadata read inconclusive: %w", err)
+			details := database.HealthErrorDetails{
+				ErrorType: "check_inconclusive",
+				Message:   event.Error.Error(),
+			}
+			event.Details = details.Marshal()
+			prep.earlyEvent = &event
+			return prep
+		}
 		event := HealthEvent{
 			Type:      EventTypeFileCorrupted,
 			FilePath:  filePath,
@@ -206,7 +272,29 @@ func (hc *HealthChecker) prepareCheck(ctx context.Context, filePath string, opts
 		return prep
 	}
 	if fileMeta == nil {
-		// File not found - remove from health database
+		// A nil metadata return is ambiguous: it means "file not found",
+		// but ReadFileMetadata also returns (nil, nil) when the metadata
+		// root itself is unreadable (ENOENT covers both a genuinely absent
+		// file and a disappeared storage root). Deleting the health record
+		// here would drop tracking during a storage outage — the sync
+		// paths already fail closed on incomplete scans, so the checker
+		// must do the same. Only treat the file as removed when its
+		// absence is confirmed by a live metadata scan below; otherwise
+		// stay inconclusive and reschedule without consuming retries.
+		if !hc.metadataFileConfirmedAbsent(filePath) {
+			event := baseResultEvent(filePath, "")
+			event.Type = EventTypeCheckInconclusive
+			event.Status = database.HealthStatusPending
+			event.Error = fmt.Errorf("metadata file absent but storage availability uncertain, rescheduling")
+			details := database.HealthErrorDetails{
+				ErrorType: "check_inconclusive",
+				Message:   event.Error.Error(),
+			}
+			event.Details = details.Marshal()
+			prep.earlyEvent = &event
+			return prep
+		}
+		// File confirmed absent - remove from health database
 		if err := hc.healthRepo.DeleteHealthRecord(ctx, filePath); err != nil {
 			slog.ErrorContext(ctx, "Failed to delete health record for removed file", "file_path", filePath, "error", err)
 		}
@@ -500,6 +588,22 @@ func (hc *HealthChecker) statSweepConcurrency(cfg *config.Config) int {
 	return hc.poolManager.StatSweepConcurrency(cfg.StatConcurrency())
 }
 
+// streamsActive reports whether any playback stream is currently active.
+// The pool.Manager interface only exposes StatSweepConcurrency (which
+// already adapts internally), so detect the active case the same indirect
+// way: ask for two different conservative bounds and see whether the manager
+// returns them verbatim (conservative = streams active or no pool) or widens
+// them (idle pool with headroom). Test fakes return the input unchanged, so
+// they correctly report "active" (conservative) and never trigger the
+// narrowed probe path in unit tests.
+func streamsActive(pm pool.Manager) bool {
+	if pm == nil {
+		return false
+	}
+	a, b := 7, 13
+	return pm.StatSweepConcurrency(a) == a && pm.StatSweepConcurrency(b) == b
+}
+
 // batchOptions builds the sweep configuration for a set of prepared checks,
 // including the fast-fail policy. A file stops consuming stats as soon as its
 // confirmed missing segments irreversibly exceed the configured
@@ -539,6 +643,13 @@ func (hc *HealthChecker) batchOptions(preps []preparedCheck, opts ...CheckOption
 		ArticleDate:    oldestReleaseDate(preps),
 		OnProgress:     onProgress,
 		ShouldStop: func(fileIdx int, result usenet.ValidationResult) bool {
+			// A cancelled file stops consuming STAT work immediately: its
+			// result will be discarded anyway, so the sweep must not keep
+			// burning network round-trips on its remaining segments.
+			if len(opts) > 0 && opts[0].IsCancelled != nil && fileIdx < len(preps) &&
+				opts[0].IsCancelled(preps[fileIdx].filePath) {
+				return true
+			}
 			if fileIdx >= len(preps) {
 				return false
 			}
@@ -564,7 +675,14 @@ const prepareConcurrency = 8
 // timeout. Running that loop sequentially would serialize the whole batch
 // behind file_count * timeout of wall-clock time, so it is bounded-parallel
 // like the prepare stage instead.
+//
+// judgeConcurrencyStreamsActive narrows the judge loop while a stream is
+// playing: content probes read through the streaming-priority BODY lane, so a
+// full 8-wide probe burst during playback contends with the viewer. The
+// STAT sweep already narrows this way (see statSweepConcurrency); the probe
+// phase gets the same treatment.
 const judgeConcurrency = 8
+const judgeConcurrencyStreamsActive = 2
 
 // CheckFilesBatch checks many files in one cycle: per-file preparation runs in
 // a small parallel pool, then every prepared file's sampled segments are
@@ -609,12 +727,30 @@ func (hc *HealthChecker) CheckFilesBatch(ctx context.Context, filePaths []string
 		hc.batchOptions(preps, opts...),
 	)
 
+	// Narrow the judge (content-probe) phase while a stream is playing:
+	// probes run on the streaming-priority BODY lane, so a full 8-wide
+	// burst during playback contends with the viewer. The STAT sweep
+	// already adapts this way via statSweepConcurrency.
+	judgeWidth := judgeConcurrency
+	if streamsActive(hc.poolManager) {
+		judgeWidth = judgeConcurrencyStreamsActive
+	}
+
 	events := make([]HealthEvent, len(preps))
-	jl := concpool.New().WithMaxGoroutines(min(len(preps), judgeConcurrency))
+	jl := concpool.New().WithMaxGoroutines(min(len(preps), judgeWidth))
 	for i := range preps {
 		jl.Go(func() {
 			if preps[i].earlyEvent != nil {
 				events[i] = *preps[i].earlyEvent
+				return
+			}
+			// A file cancelled mid-sweep skips its content probe: the probe
+			// burns a BODY fetch whose result will be discarded anyway.
+			// The STAT verdict below still runs (inconclusive results
+			// reschedule without consuming retries).
+			if len(opts) > 0 && opts[0].IsCancelled != nil && opts[0].IsCancelled(preps[i].filePath) {
+				result := usenet.ValidationResult{Err: context.Canceled}
+				events[i] = hc.judgeValidation(ctx, preps[i], result, nil)
 				return
 			}
 			var result usenet.ValidationResult

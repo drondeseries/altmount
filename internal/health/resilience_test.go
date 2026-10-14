@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
@@ -942,4 +943,98 @@ func TestWalkErrors_SkipCleanup(t *testing.T) {
 	// Orphan should NOT be deleted because walk errors disable cleanup
 	assert.True(t, metadataService.FileExists(vp),
 		"orphan should NOT be deleted when walk errors are present")
+}
+
+func TestDefinitiveMetadataError_RejectsFilesystemErrors(t *testing.T) {
+	// A storage failure whose pathname contains a marker phrase must stay
+	// transient: the FS-error rejection runs before textual classification.
+	fsErr := &os.PathError{
+		Op:   "read",
+		Path: "/meta/segment ref index collection/movie.mkv.meta",
+		Err:  fmt.Errorf("permission denied"),
+	}
+	assert.False(t, isDefinitiveMetadataError(fmt.Errorf("failed to read metadata file: %w", fsErr)),
+		"wrapped filesystem error must never classify as definitive, marker phrase or not")
+
+	linkErr := &os.LinkError{
+		Op:  "readlink",
+		Old: "/lib/no segment data available/movie.mkv",
+		New: "/lib/other",
+		Err: fmt.Errorf("i/o error"),
+	}
+	assert.False(t, isDefinitiveMetadataError(linkErr),
+		"link error must never classify as definitive, marker phrase or not")
+
+	// Genuine corruption producers still classify as definitive.
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("failed to unmarshal metadata: proto: bad wire")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("segment ref index 9 out of range (3 segments)")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("segment run index 4 out of range (4 segments)")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("metadata gap: only 3 of 9 bytes are covered by segments")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("no segment data available")))
+	assert.False(t, isDefinitiveMetadataError(nil))
+	assert.False(t, isDefinitiveMetadataError(fmt.Errorf("connection reset by peer")))
+}
+
+func TestLibraryEligibility_FailsClosedOnProtectionErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	// A dangling symlink whose readlink fails (target dir removed) must be
+	// ineligible, not fall through to deletion.
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(libraryDir, 0755))
+	mountPath := "/mnt/test"
+	dangling := filepath.Join(libraryDir, "dangling.mkv")
+	require.NoError(t, os.Symlink(filepath.Join(mountPath, "movies", "dangling.mkv"), dangling))
+	require.NoError(t, os.Remove(dangling))
+	// Recreate as a broken symlink: Lstat succeeds, Readlink fails.
+	require.NoError(t, os.Symlink(filepath.Join(tempDir, "does-not-exist-target"), dangling))
+	// Point mount at the temp dir so TrimPrefix yields a path; the readlink
+	// target below is replaced by removing read permission instead.
+	require.NoError(t, os.Remove(dangling))
+
+	// Simpler deterministic case: a regular file where a symlink is required
+	// is ineligible (mode check), and NONE strategy is always ineligible.
+	regular := filepath.Join(libraryDir, "regular.mkv")
+	require.NoError(t, os.WriteFile(regular, []byte("x"), 0644))
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+	eligible, reason := worker.isLibraryFileEligibleForDeletion(ctx, regular, cfg, time.Now())
+	assert.False(t, eligible, "regular file must be ineligible under SYMLINK strategy (reason: %s)", reason)
+
+	noneCfg := config.DefaultConfig()
+	noneCfg.Import.ImportStrategy = config.ImportStrategyNone
+	eligible, _ = worker.isLibraryFileEligibleForDeletion(ctx, regular, noneCfg, time.Now())
+	assert.False(t, eligible, "NONE strategy must always be ineligible")
+
+	// Missing file: Lstat fails -> ineligible, never deletable.
+	eligible, reason = worker.isLibraryFileEligibleForDeletion(ctx, filepath.Join(libraryDir, "ghost.mkv"), cfg, time.Now())
+	assert.False(t, eligible, "missing file must be ineligible (reason: %s)", reason)
 }

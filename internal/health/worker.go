@@ -1096,7 +1096,18 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 		paths[i] = fh.FilePath
 		statuses[i] = fh.Status
 	}
-	events := hw.healthChecker.CheckFilesBatch(ctx, paths, statuses, CheckOptions{OnProgress: reportProgress})
+	// Wire per-file cancellation into the sweep: a file cancelled mid-cycle
+	// stops consuming STAT work (ShouldStop fail-fast), skips its content
+	// probe, and — as before — has its result discarded below. Only files
+	// this batch registered are reported: a path the batch never registered
+	// (e.g. a concurrent manual check) is not ours to cancel.
+	isCancelled := func(filePath string) bool {
+		if c, ok := fileCtxs[filePath]; ok && c != nil {
+			return c.Err() != nil
+		}
+		return false
+	}
+	events := hw.healthChecker.CheckFilesBatch(ctx, paths, statuses, CheckOptions{OnProgress: reportProgress, IsCancelled: isCancelled})
 
 	// Phase B: per-file result handling (repair side effects, ARR API calls,
 	// VFS notifications), bounded by maxJobs.

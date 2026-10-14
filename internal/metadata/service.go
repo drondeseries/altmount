@@ -95,6 +95,12 @@ func (ms *MetadataService) Store() *StoreService {
 	return ms.store
 }
 
+// RootPath returns the configured metadata root (for tests that need to
+// seed sentinel state directly).
+func (ms *MetadataService) RootPath() string {
+	return ms.rootPath
+}
+
 // SetStoreRefCounter wires in a StoreRefCounter so that reference counts on shared
 // NzbStore files are maintained when metadata is deleted or created.
 func (ms *MetadataService) SetStoreRefCounter(c StoreRefCounter) {
@@ -604,6 +610,145 @@ func (ms *MetadataService) readFileMetadataLiteFull(virtualPath string) (*FileMe
 func (ms *MetadataService) FileExists(virtualPath string) bool {
 	_, err := os.Stat(ms.metaFilePath(virtualPath))
 	return err == nil
+}
+
+// StatMetadataFile stats a single .meta file, distinguishing "confirmed
+// absent" (nil error + exists=false) from "unknown" (non-nil error: any
+// permission/IO failure that is not ENOENT). Callers that delete tracking
+// on absence must treat unknown as inconclusive, never as proof of removal.
+func (ms *MetadataService) StatMetadataFile(virtualPath string) (exists bool, err error) {
+	_, statErr := os.Stat(ms.metaFilePath(virtualPath))
+	if statErr == nil {
+		return true, nil
+	}
+	if os.IsNotExist(statErr) {
+		return false, nil
+	}
+	return false, statErr
+}
+
+// ConfirmFileAbsent reports whether virtualPath's absence from the metadata
+// store is a confirmed file removal rather than unavailable storage. It
+// opens the root with os.OpenRoot FIRST, then performs BOTH the liveness
+// proof and the target stat THROUGH that same *os.Root handle. The Root
+// pins the opened directory: a mount replacement between the probes cannot
+// silently redirect the lookup into an exposed underlying dir (the
+// mixed-view race that previously deleted tracking on a pre-loss liveness
+// proof + post-loss ENOENT). Any error at any stage returns false.
+//
+// Residual limitation (documented, accepted): if the mount vanished BEFORE
+// the open and the underlying path is itself populated (stale .ids/.meta),
+// the pinned view looks live and a missing target reads as removed. The
+// mitigation is deployment hygiene — the metadata root's underlying path
+// must be an empty dir, so that case presents as a bare dir and stays
+// inconclusive (see the "metadata missing on empty root" regression test).
+func (ms *MetadataService) ConfirmFileAbsent(virtualPath string) (absent bool) {
+	root, err := os.OpenRoot(ms.rootPath)
+	if err != nil {
+		return false
+	}
+	defer root.Close() //nolint:errcheck // best-effort close on a probe handle
+
+	// Liveness through the same handle: .ids sentinel dir first (cheap,
+	// one stat), else first-*.meta walk rooted at the handle. A bare
+	// exposed mountpoint has neither and reports not-live.
+	live, err := func() (bool, error) {
+		if st, sErr := root.Stat(".ids"); sErr == nil && st.IsDir() {
+			return true, nil
+		} else if sErr != nil && !os.IsNotExist(sErr) {
+			return false, sErr
+		}
+		return rootHasMeta(root, ".", 4)
+	}()
+	if err != nil || !live {
+		return false
+	}
+
+	// Target lookup through the SAME handle: only a clean ENOENT here is
+	// proof of removal. ESTALE / dead-handle errors are unknown.
+	rel, err := rootRelPath(ms.rootPath, ms.metaFilePath(virtualPath))
+	if err != nil {
+		return false
+	}
+	if _, err := root.Stat(rel); err != nil {
+		return os.IsNotExist(err)
+	}
+	return false
+}
+
+// rootRelPath returns the forward-slash relative path of abs (which must be
+// under root), rejecting any ".." escape so the *os.Root handle can never be
+// used to stat outside the pinned tree.
+func rootRelPath(root, abs string) (string, error) {
+	rel, err := filepath.Rel(root, abs)
+	if err != nil {
+		return "", err
+	}
+	rel = filepath.ToSlash(rel)
+	if rel == ".." || strings.HasPrefix(rel, "../") {
+		return "", fmt.Errorf("path escapes metadata root: %q", abs)
+	}
+	return rel, nil
+}
+
+// rootHasMeta reports whether any *.meta file exists under dir (relative to
+// the pinned root), up to depth levels deep, skipping the
+// corrupted_metadata safety folder. Non-ENOENT traversal errors are
+// returned (unknown, not absent); genuinely-missing subtrees yield false.
+func rootHasMeta(root *os.Root, dir string, depth int) (bool, error) {
+	if depth < 0 {
+		return false, nil
+	}
+	f, err := root.Open(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer f.Close() //nolint:errcheck // best-effort close on a probe handle
+	entries, err := f.ReadDir(-1)
+	if err != nil {
+		return false, err
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() {
+			if name == "corrupted_metadata" {
+				continue
+			}
+			sub := name
+			if dir != "." {
+				sub = dir + "/" + name
+			}
+			found, err := rootHasMeta(root, sub, depth-1)
+			if err != nil {
+				return false, err
+			}
+			if found {
+				return true, nil
+			}
+		} else if strings.HasSuffix(name, ".meta") {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// RootReadable reports whether the metadata root itself is present and
+// listable. Prefer ConfirmFileAbsent for deletion decisions; this remains
+// for cheap non-destructive liveness probes.
+func (ms *MetadataService) RootReadable() bool {
+	root, err := os.OpenRoot(ms.rootPath)
+	if err != nil {
+		return false
+	}
+	defer root.Close() //nolint:errcheck // best-effort close on a probe handle
+	if st, err := root.Stat("."); err != nil || !st.IsDir() {
+		return false
+	}
+	live, err := rootHasMeta(root, ".", 1)
+	return err == nil && live
 }
 
 // DirectoryExists checks if a metadata directory exists

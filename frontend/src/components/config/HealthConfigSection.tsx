@@ -262,7 +262,7 @@ export function HealthConfigSection({
 						</p>
 					</fieldset>
 
-					<fieldset className="fieldset mt-6 border-base-300/50 border-t pt-6">
+					<fieldset className="fieldset mt-6 min-w-0 border-base-300/50 border-t pt-6">
 						<legend className="fieldset-legend font-semibold">
 							Corrupted Metadata Retention (Days)
 						</legend>
@@ -279,7 +279,7 @@ export function HealthConfigSection({
 							}
 							min="0"
 						/>
-						<p className="label break-words text-[10px] text-base-content/50">
+						<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 							How long a corrupted file's metadata is kept in the corrupted_metadata safety folder
 							before the health cycle prunes it and releases the segment store it holds. 0 keeps
 							safety copies forever.
@@ -304,9 +304,13 @@ export function HealthConfigSection({
 
 					{formData.repair?.enabled && formData.corruption_action !== "delete" && (
 						<div className="fade-in slide-in-from-top-2 mt-6 animate-in border-base-300/50 border-t pt-6">
-							<div className="grid grid-cols-1 gap-6 sm:grid-cols-2">
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Base Interval (Minutes)</legend>
+							{/* Back-off pair — same paired-card tables as Performance & Deep Validation sub-groups */}
+							<h5 className="font-bold text-base-content/70 text-xs uppercase tracking-widest">
+								Repair Back-off
+							</h5>
+							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Base Interval (Minutes)</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -320,14 +324,14 @@ export function HealthConfigSection({
 										}
 										min="1"
 									/>
-									<p className="label break-words text-[10px] text-base-content/50">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Base wait time between repair re-notifications, applied on every retry (doubled
 										each time if exponential back-off is enabled).
 									</p>
 								</fieldset>
 
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Max Cooldown (Hours)</legend>
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Max Cooldown (Hours)</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -341,12 +345,19 @@ export function HealthConfigSection({
 										}
 										min="1"
 									/>
-									<p className="label break-words text-[10px] text-base-content/50">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Maximum delay between repair attempts.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Max Repair Retries</legend>
+							</div>
+
+							{/* Retry budget pair — same paired-card tables as Repair Back-off above */}
+							<h5 className="mt-6 font-bold text-base-content/70 text-xs uppercase tracking-widest">
+								Retry Budget
+							</h5>
+							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Max Repair Retries</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -360,13 +371,20 @@ export function HealthConfigSection({
 										}
 										min="0"
 									/>
-									<p className="label break-words text-[10px] text-base-content/50">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Number of repair notification attempts before giving up.
 									</p>
 								</fieldset>
+							</div>
 
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">
+							{/* Search coordination pair — same paired-card tables as the pairs above,
+							    so Auto Search Wait sits in a left-column table instead of all the way right */}
+							<h5 className="mt-6 font-bold text-base-content/70 text-xs uppercase tracking-widest">
+								Search Coordination
+							</h5>
+							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
 										Auto Search Wait (Seconds)
 									</legend>
 									<input
@@ -382,15 +400,15 @@ export function HealthConfigSection({
 										}
 										min="0"
 									/>
-									<p className="label break-words text-[10px] text-base-content/50">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										How long to wait for the *arr's own automatic re-download search (queued as soon
 										as a release is blocklisted) before deleting the file record and searching. 0
 										disables the wait.
 									</p>
 								</fieldset>
 
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
 										File Delete Confirm (Seconds)
 									</legend>
 									<input
@@ -406,7 +424,7 @@ export function HealthConfigSection({
 										}
 										min="0"
 									/>
-									<p className="label break-words text-[10px] text-base-content/50">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										How long to wait for the *arr to report the deleted file record as unlinked
 										before issuing the replacement search. 0 disables the wait.
 									</p>
@@ -479,7 +497,7 @@ export function HealthConfigSection({
 									handleRecheckChange("fresh_hours", Number.parseInt(e.target.value, 10))
 								}
 							/>
-							<p className="label break-words text-[10px] text-base-content/50">
+							<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 								Recheck interval for new posts.
 							</p>
 							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
@@ -513,7 +531,7 @@ export function HealthConfigSection({
 									handleRecheckChange("early_hours", Number.parseInt(e.target.value, 10))
 								}
 							/>
-							<p className="label break-words text-[10px] text-base-content/50">
+							<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 								Catches week-one late takedowns.
 							</p>
 							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
@@ -547,7 +565,7 @@ export function HealthConfigSection({
 									handleRecheckChange("mid_hours", Number.parseInt(e.target.value, 10))
 								}
 							/>
-							<p className="label break-words text-[10px] text-base-content/50">
+							<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 								Daily steady-state coverage.
 							</p>
 							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
@@ -581,7 +599,7 @@ export function HealthConfigSection({
 									handleRecheckChange("aged_days", Number.parseInt(e.target.value, 10))
 								}
 							/>
-							<p className="label break-words text-[10px] text-base-content/50">
+							<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 								Retention-drift coverage for old files.
 							</p>
 							<legend className="fieldset-legend mt-2 px-1 font-semibold text-xs">
@@ -895,7 +913,7 @@ export function HealthConfigSection({
 								</label>
 
 								{formData.verify_content && (
-									<fieldset className="fieldset">
+									<fieldset className="fieldset min-w-0">
 										<legend className="fieldset-legend font-semibold">
 											Content Probe Timeout (Seconds)
 										</legend>
@@ -912,7 +930,7 @@ export function HealthConfigSection({
 											}
 											min="1"
 										/>
-										<p className="label break-words text-[10px] text-base-content/50">
+										<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 											Per-file deadline for the header probe. A timeout is treated as a transient
 											error, never as a corruption verdict.
 										</p>
@@ -1003,14 +1021,16 @@ export function HealthConfigSection({
 
 						<div className="divider" />
 
-						{/* Sub-group B: Timeouts & Retries */}
+						{/* Sub-group B: Timeouts & Retries — paired cards, same tables as Scheduling below */}
 						<div>
 							<h5 className="font-bold text-base-content/70 text-xs uppercase tracking-widest">
 								Timeouts & Retries
 							</h5>
-							<div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Max Health Retries</legend>
+							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Max Health Retries
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1021,12 +1041,12 @@ export function HealthConfigSection({
 											handleInputChange("max_retries", Number.parseInt(e.target.value, 10) || 0)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Number of retries before marking a file as corrupted.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Read Timeout (Sec)</legend>
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Read Timeout (Sec)</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1040,7 +1060,7 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Timeout for reading segments from Usenet.
 									</p>
 								</fieldset>
@@ -1054,9 +1074,9 @@ export function HealthConfigSection({
 							<h5 className="font-bold text-base-content/70 text-xs uppercase tracking-widest">
 								Scheduling & Concurrency
 							</h5>
-							<div className="mt-4 grid grid-cols-1 gap-6 sm:grid-cols-2">
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Parallel Processing</legend>
+							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Parallel Processing</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1071,12 +1091,12 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Max files processed at once.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Sync Interval (Minutes)</legend>
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Sync Interval (Minutes)</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1091,12 +1111,12 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										How often to scan your library for new files.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
 										Health Check Loop Interval (Sec)
 									</legend>
 									<input
@@ -1112,12 +1132,12 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Idle time between background health check cycles.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Sync Concurrency</legend>
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Sync Concurrency</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1131,12 +1151,12 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										Max parallel file scans during sync (0 = auto, defaults to 10).
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
 										Max Concurrent Segment Checks
 									</legend>
 									<label className="mb-2 flex cursor-pointer items-center gap-3 rounded-xl border border-base-300/60 bg-base-100/40 p-3">
@@ -1168,15 +1188,15 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label block whitespace-normal break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										How many segment existence checks run at once within a sweep. STAT requests are
 										cheap, so this can be much higher than your provider's connection count.
 										Adaptive narrows the sweep while a stream is playing and widens it on an idle
 										pool (up to 24x sweep throughput); a fixed cap pins it instead.
 									</p>
 								</fieldset>
-								<fieldset className="fieldset">
-									<legend className="fieldset-legend font-semibold">Check Batch Size</legend>
+								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
+									<legend className="fieldset-legend px-1 font-semibold text-xs">Check Batch Size</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1190,7 +1210,7 @@ export function HealthConfigSection({
 											)
 										}
 									/>
-									<p className="label block whitespace-normal break-words text-base-content/70 text-xs">
+									<p className="block whitespace-normal break-words text-[10px] text-base-content/50">
 										How many due files are fetched and swept together per health-check cycle. Raise
 										this to clear a large backlog faster.
 									</p>

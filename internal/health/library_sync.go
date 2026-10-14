@@ -313,6 +313,9 @@ type cleanupCounts struct {
 
 // findFilesToDelete identifies database records that no longer have corresponding metadata files
 // or library files. filesInUse can be nil for metadata-only sync.
+// Callers must only invoke this when cleanup is eligible (see SyncLibrary):
+// a blocked/incomplete scan prunes nothing, so this helper can treat a
+// missing metadata file as a genuine deletion without re-checking guards.
 func (lsw *LibrarySyncWorker) findFilesToDelete(
 	ctx context.Context,
 	dbRecords []database.AutomaticHealthCheckRecord,
@@ -519,17 +522,18 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	var libraryFiles *UsedFiles
 	var importDirFiles *UsedFiles
 	var librarySymlinksUpdated, importSymlinksUpdated int
-	var libraryWalkErrors, importWalkErrors int
+	var libraryWalkErrors, importWalkErrors, metadataWalkErrors int
 
 	fsWalkPool := pool.New().WithErrors().WithMaxGoroutines(3)
 
 	// Get all metadata files from filesystem
 	fsWalkPool.Go(func() error {
-		files, err := lsw.getAllMetadataFiles(ctx)
+		files, walkErrs, err := lsw.getAllMetadataFiles(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get metadata files: %w", err)
 		}
 		metadataFiles = files
+		metadataWalkErrors = walkErrs
 		return nil
 	})
 
@@ -642,6 +646,21 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	if err != nil {
 		slog.ErrorContext(ctx, "Failed to get automatic health check paths from database", "error", err)
 		return nil
+	}
+
+	// Fail closed on any incomplete scan: a partial metadata walk (a dead
+	// metadata root counting as empty, a subtree permission failure) must
+	// never look like confirmed orphans. Library-side deletions are already
+	// guarded by the ratio check below; DB pruning is additionally blocked
+	// via scanIncomplete (see filesToDelete handling).
+	scanIncomplete := metadataWalkErrors > 0
+	if scanIncomplete {
+		slog.WarnContext(ctx, "Metadata scan had walk errors, blocking all destructive cleanup for safety",
+			"metadata_walk_errors", metadataWalkErrors,
+			"cleanup_blocked_reason", "metadata_walk_errors",
+			"pending_reset", !dryRun)
+		shouldCleanup = false
+		cleanupBlockedReason = "metadata walk errors detected during scan (incomplete scan, cleanup blocked)"
 	}
 
 	// Build lookup maps for efficient searching
@@ -783,6 +802,16 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			if needsProcess {
 				record, err := lsw.processMetadataForSync(ctx, path, libraryPath)
 				if err != nil {
+					// Only definitive metadata corruption (bad payload,
+					// unresolvable refs) is registered for repair. Transient
+					// storage/permission failures stay out of the repair
+					// workflow — they prove nothing about the file.
+					if !isDefinitiveMetadataError(err) {
+						slog.WarnContext(ctx, "Transient metadata read failure during sync, skipping corrupt registration",
+							"mount_relative_path", path,
+							"error", err)
+						return
+					}
 					slog.ErrorContext(ctx, "Failed to read metadata during sync, registering as corrupted",
 						"mount_relative_path", path,
 						"error", err)
@@ -830,9 +859,11 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	// state. The ratio guard below compares it against the configured
 	// threshold only when cleanup is otherwise eligible.
 	metaOrphanTotal := 0
+	currentMetaOrphans := make(map[string]string) // mount_relative_path -> meta_path
 	{
-		// Build current orphan set (observed, even if cleanup is ineligible)
-		currentMetaOrphans := make(map[string]string) // mount_relative_path -> meta_path
+		// Build current orphan set (observed, even if cleanup is ineligible).
+		// Computed once and reused by the ratio guard and the two-pass
+		// check below so preview and execution can never drift.
 		for relativeMountPath, metaPath := range metaFileSet {
 			libraryPath := lsw.getLibraryPath(relativeMountPath, filesInUse)
 			if libraryPath == nil {
@@ -841,6 +872,18 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		}
 		metaOrphanTotal = len(currentMetaOrphans)
 	}
+
+	// Two-pass soft delete for orphaned metadata AND library files.
+	// Both orphan sets are computed once up front (observed even when
+	// cleanup is ineligible, for dry-run reporting) so preview and
+	// execution can never drift.
+	currentLibOrphans := make(map[string]string) // metaPath -> library file path
+	for metaPath, file := range filesInUse {
+		if _, exists := metaFileSet[metaPath]; !exists {
+			currentLibOrphans[metaPath] = file
+		}
+	}
+	libOrphanTotal := len(currentLibOrphans)
 
 	if shouldCleanup {
 		// Ratio guard: if more than the configured share of metadata files
@@ -868,16 +911,34 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			}
 		}
 
-		if shouldCleanup {
-			// Rebuild the orphan set for the two-pass check (same
-			// definition as the observed set above).
-			currentMetaOrphans := make(map[string]string)
-			for relativeMountPath, metaPath := range metaFileSet {
-				if lsw.getLibraryPath(relativeMountPath, filesInUse) == nil {
-					currentMetaOrphans[relativeMountPath] = metaPath
+		// Library-side ratio guard: a dead metadata root (or a library walk
+		// that saw everything while metadata saw nothing) inverts the orphan
+		// picture — every library file looks orphaned. A reported ratio is
+		// not a guard, so enforce the same threshold before library deletion.
+		// Like the metadata guard, this blocks ALL cleanup (not just library
+		// files) so a half-blind scan never deletes anything.
+		if shouldCleanup && len(filesInUse) > 0 {
+			maxRatio := cfg.GetOrphanCleanupMaxRatio()
+			libRatio := float64(libOrphanTotal) / float64(len(filesInUse))
+			if libRatio > maxRatio {
+				slog.WarnContext(ctx, "Suspiciously high library orphan ratio, skipping cleanup",
+					"lib_orphan_ratio", libRatio,
+					"max_ratio", maxRatio,
+					"potential_orphans", libOrphanTotal,
+					"total_library_files", len(filesInUse),
+					"cleanup_blocked_reason", "lib_orphan_ratio_exceeded",
+					"pending_reset", !dryRun,
+					"recovery_hint", "verify metadata root, then raise health.orphan_cleanup_max_ratio (1.0 permits any ratio) and allow two qualifying syncs")
+				shouldCleanup = false
+				if dryRun {
+					cleanupBlockedReason = "library orphan ratio exceeded health.orphan_cleanup_max_ratio (dry run: pending candidates unchanged; a real run would reset them and need two qualifying syncs)"
+				} else {
+					cleanupBlockedReason = "library orphan ratio exceeded health.orphan_cleanup_max_ratio; pending candidates were reset and cleanup needs two qualifying syncs"
 				}
 			}
+		}
 
+		if shouldCleanup {
 			// Load previous run's pending set from DB
 			var previousPending map[string]bool
 			if raw, sErr := lsw.healthRepo.GetSystemState(ctx, pendingMetaDeletionKey); sErr == nil && raw != "" {
@@ -966,17 +1027,10 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	}
 
 	// Two-pass soft delete for orphaned library files (symlinks and STRM files without metadata).
-	// Observed library orphans are counted for reporting even when cleanup is
-	// ineligible; deletion still requires eligibility + two consecutive runs.
+	// The orphan set was computed once above alongside the metadata set.
+	// Deletion still requires eligibility + two consecutive runs.
 	libraryFilesDeletedCount := 0
 	libraryDirsDeletedCount := 0
-	currentLibOrphans := make(map[string]string) // metaPath -> library file path
-	for metaPath, file := range filesInUse {
-		if _, exists := metaFileSet[metaPath]; !exists {
-			currentLibOrphans[metaPath] = file
-		}
-	}
-	libOrphanTotal := len(currentLibOrphans)
 
 	if shouldCleanup {
 
@@ -997,83 +1051,31 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			}
 
 			if previousLibPending[metaPath] {
+				// Eligibility is rechecked here (and shared with dry-run
+				// preview via isLibraryFileEligibleForDeletion) so a rule
+				// change between the two qualifying runs cannot delete a
+				// file that is protected now.
+				eligible, reason := lsw.isLibraryFileEligibleForDeletion(ctx, file, cfg, time.Now())
+				if !eligible {
+					slog.InfoContext(ctx, "Skipping orphaned library file deletion: no longer eligible",
+						"path", file, "reason", reason)
+					continue
+				}
 				// Confirmed orphan: missing in two consecutive runs → safe to delete
 				if !dryRun {
-					// SAFETY: Never delete physical files in NONE strategy.
-					if cfg.Import.ImportStrategy == config.ImportStrategyNone {
-						slog.DebugContext(ctx, "Skipped library file deletion (NONE strategy safety)", "path", file)
-						continue
-					}
-
-					// Extra safety for other strategies: verify file type before deletion
-					info, err := os.Lstat(file)
-					if err != nil {
-						continue
-					}
-
-					if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
-						// Only delete if it's actually a symlink
-						if info.Mode()&os.ModeSymlink == 0 {
-							slog.WarnContext(ctx, "Skipped orphaned file deletion: not a symlink", "path", file)
-							continue
-						}
-
-						// Protect symlinks young enough that an ARR import may
-						// still be in flight, whatever the database says.
-						if symlinkWithinImportGuard(info, time.Now()) {
-							slog.InfoContext(ctx, "Skipping orphaned symlink deletion: created too recently for an ARR import to have finished",
-								"path", file, "created", info.ModTime())
-							continue
-						}
-
-						// Protect symlinks that have import history (AltMount imported this file)
-						target, readlinkErr := os.Readlink(file)
-						if readlinkErr == nil {
-							mountRelPath := strings.TrimPrefix(filepath.ToSlash(target), filepath.ToSlash(cfg.MountPath))
-							mountRelPath = strings.TrimPrefix(mountRelPath, "/")
-							if mountRelPath != "" {
-								hasHistory, checkErr := lsw.healthRepo.HasImportHistoryForPath(ctx, mountRelPath)
-								if checkErr == nil && hasHistory {
-									slog.InfoContext(ctx, "Skipping orphaned symlink deletion: import history exists for this file",
-										"path", file, "virtual_path", mountRelPath)
-									continue
-								}
-							}
-						}
-					} else if cfg.Import.ImportStrategy == config.ImportStrategySTRM {
-						// Only delete if it's actually a .strm file
-						if !strings.HasSuffix(strings.ToLower(file), ".strm") {
-							slog.WarnContext(ctx, "Skipped orphaned file deletion: not a .strm file", "path", file)
-							continue
-						}
-					}
-
-					// HARD SAFETY: Never delete the entire mount root or library root
-					cleanFile := filepath.Clean(file)
-					cleanMount := ""
-					if cfg.MountPath != "" {
-						cleanMount = filepath.Clean(cfg.MountPath)
-					}
-					cleanLibDir := ""
-					if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
-						cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
-					}
-
-					if cleanFile == cleanMount || cleanFile == cleanLibDir || cleanFile == "/" || cleanFile == "." {
-						slog.WarnContext(ctx, "Nuclear Guard: Blocked attempt to delete protected path in sync", "path", cleanFile)
-						continue
-					}
-
-					err = os.Remove(file)
-					if err != nil {
+					if err := os.Remove(file); err != nil {
 						if !os.IsNotExist(err) {
 							slog.ErrorContext(ctx, "Failed to delete library file", "path", file, "error", err)
 						}
 						continue
 					}
 					slog.InfoContext(ctx, "Deleted confirmed orphaned library file", "path", file, "target", metaPath)
+					libraryFilesDeletedCount++
+				} else {
+					// Dry-run preview counts only files execution would
+					// actually delete, so the preview stays honest.
+					libraryFilesDeletedCount++
 				}
-				libraryFilesDeletedCount++
 			}
 		}
 
@@ -1109,14 +1111,19 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		_ = lsw.healthRepo.UpdateSystemState(ctx, pendingLibraryDeletionKey, "")
 	}
 
-	// Find files to delete (in database but not in filesystem or not in the official library)
-	// SAFETY: If mount protection is triggered (shouldCleanup is false),
-	// we pass nil for filesInLibrary to skip the 'in-use' check and prevent mass record deletion.
-	effectiveFilesInLibrary := filesInLibrary
-	if !shouldCleanup {
-		effectiveFilesInLibrary = nil
+	// Fail closed: any blocked cleanup (disabled flag, empty-scan,
+	// walk errors, ratio guards, incomplete metadata scan) prunes NOTHING
+	// from the DB — including missing-metadata records. A partial scan must
+	// never look like confirmed deletions, and honoring the master switch
+	// means honoring it for DB rows too.
+	var filesToDelete []string
+	if shouldCleanup && !scanIncomplete {
+		filesToDelete = lsw.findFilesToDelete(ctx, dbRecords, metaFileSet, filesInLibrary)
+	} else if scanIncomplete {
+		slog.WarnContext(ctx, "Skipping DB pruning on incomplete scan",
+			"db_records", len(dbRecords),
+			"cleanup_blocked_reason", "incomplete_scan")
 	}
-	filesToDelete := lsw.findFilesToDelete(ctx, dbRecords, metaFileSet, effectiveFilesInLibrary)
 
 	// Perform batch operations for deletions (additions were already streamed)
 	dbCounts := lsw.syncDatabaseRecords(ctx, nil, filesToDelete, dryRun)
@@ -1217,12 +1224,136 @@ type DryRunResult struct {
 	CleanupBlockedReason string `json:"cleanup_blocked_reason,omitempty"`
 }
 
-// getAllMetadataFiles collects all .meta files from the filesystem
-func (lsw *LibrarySyncWorker) getAllMetadataFiles(ctx context.Context) ([]string, error) {
+// isLibraryFileEligibleForDeletion checks whether an orphaned library file
+// (symlink or .strm) satisfies all safety requirements for deletion:
+// strategy != NONE, correct mode (symlink / .strm), not young (<24h), no
+// import history, and not a nuclear path (mount root, library root, /, .).
+// Shared between real execution and dry-run preview so counts never drift.
+func (lsw *LibrarySyncWorker) isLibraryFileEligibleForDeletion(
+	ctx context.Context,
+	file string,
+	cfg *config.Config,
+	now time.Time,
+) (bool, string) {
+	// SAFETY: Never delete physical files in NONE strategy.
+	if cfg.Import.ImportStrategy == config.ImportStrategyNone {
+		return false, "NONE strategy safety"
+	}
+
+	// Extra safety for other strategies: verify file type before deletion
+	info, err := os.Lstat(file)
+	if err != nil {
+		return false, fmt.Sprintf("cannot lstat file: %v", err)
+	}
+
+	if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+		// Only delete if it's actually a symlink
+		if info.Mode()&os.ModeSymlink == 0 {
+			return false, "not a symlink"
+		}
+
+		// Protect symlinks young enough that an ARR import may
+		// still be in flight, whatever the database says.
+		if symlinkWithinImportGuard(info, now) {
+			return false, "symlink created recently (import guard)"
+		}
+
+		// Protect symlinks that have import history (AltMount imported this file).
+		// Fail closed: a readlink or DB lookup error must never strip
+		// protection off a file that history may still cover. An old orphan
+		// candidate stays put during a transient DB failure rather than
+		// losing its library link.
+		target, readlinkErr := os.Readlink(file)
+		if readlinkErr != nil {
+			return false, fmt.Sprintf("cannot read symlink target: %v", readlinkErr)
+		}
+		mountRelPath := strings.TrimPrefix(filepath.ToSlash(target), filepath.ToSlash(cfg.MountPath))
+		mountRelPath = strings.TrimPrefix(mountRelPath, "/")
+		if mountRelPath != "" {
+			hasHistory, checkErr := lsw.healthRepo.HasImportHistoryForPath(ctx, mountRelPath)
+			if checkErr != nil {
+				return false, fmt.Sprintf("cannot verify import history: %v", checkErr)
+			}
+			if hasHistory {
+				return false, "import history exists for this file"
+			}
+		}
+	} else if cfg.Import.ImportStrategy == config.ImportStrategySTRM {
+		// Only delete if it's actually a .strm file
+		if !strings.HasSuffix(strings.ToLower(file), ".strm") {
+			return false, "not a .strm file"
+		}
+	}
+
+	// HARD SAFETY: Never delete the entire mount root or library root
+	cleanFile := filepath.Clean(file)
+	cleanMount := ""
+	if cfg.MountPath != "" {
+		cleanMount = filepath.Clean(cfg.MountPath)
+	}
+	cleanLibDir := ""
+	if cfg.Health.LibraryDir != nil && *cfg.Health.LibraryDir != "" {
+		cleanLibDir = filepath.Clean(*cfg.Health.LibraryDir)
+	}
+
+	if cleanFile == cleanMount || cleanFile == cleanLibDir || cleanFile == "/" || cleanFile == "." {
+		return false, "nuclear guard: protected path"
+	}
+
+	return true, ""
+}
+
+// isDefinitiveMetadataError reports whether a metadata read failure is
+// definitive corruption (bad payload, unresolvable references) rather than a
+// transient/unavailable-storage failure. Only definitive errors may drive
+// corrupted registrations or repair; anything else must stay inconclusive so
+// a permission blip or momentary IO failure can never condemn a file.
+//
+// Filesystem errors are rejected FIRST via errors.As(*os.PathError /
+// *os.LinkError / *fs.PathError): service.go wraps raw read failures as
+// "failed to read metadata file: %w", so any wrapped FS error — even one
+// whose pathname contains a marker phrase — is transient by construction.
+// Only non-filesystem errors reach the producer-phrase match below (exact
+// strings from the read path: unmarshal wrapper, unwrapped store.go ref/run
+// errors, expand.go wrapper, "metadata gap:", empty-segments verdict).
+func isDefinitiveMetadataError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// os.PathError aliases io/fs.PathError; one check covers both.
+	var pathErr *os.PathError
+	var linkErr *os.LinkError
+	if errors.As(err, &pathErr) || errors.As(err, &linkErr) {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"failed to unmarshal metadata",
+		"failed to expand shared outer sources",
+		"nested source references shared_outer_source_index",
+		"segment ref index",
+		"segment run index",
+		"metadata gap:",
+		"no segment data available",
+	} {
+		if strings.Contains(msg, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// getAllMetadataFiles collects all .meta files from the filesystem.
+// It returns the files, the count of non-fatal walk errors encountered, and
+// any fatal error. Non-fatal per-entry errors are counted (not swallowed) so
+// callers can fail closed: a partial metadata scan must never look like a
+// confirmed-empty result to the orphan/deletion passes.
+func (lsw *LibrarySyncWorker) getAllMetadataFiles(ctx context.Context) ([]string, int, error) {
 	cfg := lsw.configGetter()
 	rootPath := cfg.Metadata.RootPath
 
 	var metaFiles []string
+	walkErrors := 0
 	count := 0
 	err := filepath.WalkDir(rootPath, func(path string, d os.DirEntry, err error) error {
 		// Check context cancellation
@@ -1233,7 +1364,9 @@ func (lsw *LibrarySyncWorker) getAllMetadataFiles(ctx context.Context) ([]string
 		}
 
 		if err != nil {
-			return nil // Skip errors
+			walkErrors++
+			slog.WarnContext(ctx, "Error walking metadata directory", "path", path, "error", err)
+			return nil // Continue walking despite errors
 		}
 
 		// Skip the corrupted_metadata directory
@@ -1254,11 +1387,11 @@ func (lsw *LibrarySyncWorker) getAllMetadataFiles(ctx context.Context) ([]string
 	})
 
 	if err != nil {
-		return nil, err
+		return nil, walkErrors, err
 	}
 
-	slog.InfoContext(ctx, "Finished scanning metadata files", "total", count)
-	return metaFiles, nil
+	slog.InfoContext(ctx, "Finished scanning metadata files", "total", count, "walk_errors", walkErrors)
+	return metaFiles, walkErrors, nil
 }
 
 // metaPathToMountRelativePath converts a metadata file path to a mount relative file path.
@@ -1979,12 +2112,23 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 	// Get all metadata files from filesystem
 	// OPTIMIZATION: This still loads all metadata paths into memory.
 	// Ideally we would stream this too, but for now let's optimize the DB side.
-	metadataFiles, err := lsw.getAllMetadataFiles(ctx)
+	metadataFiles, metadataWalkErrors, err := lsw.getAllMetadataFiles(ctx)
 	if err != nil {
 		if !errors.Is(err, context.Canceled) {
 			slog.ErrorContext(ctx, "Failed to get metadata files", "error", err)
 		}
 		return nil
+	}
+
+	// Fail closed: an incomplete metadata scan prunes nothing. Like the
+	// full-sync path, DB pruning requires a complete scan AND the master
+	// switch — honoring cleanup_orphaned_metadata means honoring it here too.
+	scanIncomplete := metadataWalkErrors > 0
+	wouldCleanup := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
+	if scanIncomplete {
+		slog.WarnContext(ctx, "Metadata-only scan had walk errors, blocking DB pruning for safety",
+			"metadata_walk_errors", metadataWalkErrors)
+		wouldCleanup = false
 	}
 
 	// Update total files count
@@ -2030,6 +2174,14 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 				// since files are accessed directly via mount
 				record, err := lsw.processMetadataForSync(ctx, path, nil)
 				if err != nil {
+					// Only definitive corruption enters repair; transient
+					// storage failures stay out (see full-sync path).
+					if !isDefinitiveMetadataError(err) {
+						slog.WarnContext(ctx, "Transient metadata read failure during metadata-only sync, skipping corrupt registration",
+							"mount_relative_path", path,
+							"error", err)
+						return
+					}
 					slog.ErrorContext(ctx, "Failed to read metadata",
 						"mount_relative_path", path,
 						"error", err)
@@ -2062,8 +2214,12 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 	p.Wait()
 
 	// Find files to delete (in database but not in filesystem)
-	// Pass nil for filesInUse since metadata-only sync doesn't check library usage
-	filesToDelete := lsw.findFilesToDelete(ctx, dbRecords, metaFileSet, nil)
+	// Pass nil for filesInUse since metadata-only sync doesn't check library usage.
+	// Fail closed like the full-sync path: blocked/incomplete scans prune nothing.
+	var filesToDelete []string
+	if wouldCleanup {
+		filesToDelete = lsw.findFilesToDelete(ctx, dbRecords, metaFileSet, nil)
+	}
 
 	// Perform batch operations
 	dbCounts := lsw.syncDatabaseRecords(ctx, filesToAdd, filesToDelete, dryRun)
@@ -2071,7 +2227,7 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 	// Return dry run results or record sync results
 	if dryRun {
 		maxRatio := cfg.GetOrphanCleanupMaxRatio()
-		wouldClean := cfg.Health.CleanupOrphanedMetadata != nil && *cfg.Health.CleanupOrphanedMetadata
+		wouldClean := wouldCleanup
 		return &DryRunResult{
 			OrphanedMetadataCount:  0, // No orphaned metadata in NONE strategy
 			OrphanedLibraryFiles:   0, // No library files in NONE strategy
