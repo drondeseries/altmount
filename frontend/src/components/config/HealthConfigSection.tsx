@@ -720,16 +720,33 @@ export function HealthConfigSection({
 								<h5 className="flex items-center gap-2 font-black text-base-content/80 text-xs uppercase tracking-widest">
 									<TestTube className="h-3 w-3" /> Potential Cleanup Results
 								</h5>
-								{dryRunResult.cleanup_blocked_reason && (
+								{dryRunResult.cleanup_blocked_reason &&
+									!(
+										dryRunResult.would_cleanup &&
+										dryRunResult.cleanup_blocked_reason.startsWith("metadata-only sync:")
+									) && (
+										<p className="break-words text-[11px] text-base-content/70 leading-relaxed">
+											Cleanup blocked: {dryRunResult.cleanup_blocked_reason}
+										</p>
+									)}
+								{dryRunResult.cleanup_blocked_reason?.startsWith("metadata-only sync:") && (
 									<p className="break-words text-[11px] text-base-content/70 leading-relaxed">
-										Cleanup blocked: {dryRunResult.cleanup_blocked_reason}
+										{dryRunResult.cleanup_blocked_reason}
 									</p>
 								)}
 								{dryRunResult.orphan_candidates !== undefined && (
 									<p className="break-words font-mono text-[11px] text-base-content/70">
-										{dryRunResult.orphan_candidates} orphan candidates (
+										{dryRunResult.orphan_candidates} metadata orphans (
 										{((dryRunResult.orphan_ratio ?? 0) * 100).toFixed(1)}% of scanned,
 										limit {((dryRunResult.orphan_max_ratio ?? 0.2) * 100).toFixed(0)}%)
+										{dryRunResult.lib_orphan_candidates !== undefined &&
+											dryRunResult.lib_orphan_candidates > 0 && (
+												<>
+													{" "}+ {dryRunResult.lib_orphan_candidates} library orphans (
+													{((dryRunResult.lib_orphan_ratio ?? 0) * 100).toFixed(1)}% of
+													library files)
+												</>
+											)}
 									</p>
 								)}
 								<div className="grid grid-cols-3 gap-2 text-center">

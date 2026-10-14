@@ -65,6 +65,8 @@ func (h *LibrarySyncHandlers) handleDryRunLibrarySync(c *fiber.Ctx) error {
 		OrphanCandidates:       result.OrphanCandidates,
 		OrphanRatio:            result.OrphanRatio,
 		OrphanMaxRatio:         result.OrphanMaxRatio,
+		LibOrphanCandidates:    result.LibOrphanCandidates,
+		LibOrphanRatio:         result.LibOrphanRatio,
 		CleanupBlockedReason:   result.CleanupBlockedReason,
 	}
 

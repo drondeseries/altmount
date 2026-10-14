@@ -4071,6 +4071,12 @@ components:
         orphan_ratio:
           description: OrphanCandidates / total metadata scanned
           type: number
+        lib_orphan_candidates:
+          description: Library files without metadata, observed even when cleanup is ineligible
+          type: integer
+        lib_orphan_ratio:
+          description: LibOrphanCandidates / total library files scanned
+          type: number
         orphaned_library_files:
           description: Number of orphaned library files (symlinks/STRM)
           type: integer
@@ -4078,7 +4084,11 @@ components:
           description: Number of orphaned metadata files
           type: integer
         would_cleanup:
-          description: Whether cleanup passed all guards (two-pass confirmation still applies)
+          description: >-
+            Whether cleanup passed all guards (two-pass confirmation still
+            applies). A non-empty cleanup_blocked_reason with
+            would_cleanup=true is informational only (metadata-only "nothing
+            to clean" note).
           type: boolean
       type: object
     api.FileMetadataResponse:

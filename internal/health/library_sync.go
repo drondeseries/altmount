@@ -757,9 +757,12 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 									"path", path, "new_location", expectedPath)
 
 								// Update DB immediately for this recovered path
-								if err := lsw.healthRepo.UpdateLibraryPath(ctx, path, expectedPath); err != nil {
-									slog.ErrorContext(ctx, "Failed to update recovered library path",
-										"path", path, "error", err)
+								// (real runs only — dry runs are read-only).
+								if !dryRun {
+									if err := lsw.healthRepo.UpdateLibraryPath(ctx, path, expectedPath); err != nil {
+										slog.ErrorContext(ctx, "Failed to update recovered library path",
+											"path", path, "error", err)
+									}
 								}
 							}
 						}
@@ -785,10 +788,13 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 						"error", err)
 
 					// Register as corrupted so HealthWorker can pick it up and trigger repair
-					// Even if libraryPath is nil, we want to track this metadata corruption
-					regErr := lsw.healthRepo.RegisterCorruptedFile(ctx, path, libraryPath, err.Error())
-					if regErr != nil {
-						slog.ErrorContext(ctx, "Failed to register corrupted file", "path", path, "error", regErr)
+					// Even if libraryPath is nil, we want to track this metadata corruption.
+					// Real runs only — dry runs are read-only.
+					if !dryRun {
+						regErr := lsw.healthRepo.RegisterCorruptedFile(ctx, path, libraryPath, err.Error())
+						if regErr != nil {
+							slog.ErrorContext(ctx, "Failed to register corrupted file", "path", path, "error", regErr)
+						}
 					}
 					return
 				}
@@ -818,11 +824,14 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	const pendingLibraryDeletionKey = "pending_library_deletions"
 
 	metadataDeletedCount := 0
-	// metaOrphanTotal / libOrphanTotal count this run's orphan candidates for
-	// dry-run reporting, independent of the two-pass pending state.
+	// metaOrphanTotal counts this run's orphan candidates for dry-run
+	// reporting, observed even when cleanup is ineligible (disabled,
+	// empty scan, walk errors) and independent of the two-pass pending
+	// state. The ratio guard below compares it against the configured
+	// threshold only when cleanup is otherwise eligible.
 	metaOrphanTotal := 0
-	if shouldCleanup {
-		// Build current orphan set
+	{
+		// Build current orphan set (observed, even if cleanup is ineligible)
 		currentMetaOrphans := make(map[string]string) // mount_relative_path -> meta_path
 		for relativeMountPath, metaPath := range metaFileSet {
 			libraryPath := lsw.getLibraryPath(relativeMountPath, filesInUse)
@@ -831,19 +840,21 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			}
 		}
 		metaOrphanTotal = len(currentMetaOrphans)
+	}
 
+	if shouldCleanup {
 		// Ratio guard: if more than the configured share of metadata files
 		// would be orphaned, something is wrong (a dead mount looks like mass
 		// deletion). Historical default 0.20; 1.0 permits any ratio for backlog
 		// recovery. Other guards (zero-files, walk errors) always still apply.
 		if len(metaFileSet) > 0 {
 			maxRatio := cfg.GetOrphanCleanupMaxRatio()
-			orphanRatio := float64(len(currentMetaOrphans)) / float64(len(metaFileSet))
+			orphanRatio := float64(metaOrphanTotal) / float64(len(metaFileSet))
 			if orphanRatio > maxRatio {
 				slog.WarnContext(ctx, "Suspiciously high orphan ratio, skipping cleanup",
 					"orphan_ratio", orphanRatio,
 					"max_ratio", maxRatio,
-					"potential_orphans", len(currentMetaOrphans),
+					"potential_orphans", metaOrphanTotal,
 					"total_metadata", len(metaFileSet),
 					"cleanup_blocked_reason", "orphan_ratio_exceeded",
 					"pending_reset", !dryRun,
@@ -858,6 +869,15 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		}
 
 		if shouldCleanup {
+			// Rebuild the orphan set for the two-pass check (same
+			// definition as the observed set above).
+			currentMetaOrphans := make(map[string]string)
+			for relativeMountPath, metaPath := range metaFileSet {
+				if lsw.getLibraryPath(relativeMountPath, filesInUse) == nil {
+					currentMetaOrphans[relativeMountPath] = metaPath
+				}
+			}
+
 			// Load previous run's pending set from DB
 			var previousPending map[string]bool
 			if raw, sErr := lsw.healthRepo.GetSystemState(ctx, pendingMetaDeletionKey); sErr == nil && raw != "" {
@@ -945,18 +965,20 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		_ = lsw.healthRepo.UpdateSystemState(ctx, pendingMetaDeletionKey, "")
 	}
 
-	// Two-pass soft delete for orphaned library files (symlinks and STRM files without metadata)
+	// Two-pass soft delete for orphaned library files (symlinks and STRM files without metadata).
+	// Observed library orphans are counted for reporting even when cleanup is
+	// ineligible; deletion still requires eligibility + two consecutive runs.
 	libraryFilesDeletedCount := 0
 	libraryDirsDeletedCount := 0
+	currentLibOrphans := make(map[string]string) // metaPath -> library file path
+	for metaPath, file := range filesInUse {
+		if _, exists := metaFileSet[metaPath]; !exists {
+			currentLibOrphans[metaPath] = file
+		}
+	}
+	libOrphanTotal := len(currentLibOrphans)
 
 	if shouldCleanup {
-		// Build current orphan set for library files
-		currentLibOrphans := make(map[string]string) // metaPath -> library file path
-		for metaPath, file := range filesInUse {
-			if _, exists := metaFileSet[metaPath]; !exists {
-				currentLibOrphans[metaPath] = file
-			}
-		}
 
 		// Load previous run's pending set from DB
 		var previousLibPending map[string]bool
@@ -1117,6 +1139,10 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 		if len(metaFileSet) > 0 {
 			orphanRatio = float64(metaOrphanTotal) / float64(len(metaFileSet))
 		}
+		libOrphanRatio := 0.0
+		if len(filesInUse) > 0 {
+			libOrphanRatio = float64(libOrphanTotal) / float64(len(filesInUse))
+		}
 		return &DryRunResult{
 			OrphanedMetadataCount:  metadataDeletedCount,
 			OrphanedLibraryFiles:   libraryFilesDeletedCount,
@@ -1125,6 +1151,8 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 			OrphanCandidates:       metaOrphanTotal,
 			OrphanRatio:            orphanRatio,
 			OrphanMaxRatio:         maxRatio,
+			LibOrphanCandidates:    libOrphanTotal,
+			LibOrphanRatio:         libOrphanRatio,
 			CleanupBlockedReason:   cleanupBlockedReason,
 		}
 	}
@@ -1139,9 +1167,12 @@ func (lsw *LibrarySyncWorker) SyncLibrary(ctx context.Context, dryRun bool) *Dry
 	return nil
 }
 
-// cleanupBlockedReasonForMetadataOnly reports why metadata-only (NONE strategy,
-// no library dir) dry runs cannot clean library-side orphans: there is no
-// library to compare against, so only DB-record pruning applies.
+// cleanupBlockedReasonForMetadataOnly reports the dry-run status for
+// metadata-only (NONE strategy, no library dir) syncs: there is no library
+// to compare against, so library-side orphan cleanup never applies — only
+// DB-record pruning does. The "nothing to clean" note is informational:
+// WouldCleanup stays true (the master switch is on) because no guard
+// tripped; there is simply nothing stale to prune.
 func cleanupBlockedReasonForMetadataOnly(wouldCleanup bool, recordsToClean int) string {
 	if !wouldCleanup {
 		return "cleanup_orphaned_metadata is disabled"
@@ -1149,14 +1180,17 @@ func cleanupBlockedReasonForMetadataOnly(wouldCleanup bool, recordsToClean int) 
 	if recordsToClean > 0 {
 		return ""
 	}
-	return "metadata-only sync: no library to compare against"
+	return "metadata-only sync: nothing to clean (no library to compare against, no stale records)"
 }
 
 // DryRunResult holds the results of a dry run sync.
 //
 // WouldCleanup reports whether cleanup passed all guards (enabled flag,
 // empty-scan, walk errors, ratio). It does NOT guarantee any deletion this
-// run: items still need to be orphaned in two consecutive syncs.
+// run: items still need to be orphaned in two consecutive syncs. A
+// non-empty CleanupBlockedReason with WouldCleanup=true is informational
+// only: the metadata-only "nothing to clean" note when there is no library
+// to compare against and no stale records.
 type DryRunResult struct {
 	OrphanedMetadataCount  int
 	OrphanedLibraryFiles   int
@@ -1170,8 +1204,16 @@ type DryRunResult struct {
 	// OrphanMaxRatio is the configured health.orphan_cleanup_max_ratio
 	// threshold that was applied to this run.
 	OrphanMaxRatio float64 `json:"orphan_max_ratio"`
-	// CleanupBlockedReason is empty when cleanup would proceed; otherwise a
-	// short machine-readable reason (disabled, walk_errors, ratio_exceeded…).
+	// LibOrphanCandidates reports library files (symlinks/STRM) without
+	// matching metadata, observed even when cleanup is ineligible.
+	LibOrphanCandidates int `json:"lib_orphan_candidates"`
+	// LibOrphanRatio is LibOrphanCandidates / total library files scanned.
+	LibOrphanRatio float64 `json:"lib_orphan_ratio"`
+	// CleanupBlockedReason is empty when cleanup would proceed without
+	// qualification; otherwise a short reason. With WouldCleanup=false it
+	// names the tripped guard (disabled, walk_errors, ratio_exceeded…);
+	// with WouldCleanup=true it is informational only (the metadata-only
+	// "nothing to clean" note).
 	CleanupBlockedReason string `json:"cleanup_blocked_reason,omitempty"`
 }
 
@@ -1992,10 +2034,13 @@ func (lsw *LibrarySyncWorker) syncMetadataOnly(ctx context.Context, startTime ti
 						"mount_relative_path", path,
 						"error", err)
 
-					// Register as corrupted so HealthWorker can pick it up and trigger repair
-					regErr := lsw.healthRepo.RegisterCorruptedFile(ctx, path, nil, err.Error())
-					if regErr != nil {
-						slog.ErrorContext(ctx, "Failed to register corrupted file", "path", path, "error", regErr)
+					// Register as corrupted so HealthWorker can pick it up and trigger repair.
+					// Real runs only — dry runs are read-only.
+					if !dryRun {
+						regErr := lsw.healthRepo.RegisterCorruptedFile(ctx, path, nil, err.Error())
+						if regErr != nil {
+							slog.ErrorContext(ctx, "Failed to register corrupted file", "path", path, "error", regErr)
+						}
 					}
 					return
 				}

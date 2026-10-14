@@ -187,7 +187,9 @@ export interface RepairConfig {
 
 // Dry run result for library sync. would_cleanup reports whether cleanup
 // passed all guards; it does not guarantee any deletion (two-pass
-// confirmation still applies).
+// confirmation still applies). A non-empty cleanup_blocked_reason with
+// would_cleanup=true is informational only: the metadata-only "nothing to
+// clean" note, never a tripped guard.
 export interface DryRunSyncResult {
 	orphaned_metadata_count: number; // Number of orphaned metadata files
 	orphaned_library_files: number; // Number of orphaned library files (symlinks/STRM)
@@ -196,6 +198,8 @@ export interface DryRunSyncResult {
 	orphan_candidates?: number;
 	orphan_ratio?: number;
 	orphan_max_ratio?: number;
+	lib_orphan_candidates?: number;
+	lib_orphan_ratio?: number;
 	cleanup_blocked_reason?: string;
 }
 

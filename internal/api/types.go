@@ -1268,6 +1268,8 @@ type ProviderSpeedTestHistoryResponse struct {
 // DryRunSyncResult represents the results of a library sync dry run.
 // WouldCleanup reports whether cleanup passed all guards; it does not
 // guarantee any deletion this run (two-pass confirmation still applies).
+// A non-empty CleanupBlockedReason with WouldCleanup=true is informational
+// only: the metadata-only "nothing to clean" note, never a tripped guard.
 type DryRunSyncResult struct {
 	OrphanedMetadataCount  int     `json:"orphaned_metadata_count"`   // Number of orphaned metadata files
 	OrphanedLibraryFiles   int     `json:"orphaned_library_files"`    // Number of orphaned library files (symlinks/STRM)
@@ -1276,5 +1278,7 @@ type DryRunSyncResult struct {
 	OrphanCandidates       int     `json:"orphan_candidates"`         // Metadata files looking orphaned this run (pre two-pass)
 	OrphanRatio            float64 `json:"orphan_ratio"`              // OrphanCandidates / total metadata scanned
 	OrphanMaxRatio         float64 `json:"orphan_max_ratio"`          // Configured health.orphan_cleanup_max_ratio
+	LibOrphanCandidates    int     `json:"lib_orphan_candidates"`     // Library files without metadata, observed even when cleanup is ineligible
+	LibOrphanRatio         float64 `json:"lib_orphan_ratio"`          // LibOrphanCandidates / total library files scanned
 	CleanupBlockedReason   string  `json:"cleanup_blocked_reason,omitempty"`
 }
