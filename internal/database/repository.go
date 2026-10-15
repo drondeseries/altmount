@@ -103,8 +103,8 @@ func (r *Repository) withTransactionMode(ctx context.Context, _ string, fn func(
 func (r *Repository) AddToQueue(ctx context.Context, item *ImportQueueItem) error {
 	// Use UPSERT with immediate lock to prevent conflicts during concurrent inserts
 	query := `
-		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, indexer, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+		INSERT INTO import_queue (download_id, nzb_path, relative_path, category, priority, status, retry_count, max_retries, batch_id, metadata, file_size, target_path, skip_arr_notification, skip_post_import_links, indexer, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
 		ON CONFLICT(nzb_path) DO UPDATE SET
 		download_id = COALESCE(excluded.download_id, import_queue.download_id),
 		priority = CASE WHEN excluded.priority < import_queue.priority THEN excluded.priority ELSE import_queue.priority END,
@@ -113,13 +113,15 @@ func (r *Repository) AddToQueue(ctx context.Context, item *ImportQueueItem) erro
 		metadata = excluded.metadata,
 		file_size = excluded.file_size,
 		target_path = excluded.target_path,
+		skip_arr_notification = excluded.skip_arr_notification,
+		skip_post_import_links = excluded.skip_post_import_links,
 		indexer = COALESCE(excluded.indexer, import_queue.indexer),
 		updated_at = datetime('now')
 		WHERE import_queue.status NOT IN ('processing', 'completed')
 	`
 
 	args := []any{item.DownloadID, item.NzbPath, item.RelativePath, item.Category, item.Priority, item.Status,
-		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath, item.Indexer}
+		item.RetryCount, item.MaxRetries, item.BatchID, item.Metadata, item.FileSize, item.TargetPath, item.SkipArrNotification, item.SkipPostImportLinks, item.Indexer}
 
 	if r.dialect.IsPostgres() {
 		err := r.db.QueryRowContext(ctx, query+" RETURNING id", args...).Scan(&item.ID)
@@ -504,6 +506,10 @@ func (r *Repository) RemoveFromQueue(ctx context.Context, id int64) error {
 	// (issue #586). Deleting the queue row alone would also be unrecoverable —
 	// a retry can no longer find the item to clean up after.
 	return r.WithTransaction(ctx, func(tx *Repository) error {
+		// Delete history first: deleting the queue first sets history.nzb_id to NULL.
+		if _, err := tx.db.ExecContext(ctx, `DELETE FROM import_history WHERE nzb_id = ?`, id); err != nil {
+			return fmt.Errorf("failed to remove import history for queue item %d: %w", id, err)
+		}
 		result, err := tx.db.ExecContext(ctx, `DELETE FROM import_queue WHERE id = ?`, id)
 		if err != nil {
 			return fmt.Errorf("failed to remove from queue: %w", err)
@@ -516,10 +522,6 @@ func (r *Repository) RemoveFromQueue(ctx context.Context, id int64) error {
 
 		if rowsAffected == 0 {
 			return sql.ErrNoRows
-		}
-
-		if _, err := tx.db.ExecContext(ctx, `DELETE FROM import_history WHERE nzb_id = ?`, id); err != nil {
-			return fmt.Errorf("failed to remove import history for queue item %d: %w", id, err)
 		}
 
 		return nil
@@ -1339,11 +1341,12 @@ type SABnzbdHistoryRow struct {
 
 // sabnzbdHistoryUnion builds the deduplicated UNION-ALL body shared by
 // ListSABnzbdHistory and CountSABnzbdHistory, plus its bound args (the category
-// filter, repeated once per arm). A completed import can exist in both
-// import_queue (status=completed, never auto-pruned) and import_history; the
-// anti-join drops the history copy when the live completed queue row is present,
-// so each import is counted once. Failed items live only in import_queue and are
-// unaffected. Portable across SQLite + Postgres (no window functions, no
+// filter, repeated once per arm). The live queue owns the job's status until
+// it is removed: processors write provisional history before verification and
+// post-processing finish. Suppress that history for every live queue state,
+// including failed, retried and notification-suppressed jobs. This also hides
+// stale history left by older versions without deleting successful archives.
+// Portable across SQLite + Postgres (no window functions, no
 // basename/regexp); ? placeholders and FALSE are rewritten by the dialect layer.
 func sabnzbdHistoryUnion(category string) (string, []any) {
 	body := `
@@ -1359,7 +1362,7 @@ func sabnzbdHistoryUnion(category string) (string, []any) {
 		       h.completed_at
 		  FROM import_history h
 		  LEFT JOIN import_queue q
-		    ON q.id = h.nzb_id AND q.status = 'completed' AND q.skip_arr_notification = FALSE
+		    ON q.id = h.nzb_id
 		 WHERE q.id IS NULL
 		   AND (? = '' OR LOWER(h.category) = LOWER(?))
 		UNION ALL
@@ -1395,6 +1398,39 @@ func (r *Repository) ListSABnzbdHistory(ctx context.Context, category string, li
 		if err := rows.Scan(&row.Source, &row.ID, &row.DownloadID, &row.Name, &row.Status,
 			&row.FileSize, &row.CompletedAt, &row.Category, &row.StoragePath, &row.Metadata, &row.ErrorMessage); err != nil {
 			return nil, fmt.Errorf("failed to scan sabnzbd history row: %w", err)
+		}
+		out = append(out, &row)
+	}
+	return out, rows.Err()
+}
+
+// ListSABnzbdFailedHistory returns the failed-queue rows of the SABnzbd history
+// view, newest first, at most max rows. It reads the same union as
+// ListSABnzbdHistory, so the category and skip_arr_notification filters match
+// the main page exactly. Failed rows stay in import_queue only until the
+// FailedItemRetentionHours cleanup deletes them; when that cleanup is off they
+// are kept forever, which is why max is required.
+func (r *Repository) ListSABnzbdFailedHistory(ctx context.Context, category string, max int) ([]*SABnzbdHistoryRow, error) {
+	body, args := sabnzbdHistoryUnion(category)
+	query := `SELECT source, id, download_id, name, status, file_size, completed_at, category, storage_path, metadata, error_message
+		FROM (` + body + `) t
+		WHERE source = 'failed_queue'
+		ORDER BY sort_time DESC, id DESC
+		LIMIT ?`
+	args = append(args, max)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list failed sabnzbd history: %w", err)
+	}
+	defer rows.Close()
+
+	var out []*SABnzbdHistoryRow
+	for rows.Next() {
+		var row SABnzbdHistoryRow
+		if err := rows.Scan(&row.Source, &row.ID, &row.DownloadID, &row.Name, &row.Status,
+			&row.FileSize, &row.CompletedAt, &row.Category, &row.StoragePath, &row.Metadata, &row.ErrorMessage); err != nil {
+			return nil, fmt.Errorf("failed to scan failed sabnzbd history row: %w", err)
 		}
 		out = append(out, &row)
 	}

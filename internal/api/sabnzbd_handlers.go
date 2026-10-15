@@ -835,6 +835,33 @@ func (s *Server) handleSABnzbdHistory(c *fiber.Ctx) error {
 		return s.writeSABnzbdErrorFiber(c, "Failed to get history")
 	}
 
+	// #498: Sonarr and Radarr only ever read this first page (start=0,
+	// limit=DownloadClientHistoryLimit, default 60). A tracked download that is
+	// in neither the queue nor that page is dropped without a downloadFailed
+	// event, so no blocklist and no retry. During a burst of grabs, newer
+	// completed rows can push a failed row off the page before the *arr polls.
+	// Append every failed row still kept in import_queue that the page does not
+	// already hold. The page itself, noofslots and later pages are unchanged; a
+	// failed row can therefore appear both here and at its own position on a
+	// later page.
+	if start == 0 {
+		failedRows, err := s.queueRepo.ListSABnzbdFailedHistory(ctx, categoryFilter, maxSABnzbdHistoryLimit)
+		if err != nil {
+			return s.writeSABnzbdErrorFiber(c, "Failed to get history")
+		}
+		onPage := make(map[int64]bool, len(historyRows))
+		for _, row := range historyRows {
+			if row.Source == "failed_queue" {
+				onPage[row.ID] = true
+			}
+		}
+		for _, row := range failedRows {
+			if !onPage[row.ID] {
+				historyRows = append(historyRows, row)
+			}
+		}
+	}
+
 	slots := make([]SABnzbdHistorySlot, 0, len(historyRows))
 	var totalBytes int64
 	itemBasePath := s.calculateItemBasePath()
@@ -1472,7 +1499,15 @@ func (s *Server) calculateItemBasePath() string {
 // stop Sonarr/Radarr from looping on FileNotFoundException for items whose
 // symlink under Import.ImportDir was never created (issue #596).
 func (s *Server) calculateHistoryStoragePath(item *database.ImportQueueItem, basePath string) (string, bool) {
-	if s.configManager == nil || item.StoragePath == nil || *item.StoragePath == "" {
+	// Failed jobs have no importable content, even when a retry or failed
+	// post-processing left a storage path behind. Never expose the import root.
+	if item.Status == database.QueueStatusFailed {
+		return "", false
+	}
+	if item.StoragePath == nil || *item.StoragePath == "" {
+		return "", false
+	}
+	if s.configManager == nil {
 		return basePath, true
 	}
 
