@@ -78,6 +78,18 @@ func shouldDeferForRepair(enabled, hasPar2, brokenInSet bool) bool {
 	return enabled && hasPar2 && brokenInSet
 }
 
+// repairOnImport reports whether an import may queue PAR2 repairs or park for
+// one. With stremio.skip_repair a Stremio import never does: playback cannot
+// wait for a repair, so a release that needs one fails and Stremio falls back
+// to the next.
+func repairOnImport(cfg *config.Config, category, downloadID *string) bool {
+	if !cfg.Par2Repair.EffectiveRepairOnImport() {
+		return false
+	}
+	stremio := (category != nil && *category == "stremio") || (downloadID != nil && strings.HasPrefix(*downloadID, "stremio:"))
+	return !(stremio && cfg.Stremio.EffectiveSkipRepair())
+}
+
 // fastFailOutcome decides what the sweep does with a damaged release:
 // defer for repair, or bail out because nothing importable remains.
 //
@@ -383,6 +395,40 @@ func (proc *Processor) checkCancellation(ctx context.Context) error {
 	}
 }
 
+// probeMissesOnlySidecars reports whether every article the release probe
+// found missing belongs to a sidecar file (.nfo, .sfv, images, ...).
+func probeMissesOnlySidecars(files []validation.FastFailFile, missingIDs []string) bool {
+	if len(missingIDs) == 0 {
+		return false
+	}
+	missing := make(map[string]struct{}, len(missingIDs))
+	for _, id := range missingIDs {
+		missing[id] = struct{}{}
+	}
+	for _, f := range files {
+		if isSidecarFile(f.Filename) {
+			continue
+		}
+		for _, seg := range f.Segments {
+			if seg == nil {
+				continue
+			}
+			if _, gone := missing[seg.Id]; gone {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func isSidecarFile(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".nfo", ".sfv", ".txt", ".srr", ".jpg", ".jpeg", ".png", ".nzb", ".md5":
+		return true
+	}
+	return false
+}
+
 // preParseFastFail runs a per-file Stat-based reachability check against the raw NZB
 // before any Body fetches. PAR2 files and sidecars are never Stat-checked (they're
 // included regardless), so their segments are omitted from the sweep to avoid wasted
@@ -474,7 +520,7 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 		// The provider has everything the NZB lists. Gaps the NZB itself
 		// declares are mapped from their placeholders without a STAT; the
 		// per-file sweep would only re-learn what the probe just answered.
-		results = validation.PlaceholderResults(fastFailFiles)
+		results = validation.PlaceholderResults(fastFailFiles, proc.patchIndex)
 		if !anyBroken(results) {
 			if proc.log != nil {
 				proc.log.DebugContext(ctx, "Fast-fail release probe passed",
@@ -490,7 +536,10 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 		}
 	default:
 		isStremioImport := (category != nil && *category == "stremio") || (downloadID != nil && strings.HasPrefix(*downloadID, "stremio:"))
-		if isStremioImport && cfg.Stremio.EffectiveFastFailHeaderOnly() {
+		// A miss confined to sidecars (a separately posted .nfo often expires
+		// on its own) says nothing about the media: escalate so the sweep
+		// drops just those files instead of failing the whole release.
+		if isStremioImport && cfg.Stremio.EffectiveFastFailHeaderOnly() && !probeMissesOnlySidecars(fastFailFiles, verdict.MissingIDs) {
 			if proc.log != nil {
 				proc.log.InfoContext(ctx, "Fast-fail release probe failed for Stremio import; aborting immediately without per-file sweep",
 					"files", len(fastFailFiles),
@@ -711,7 +760,7 @@ func (proc *Processor) preParseFastFail(ctx context.Context, n *nzbparser.Nzb, c
 	// Deferral is decided before the bail-out below: a fully damaged archive
 	// set trips both, and repair is the better outcome. See fastFailOutcome.
 	deferForRepair, bailOut := fastFailOutcome(
-		cfg.Par2Repair.EffectiveRepairOnImport(), nzbHasPar2, archiveSetDamaged,
+		repairOnImport(cfg, category, downloadID), nzbHasPar2, archiveSetDamaged,
 		eligibleRegularCount, len(brokenIdx),
 	)
 	if deferForRepair {
@@ -1253,9 +1302,9 @@ func (proc *Processor) ProcessNzbFile(ctx context.Context, filePath, relativePat
 		// Damaged-but-imported files get a PAR2 repair queued now, while the
 		// release's recovery volumes are most likely still retrievable.
 		proc.persistKnownHoles(ctx, writtenPaths, degradedFiles, missingIDs, cfg.ProviderFingerprint())
-		proc.queueImportRepairs(ctx, cfg.Par2Repair.EffectiveRepairOnImport(), writtenPaths, degradedFiles)
+		proc.queueImportRepairs(ctx, repairOnImport(cfg, category, downloadID), writtenPaths, degradedFiles)
 		proc.updateProgress(queueID, 100)
-	} else if repairEnabled, hasPar2 := cfg.Par2Repair.EffectiveRepairOnImport(), len(par2Files) > 0; shouldDeferCorruptArchive(err, repairEnabled, hasPar2) || shouldDeferMissingArchive(err, repairEnabled, hasPar2) {
+	} else if repairEnabled, hasPar2 := repairOnImport(cfg, category, downloadID), len(par2Files) > 0; shouldDeferCorruptArchive(err, repairEnabled, hasPar2) || shouldDeferMissingArchive(err, repairEnabled, hasPar2) {
 		// Corrupt-but-present articles, or an article the fast-fail probe's
 		// sample missed, broke the archive analysis. Park the import for an
 		// NZB-mode repair whose verify sweep checks every article against the
