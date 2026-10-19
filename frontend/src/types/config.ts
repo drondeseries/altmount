@@ -830,8 +830,30 @@ export interface ScoredReleaseItem {
 	score: number;
 	matched_formats: string[];
 	matched_languages: string[];
+	language_bonus?: number;
 	excluded: boolean;
 	exclude_reason?: string;
+}
+
+export interface EvaluateReleaseRequest {
+	title: string;
+	scoring?: StreamScoringConfig;
+}
+
+export interface EvaluatedFormat {
+	id: string;
+	name: string;
+	score: number;
+}
+
+/** How the stream ranking scores one release title. */
+export interface EvaluateReleaseResponse {
+	score: number;
+	excluded: boolean;
+	exclude_reason?: string;
+	matched_languages: string[];
+	language_bonus: number;
+	formats: EvaluatedFormat[];
 }
 
 export interface InspectSearchRequest {
@@ -880,7 +902,37 @@ export interface StremioConfig {
 	include_library_streams?: boolean;
 	fast_fail_header_only?: boolean;
 	skip_repair?: boolean;
+	display?: StremioDisplayConfig;
 	prowlarr: ProwlarrConfig;
+}
+
+export type StremioDisplayPresetId = "default" | "full" | "minimal" | "custom";
+
+/** How releases are labelled in Stremio's stream list. */
+export interface StremioDisplayConfig {
+	preset?: StremioDisplayPresetId;
+	name_template?: string;
+	description_template?: string;
+}
+
+export interface StremioDisplayPreset {
+	id: Exclude<StremioDisplayPresetId, "custom">;
+	label: string;
+	name_template: string;
+	description_template: string;
+}
+
+export interface StremioDisplayPresetsResponse {
+	presets: StremioDisplayPreset[];
+	tokens: string[];
+}
+
+export interface StremioDisplayPreview {
+	release: string;
+	cached: boolean;
+	library: boolean;
+	name: string;
+	description: string;
 }
 
 // Helper type for configuration sections

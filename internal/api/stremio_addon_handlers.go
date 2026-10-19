@@ -241,15 +241,9 @@ func (s *Server) handleStremioAddonStream(c *fiber.Ctx) error {
 		return emptyStreamsResponse(c)
 	}
 
-	showCachedIndicator := cfg.Stremio.ShowCachedIndicator == nil || *cfg.Stremio.ShowCachedIndicator
 	entries := buildStremioStreamEntries(results, cachedItems, cfg.Stremio.NzbTTLHours, time.Now(),
-		baseURL, key, streamType, season, episode, imdbID, cfg.Stremio.Prowlarr,
-		s.storeStremioReleaseRef)
-	if !showCachedIndicator {
-		for i := range entries {
-			entries[i].Name = strings.TrimPrefix(entries[i].Name, "⚡ Cached · ")
-		}
-	}
+		baseURL, key, streamType, season, episode, imdbID,
+		resolveStreamDisplay(cfg.Stremio), s.storeStremioReleaseRef)
 
 	streams := make([]fiber.Map, 0, len(libraryStreams)+len(entries))
 	streams = append(streams, libraryStreams...)
@@ -274,6 +268,7 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 		return nil
 	}
 	selector := &stremioEpisodeSelector{Season: season, Episode: episode}
+	display := resolveStreamDisplay(cfg.Stremio)
 	var libraryStreams []fiber.Map
 	if streamType == "movie" {
 		tmdbID, movieTitle, movieYear, _ := resolveMovieMetadataFromIMDb(ctx, imdbID, cfg.GetUserAgent())
@@ -291,9 +286,10 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 					}
 					streamURL := baseURL + "/api/files/stream?path=" +
 						url.QueryEscape(h.FilePath) + "&download_key=" + url.QueryEscape(key)
+					name, title := s.libraryStreamLabels(display, h)
 					libraryStreams = append(libraryStreams, fiber.Map{
-						"name":  formatLibraryStreamName(h),
-						"title": formatLibraryStreamTitle(h),
+						"name":  name,
+						"title": title,
 						"url":   streamURL,
 					})
 				}
@@ -316,9 +312,10 @@ func (s *Server) findHealthyLibraryStreams(ctx context.Context, cfg *config.Conf
 						}
 						streamURL := baseURL + "/api/files/stream?path=" +
 							url.QueryEscape(h.FilePath) + "&download_key=" + url.QueryEscape(key)
+						name, title := s.libraryStreamLabels(display, h)
 						libraryStreams = append(libraryStreams, fiber.Map{
-							"name":  formatLibraryStreamName(h),
-							"title": formatLibraryStreamTitle(h),
+							"name":  name,
+							"title": title,
 							"url":   streamURL,
 						})
 					}
@@ -425,20 +422,45 @@ func (s *Server) storeStremioReleaseRef(candidate stremioPlayCandidate) (string,
 			delete(s.stremioReleaseRefs, key)
 		}
 	}
-	s.stremioReleaseRefs[token] = stremioReleaseRef{Candidate: candidate, ExpiresAt: now.Add(15 * time.Minute)}
+	s.stremioReleaseRefs[token] = stremioReleaseRef{Candidate: candidate, ExpiresAt: now.Add(s.stremioReleaseLifetime())}
 	return token, nil
 }
 
+// minStremioReleaseLifetime keeps play links usable through a film even when
+// stream_ttl_seconds is set very low.
+const minStremioReleaseLifetime = time.Hour
+
+// stremioReleaseLifetime is how long a play link's release token stays valid:
+// as long as Stremio may keep showing the stream list it came from
+// (stream_ttl_seconds, default 24h). Players re-request the play link when
+// they seek or reconnect, so a short lifetime broke rewinding mid-film.
+func (s *Server) stremioReleaseLifetime() time.Duration {
+	lifetime := 24 * time.Hour
+	if s.configManager != nil {
+		if ttl := s.configManager.GetConfig().Stremio.StreamTTLSeconds; ttl > 0 {
+			lifetime = time.Duration(ttl) * time.Second
+		}
+	}
+	return max(lifetime, minStremioReleaseLifetime)
+}
+
+// consumeStremioReleaseRef resolves a play link's release token. A token
+// that is used is kept alive for another full lifetime, so playback that
+// re-requests the link keeps working however long it runs.
 func (s *Server) consumeStremioReleaseRef(token string) (stremioPlayCandidate, bool) {
+	lifetime := s.stremioReleaseLifetime()
 	s.stremioReleaseMu.Lock()
 	defer s.stremioReleaseMu.Unlock()
 	ref, ok := s.stremioReleaseRefs[token]
-	if !ok || !ref.ExpiresAt.After(time.Now()) {
+	now := time.Now()
+	if !ok || !ref.ExpiresAt.After(now) {
 		if ok {
 			delete(s.stremioReleaseRefs, token)
 		}
 		return stremioPlayCandidate{}, false
 	}
+	ref.ExpiresAt = now.Add(lifetime)
+	s.stremioReleaseRefs[token] = ref
 	return ref.Candidate, true
 }
 
@@ -671,71 +693,15 @@ func filterStremioResults(
 	return filtered
 }
 
-func calculateStremioReleaseScore(r prowlarr.NZBResult, prowlarrCfg config.ProwlarrConfig) int {
-	score := 0
-	if len(prowlarrCfg.PreferredIndexers) > 0 && r.IndexerID > 0 {
-		for _, id := range prowlarrCfg.PreferredIndexers {
-			if id == r.IndexerID {
-				score += 10000
-				break
-			}
-		}
-	}
-	if len(prowlarrCfg.PreferredIndexerNames) > 0 && r.Indexer != "" {
-		indexerLower := strings.ToLower(r.Indexer)
-		for _, name := range prowlarrCfg.PreferredIndexerNames {
-			name = strings.TrimSpace(name)
-			if name != "" && strings.Contains(indexerLower, strings.ToLower(name)) {
-				score += 10000
-				break
-			}
-		}
-	}
-	if len(prowlarrCfg.PreferredLanguages) > 0 {
-		if prowlarr.MatchesLanguage(r.Title, prowlarrCfg.PreferredLanguages) {
-			score += 5000
-		}
-	}
-	if len(prowlarrCfg.CustomScores) > 0 {
-		for pattern, val := range prowlarrCfg.CustomScores {
-			pattern = strings.TrimSpace(pattern)
-			if pattern == "" {
-				continue
-			}
-			if prowlarr.MatchKeywordOrPattern(r.Title, pattern) {
-				score += val
-			}
-		}
-	}
-	return score
-}
-
-// orderStremioResults stably reorders results so cached releases come first,
-// followed by highest TRaSH/custom score, preserving Prowlarr's publish date within equal groups.
-func orderStremioResults(
-	results []prowlarr.NZBResult,
-	isCached func(safeTitle string) bool,
-	prowlarrCfg config.ProwlarrConfig,
-) []prowlarr.NZBResult {
+// cachedFirst stably moves releases that are already imported (and so play
+// instantly) ahead of the rest, keeping the search's score order within each
+// group. The input slice is not modified: the stream list and the play
+// fallback chain both order the same search results.
+func cachedFirst(results []prowlarr.NZBResult, isCached func(safeTitle string) bool) []prowlarr.NZBResult {
 	ordered := make([]prowlarr.NZBResult, len(results))
 	copy(ordered, results)
-	scores := make(map[string]int, len(results))
-	for _, r := range results {
-		scores[r.Title] = calculateStremioReleaseScore(r, prowlarrCfg)
-	}
-
 	sort.SliceStable(ordered, func(i, j int) bool {
-		cI := isCached(sanitizeFilename(ordered[i].Title))
-		cJ := isCached(sanitizeFilename(ordered[j].Title))
-		if cI != cJ {
-			return cI && !cJ
-		}
-		sI := scores[ordered[i].Title]
-		sJ := scores[ordered[j].Title]
-		if sI != sJ {
-			return sI > sJ
-		}
-		return ordered[i].PublishDate.After(ordered[j].PublishDate)
+		return isCached(sanitizeFilename(ordered[i].Title)) && !isCached(sanitizeFilename(ordered[j].Title))
 	})
 	return ordered
 }
@@ -866,6 +832,13 @@ func (s *Server) buildStremioCoordinatorConfig(cfg *config.Config) stremio.Coord
 		preferredLangs = stremioCfg.Prowlarr.PreferredLanguages
 	}
 
+	// Legacy Prowlarr preferred indexers (by id or name) still rank first.
+	var preferredIndexers []string
+	for _, id := range stremioCfg.Prowlarr.PreferredIndexers {
+		preferredIndexers = append(preferredIndexers, strconv.Itoa(id))
+	}
+	preferredIndexers = append(preferredIndexers, stremioCfg.Prowlarr.PreferredIndexerNames...)
+
 	return stremio.CoordinatorConfig{
 		Provider:        provider,
 		UserAgentMode:   stremioCfg.Indexers.UserAgentMode,
@@ -883,6 +856,7 @@ func (s *Server) buildStremioCoordinatorConfig(cfg *config.Config) stremio.Coord
 			PreferredLanguages:       preferredLangs,
 			RequirePreferredLanguage: stremioCfg.Scoring.RequirePreferredLanguage,
 		},
+		PreferredIndexers: preferredIndexers,
 	}
 }
 
@@ -1062,13 +1036,14 @@ func buildStremioStreamEntries(
 	baseURL, key, streamType string,
 	season, episode int,
 	fallbackID string,
-	prowlarrCfg config.ProwlarrConfig,
+	display streamDisplay,
 	releaseStores ...func(stremioPlayCandidate) (string, error),
 ) []stremioStreamEntry {
 	isCached := stremioCachedPredicate(cached, ttlHours, now)
 
-	// Order first, then build, so entries come out in final order without a second sort.
-	results = orderStremioResults(results, isCached, prowlarrCfg)
+	// Results arrive in the scorer's order (the same score the config page's
+	// testing view shows); only already-imported releases move ahead.
+	results = cachedFirst(results, isCached)
 
 	entries := make([]stremioStreamEntry, 0, len(results))
 	for _, r := range results {
@@ -1093,7 +1068,9 @@ func buildStremioStreamEntries(
 
 		playURL := baseURL + "/stremio/" + key + "/play"
 		if releaseToken != "" {
-			playURL += "?release=" + url.QueryEscape(releaseToken)
+			// The release name is not secret (the token hides the indexer
+			// URL); it lets /play recover the release once the token expires.
+			playURL += "?release=" + url.QueryEscape(releaseToken) + "&title=" + url.QueryEscape(safeTitle)
 		} else {
 			playURL += "?url=" + url.QueryEscape(r.DownloadURL) + "&title=" + url.QueryEscape(safeTitle)
 		}
@@ -1113,51 +1090,10 @@ func buildStremioStreamEntries(
 				"&episode=" + url.QueryEscape(strconv.Itoa(episode))
 		}
 
-		sizeGB := float64(r.Size) / 1e9
-		indexerLabel := r.Indexer
-		if indexerLabel == "" {
-			indexerLabel = "Unknown"
-		}
-
-		meta := prowlarr.InferReleaseMeta(r.Title)
-
-		// Badge: "AltMount 🇪🇸 4K"
-		badge := "AltMount"
-		if meta.FlagEmoji != "" {
-			badge += " " + meta.FlagEmoji
-		}
-		if meta.QualityLabel != "" {
-			badge += " " + meta.QualityLabel
-		}
-
-		// Content info: "La película (2024) [2160p][Esp]"
-		contentTitle := meta.ParsedTitle
-		if contentTitle == "" {
-			contentTitle = r.Title
-		}
-		if meta.Year > 0 {
-			contentTitle += fmt.Sprintf(" (%d)", meta.Year)
-		}
-		if meta.Resolution != "" {
-			contentTitle += " [" + meta.Resolution + "]"
-		}
-		if meta.LangCode != "" {
-			contentTitle += "[" + meta.LangCode + "]"
-		}
-
-		streamName := badge
-		if contentTitle != "" {
-			streamName += " - " + contentTitle
-		}
-		if cachedHit {
-			// Prefix marks instantly-playable releases, aiostreams-style.
-			streamName = "⚡ Cached · " + streamName
-		}
-
-		metaLine := fmt.Sprintf("💾 %.2f GB 🌐 %s", sizeGB, indexerLabel)
+		name, description := formatStremioStream(display, r, cachedHit)
 		entries = append(entries, stremioStreamEntry{
-			Name:   streamName,
-			Title:  fmt.Sprintf("%s\n%s", r.Title, metaLine),
+			Name:   name,
+			Title:  description,
 			URL:    playURL,
 			Cached: cachedHit,
 		})
@@ -1207,12 +1143,24 @@ func (s *Server) handleStremioAddonPlay(c *fiber.Ctx) error {
 	if releaseToken == "" {
 		return RespondBadRequest(c, "Missing release parameter", "")
 	}
-	cand, ok := s.consumeStremioReleaseRef(releaseToken)
-	if !ok {
-		return RespondBadRequest(c, "Invalid or expired release parameter", "")
-	}
 	imdbID := c.Query("id")
 	streamType := c.Query("type")
+	cand, ok := s.consumeStremioReleaseRef(releaseToken)
+	if !ok {
+		// Stremio saves the stream a title was played with and replays that
+		// link on resume, long after its release token expired. Recover from
+		// the content id (and the release name, when the link carries one)
+		// instead of failing: play an already-imported copy, or search again.
+		if imdbID == "" {
+			return RespondBadRequest(c, "Invalid or expired release parameter", "")
+		}
+		cand = stremioPlayCandidate{}
+		if title := c.Query("title"); title != "" {
+			cand.SafeTitle = sanitizeFilename(title)
+		}
+		slog.InfoContext(ctx, "Recovering Stremio play link with an expired release token",
+			"imdb_id", imdbID, "title", cand.SafeTitle)
+	}
 
 	baseURL := resolveBaseURL(c, cfg.Stremio.BaseURL)
 	selector := stremioEpisodeSelectorFromRequest(c)
@@ -1269,14 +1217,68 @@ func (s *Server) handleStremioAddonPlay(c *fiber.Ctx) error {
 		}
 	}
 
+	explicitRelease := true
+	if cand.DownloadURL == "" {
+		// A recovered link has no release to download: find it again.
+		found, matched := s.findStremioCandidate(ctx, cfg, streamType, imdbID, selector, cand.SafeTitle)
+		if found == nil {
+			return RespondServiceUnavailable(c, "No playable release found", "the play link expired and a new search found nothing")
+		}
+		cand, explicitRelease = *found, matched
+	}
+
 	return s.playStremioWithFallback(c, cfg, cand, playRequest{
 		baseURL:         baseURL,
 		key:             key,
 		streamType:      streamType,
 		imdbID:          imdbID,
 		selector:        selector,
-		explicitRelease: true,
+		explicitRelease: explicitRelease,
 	})
+}
+
+// findStremioCandidate searches again for a content id and returns the
+// release named safeTitle when the search still offers it (matched true),
+// otherwise the top-ranked release, or nil when the search finds nothing.
+func (s *Server) findStremioCandidate(
+	ctx context.Context,
+	cfg *config.Config,
+	streamType, imdbID string,
+	selector *stremioEpisodeSelector,
+	safeTitle string,
+) (cand *stremioPlayCandidate, matched bool) {
+	prowlarrType := "search"
+	switch streamType {
+	case "movie":
+		prowlarrType = "movie"
+	case "series":
+		prowlarrType = "tvsearch"
+	}
+	season, episode := 0, 0
+	if selector != nil {
+		season, episode = selector.Season, selector.Episode
+	}
+	results, _, err := s.searchStremioReleases(ctx, cfg, streamType, prowlarrType, imdbID, season, episode)
+	if err != nil {
+		slog.WarnContext(ctx, "Stremio search for an expired play link failed", "error", err, "imdb_id", imdbID)
+	}
+	return pickStremioCandidate(stremioCandidates(results, imdbID), safeTitle)
+}
+
+// pickStremioCandidate returns the candidate named safeTitle (matched true),
+// else the first, else nil.
+func pickStremioCandidate(cands []stremioPlayCandidate, safeTitle string) (*stremioPlayCandidate, bool) {
+	if safeTitle != "" {
+		for i := range cands {
+			if cands[i].SafeTitle == safeTitle {
+				return &cands[i], true
+			}
+		}
+	}
+	if len(cands) == 0 {
+		return nil, false
+	}
+	return &cands[0], false
 }
 
 // playRequest carries the per-request context the fallback loop needs, keeping the
@@ -1894,18 +1896,18 @@ func isSameOrigin(urlStr1, urlStr2 string) bool {
 	return strings.EqualFold(u1.Scheme, u2.Scheme) && strings.EqualFold(u1.Host, u2.Host)
 }
 
-//	@Summary		List available Prowlarr indexers
-//	@Description	Queries the configured Prowlarr instance and returns all enabled indexers
-//	@Tags			Stremio
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
-//	@Success		200		{object}	APIResponse
-//	@Failure		400		{object}	APIResponse
-//	@Failure		500		{object}	APIResponse
-//	@Failure		503		{object}	APIResponse
-//	@Security		BearerAuth
-//	@Router			/prowlarr/indexers [post]
+// @Summary		List available Prowlarr indexers
+// @Description	Queries the configured Prowlarr instance and returns all enabled indexers
+// @Tags			Stremio
+// @Accept			json
+// @Produce		json
+// @Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
+// @Success		200		{object}	APIResponse
+// @Failure		400		{object}	APIResponse
+// @Failure		500		{object}	APIResponse
+// @Failure		503		{object}	APIResponse
+// @Security		BearerAuth
+// @Router			/prowlarr/indexers [post]
 func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	if s.configManager == nil {
 		return RespondServiceUnavailable(c, "Configuration not available", "")
