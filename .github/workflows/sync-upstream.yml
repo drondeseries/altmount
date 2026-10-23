@@ -48,6 +48,7 @@ jobs:
           else
             echo "merged=false" >> $GITHUB_OUTPUT
             echo "Merge conflicts detected."
+            git add -A
           fi
 
       - name: Create PR on Conflict
