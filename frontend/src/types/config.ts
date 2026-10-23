@@ -285,6 +285,8 @@ export type ImportStrategy = "NONE" | "SYMLINK" | "STRM";
 
 // Import configuration
 export interface ImportConfig {
+	rss_feed_url?: string;
+	rss_poll_interval_seconds?: number;
 	max_processor_workers: number;
 	/**
 	 * Connections held back from import per active stream. `null`/absent
@@ -537,6 +539,8 @@ export interface RCloneUpdateRequest {
 
 // Import update request
 export interface ImportUpdateRequest {
+	rss_feed_url?: string;
+	rss_poll_interval_seconds?: number;
 	max_processor_workers?: number;
 	queue_processing_interval_seconds?: number; // Interval in seconds for queue processing
 	allowed_file_extensions?: string[];
@@ -900,6 +904,7 @@ export interface StremioConfig {
 	failed_release_ttl_hours: number;
 	max_fallback_releases: number;
 	include_library_streams?: boolean;
+	skip_search_when_cached?: boolean;
 	fast_fail_header_only?: boolean;
 	skip_repair?: boolean;
 	display?: StremioDisplayConfig;

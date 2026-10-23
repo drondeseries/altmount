@@ -151,6 +151,8 @@ type ProviderAPIResponse struct {
 
 // ImportAPIResponse handles Import config for API responses
 type ImportAPIResponse struct {
+	RSSFeedURL                     string   `json:"rss_feed_url"`
+	RSSPollIntervalSeconds         int      `json:"rss_poll_interval_seconds"`
 	MaxProcessorWorkers            int      `json:"max_processor_workers"`
 	QueueProcessingIntervalSeconds int      `json:"queue_processing_interval_seconds"` // Interval in seconds
 	AllowedFileExtensions          []string `json:"allowed_file_extensions"`
@@ -277,6 +279,7 @@ type StremioAPIResponse struct {
 	FastFailHeaderOnly    bool                       `json:"fast_fail_header_only"`
 	SkipRepair            bool                       `json:"skip_repair"`
 	IncludeLibraryStreams *bool                      `json:"include_library_streams,omitempty"`
+	SkipSearchWhenCached  bool                       `json:"skip_search_when_cached"`
 	BaseURL               string                     `json:"base_url,omitempty"`
 	Indexers              StremioIndexersAPIResponse `json:"indexers"`
 	Scoring               StreamScoringAPIResponse   `json:"scoring"`
@@ -534,6 +537,7 @@ func ToConfigAPIResponse(cfg *config.Config, apiKey string) *ConfigAPIResponse {
 		FastFailHeaderOnly:    cfg.Stremio.EffectiveFastFailHeaderOnly(),
 		SkipRepair:            cfg.Stremio.EffectiveSkipRepair(),
 		IncludeLibraryStreams: cfg.Stremio.IncludeLibraryStreams,
+		SkipSearchWhenCached:  cfg.Stremio.SkipSearchWhenCached,
 		Display:               cfg.Stremio.Display,
 		BaseURL:               cfg.Stremio.BaseURL,
 		Indexers: StremioIndexersAPIResponse{
@@ -570,7 +574,17 @@ func ToConfigAPIResponse(cfg *config.Config, apiKey string) *ConfigAPIResponse {
 }
 
 func ToImportAPIResponse(importConfig config.ImportConfig) ImportAPIResponse {
+	maskedFeed := ""
+	if importConfig.RSSFeedURL != "" {
+		maskedFeed = "********"
+	}
+	interval := importConfig.RSSPollIntervalSeconds
+	if interval == 0 {
+		interval = 300
+	}
 	return ImportAPIResponse{
+		RSSFeedURL:                     maskedFeed,
+		RSSPollIntervalSeconds:         interval,
 		MaxProcessorWorkers:            importConfig.MaxProcessorWorkers,
 		QueueProcessingIntervalSeconds: importConfig.QueueProcessingIntervalSeconds,
 		AllowedFileExtensions:          importConfig.AllowedFileExtensions,

@@ -1527,6 +1527,13 @@ func updateSymlinkForMountChange(
 	return newTarget, true, nil
 }
 
+// isMountTarget compares cleaned paths at a directory boundary. Unlike a plain
+// prefix check, it rejects siblings such as altmount_symlinks for altmount.
+// Keep exact mount targets and filesystem roots valid as well.
+func isMountTarget(target, mount string) bool {
+	return target == mount || strings.HasPrefix(target, strings.TrimSuffix(mount, string(filepath.Separator))+string(filepath.Separator))
+}
+
 // getAllLibraryFiles collects both symlinks and .strm files from library directory in a single pass.
 // If oldMountPath and newMountPath are provided, it also updates symlinks pointing to the old path.
 // Returns the used files, symlink update count, walk error count, and any fatal error.
@@ -1587,7 +1594,7 @@ func (lsw *LibrarySyncWorker) getAllLibraryFiles(ctx context.Context, oldMountPa
 			cleanTarget := filepath.Clean(target)
 
 			// Update symlink if it points to the old mount path
-			if shouldUpdateSymlinks && strings.HasPrefix(cleanTarget, oldMountPathClean) {
+			if shouldUpdateSymlinks && isMountTarget(cleanTarget, oldMountPathClean) {
 				newTarget, updated, err := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean, cfg.Import.PinSymlinkTimestamp)
 				if err != nil {
 					return nil
@@ -1599,7 +1606,7 @@ func (lsw *LibrarySyncWorker) getAllLibraryFiles(ctx context.Context, oldMountPa
 			}
 
 			// Check if this symlink points inside the mount directory
-			if strings.HasPrefix(cleanTarget, cleanMountDir) {
+			if isMountTarget(cleanTarget, cleanMountDir) {
 				// Store mapping of mount target path -> library symlink path
 				result.Symlinks[cleanTarget] = path
 				count++
@@ -1646,7 +1653,7 @@ func (lsw *LibrarySyncWorker) getAllLibraryFiles(ctx context.Context, oldMountPa
 				// For NONE strategy, also count regular files if they are in the mount directory
 				cleanPath := filepath.Clean(path)
 
-				if strings.HasPrefix(cleanPath, cleanMountDir) {
+				if isMountTarget(cleanPath, cleanMountDir) {
 					// In NONE strategy, the library file IS the mount file
 					result.Symlinks[cleanPath] = path
 					count++
@@ -1760,7 +1767,7 @@ func (lsw *LibrarySyncWorker) getAllImportDirFiles(ctx context.Context, oldMount
 			cleanMountDir := filepath.Clean(mountDir)
 
 			// Update symlink if it points to the old mount path
-			if shouldUpdateSymlinks && strings.HasPrefix(cleanTarget, oldMountPathClean) {
+			if shouldUpdateSymlinks && isMountTarget(cleanTarget, oldMountPathClean) {
 				newTarget, updated, _ := updateSymlinkForMountChange(ctx, path, cleanTarget, oldMountPathClean, newMountPathClean, cfg.Import.PinSymlinkTimestamp)
 				if updated {
 					symlinkUpdates++
@@ -1769,7 +1776,7 @@ func (lsw *LibrarySyncWorker) getAllImportDirFiles(ctx context.Context, oldMount
 			}
 
 			// Validate that the symlink points to mount directory
-			if !strings.HasPrefix(cleanTarget, cleanMountDir) {
+			if !isMountTarget(cleanTarget, cleanMountDir) {
 				slog.WarnContext(ctx, "Symlink in import directory does not point to mount directory",
 					"path", path,
 					"target", cleanTarget,

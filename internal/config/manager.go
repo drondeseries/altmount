@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -460,6 +461,9 @@ type StremioConfig struct {
 	// IncludeLibraryStreams when true checks and presents matching completed files
 	// from your Altmount library as instant 0s stream options in Stremio. Defaults to true.
 	IncludeLibraryStreams *bool `yaml:"include_library_streams" mapstructure:"include_library_streams" json:"include_library_streams,omitempty"`
+	// SkipSearchWhenCached returns matching cached streams without searching indexers.
+	// Defaults to false; a cache miss always falls back to the normal search.
+	SkipSearchWhenCached bool `yaml:"skip_search_when_cached" mapstructure:"skip_search_when_cached" json:"skip_search_when_cached"`
 	// Display controls how releases are labelled in Stremio's stream list.
 	Display StremioDisplayConfig `yaml:"display" mapstructure:"display" json:"display"`
 	// FastFailHeaderOnly when true causes Stremio-originated imports to fail fast
@@ -676,6 +680,10 @@ const DefaultOrphanCleanupMaxRatio = 0.20
 
 // ImportConfig represents import processing configuration
 type ImportConfig struct {
+	// RSSFeedURL is an optional indexer cart feed; empty disables polling.
+	RSSFeedURL string `yaml:"rss_feed_url" mapstructure:"rss_feed_url" json:"rss_feed_url"`
+	// RSSPollIntervalSeconds defaults to 300 when omitted or zero.
+	RSSPollIntervalSeconds         int      `yaml:"rss_poll_interval_seconds" mapstructure:"rss_poll_interval_seconds" json:"rss_poll_interval_seconds"`
 	MaxProcessorWorkers            int      `yaml:"max_processor_workers" mapstructure:"max_processor_workers" json:"max_processor_workers"`
 	QueueProcessingIntervalSeconds int      `yaml:"queue_processing_interval_seconds" mapstructure:"queue_processing_interval_seconds" json:"queue_processing_interval_seconds"`
 	AllowedFileExtensions          []string `yaml:"allowed_file_extensions" mapstructure:"allowed_file_extensions" json:"allowed_file_extensions"`
@@ -1241,6 +1249,15 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("segment_cache memory_mb must be 0 or greater")
 	}
 
+	if c.Import.RSSFeedURL != "" {
+		u, err := url.Parse(c.Import.RSSFeedURL)
+		if err != nil || u.Hostname() == "" || (u.Scheme != "http" && u.Scheme != "https") {
+			return fmt.Errorf("import rss_feed_url must be an absolute HTTP or HTTPS URL")
+		}
+	}
+	if c.Import.RSSPollIntervalSeconds < 0 || c.Import.RSSPollIntervalSeconds > 86400 {
+		return fmt.Errorf("import rss_poll_interval_seconds must be between 1 and 86400, or 0 for the default")
+	}
 	if c.Import.MaxProcessorWorkers <= 0 {
 		return fmt.Errorf("import max_processor_workers must be greater than 0")
 	}
