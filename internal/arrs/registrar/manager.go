@@ -32,6 +32,29 @@ func IsAltmountDownloadClient(name string) bool {
 	return strings.Contains(strings.ToLower(name), "altmount")
 }
 
+// emptyTags returns a non-nil empty tag slice for newly created ARR objects.
+//
+// The starr input structs declare Tags without `omitempty`, so a nil slice
+// marshals to `"tags": null`. Sonarr v5 validates tags as a required array and
+// rejects null with "The Tags field is required", breaking auto-registration
+// (Radarr/Lidarr/Readarr happen to tolerate null, which masked this).
+func emptyTags() []int {
+	return []int{}
+}
+
+// preserveTags carries over the tags an ARR already has on an object. Update
+// paths must use this instead of emptyTags so that re-registering AltMount
+// never silently strips a tag a user attached to the client or connection.
+// A nil (or absent) existing set still normalizes to an empty array, since
+// Sonarr v5 rejects null on updates too.
+func preserveTags(existing []int) []int {
+	if existing == nil {
+		return []int{}
+	}
+
+	return existing
+}
+
 type Manager struct {
 	instances *instances.Manager
 	clients   *clients.Manager
@@ -102,6 +125,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 						Name:                        webhookName,
 						Implementation:              "Webhook",
 						ConfigContract:              "WebhookSettings",
+						Tags:                        preserveTags(existing.Tags),
 						OnGrab:                      true,
 						OnDownload:                  true,
 						OnUpgrade:                   true,
@@ -124,6 +148,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                        webhookName,
 					Implementation:              "Webhook",
 					ConfigContract:              "WebhookSettings",
+					Tags:                        emptyTags(),
 					OnGrab:                      true,
 					OnDownload:                  true, // OnImport
 					OnUpgrade:                   true,
@@ -184,6 +209,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 						Name:                          webhookName,
 						Implementation:                "Webhook",
 						ConfigContract:                "WebhookSettings",
+						Tags:                          preserveTags(existing.Tags),
 						OnGrab:                        true,
 						OnDownload:                    true,
 						OnUpgrade:                     true,
@@ -206,6 +232,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                          webhookName,
 					Implementation:                "Webhook",
 					ConfigContract:                "WebhookSettings",
+					Tags:                          emptyTags(),
 					OnGrab:                        true,
 					OnDownload:                    true, // OnImport
 					OnUpgrade:                     true,
@@ -266,6 +293,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 						Name:            webhookName,
 						Implementation:  "Webhook",
 						ConfigContract:  "WebhookSettings",
+						Tags:            preserveTags(existing.Tags),
 						OnGrab:          true,
 						OnReleaseImport: true,
 						OnUpgrade:       true,
@@ -285,6 +313,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:            webhookName,
 					Implementation:  "Webhook",
 					ConfigContract:  "WebhookSettings",
+					Tags:            emptyTags(),
 					OnGrab:          true,
 					OnReleaseImport: true,
 					OnUpgrade:       true,
@@ -342,6 +371,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 						Name:                       webhookName,
 						Implementation:             "Webhook",
 						ConfigContract:             "WebhookSettings",
+						Tags:                       preserveTags(existing.Tags),
 						OnGrab:                     true,
 						OnReleaseImport:            true,
 						OnUpgrade:                  true,
@@ -365,6 +395,7 @@ func (m *Manager) EnsureWebhookRegistration(ctx context.Context, altmountURL str
 					Name:                       webhookName,
 					Implementation:             "Webhook",
 					ConfigContract:             "WebhookSettings",
+					Tags:                       emptyTags(),
 					OnGrab:                     true,
 					OnReleaseImport:            true,
 					OnUpgrade:                  true,
@@ -475,6 +506,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						Name:                     clientName,
 						Implementation:           "SABnzbd",
 						ConfigContract:           "SABnzbdSettings",
+						Tags:                     preserveTags(existing.Tags),
 						Enable:                   true,
 						RemoveCompletedDownloads: true,
 						RemoveFailedDownloads:    true,
@@ -503,6 +535,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					Name:                     clientName,
 					Implementation:           "SABnzbd",
 					ConfigContract:           "SABnzbdSettings",
+					Tags:                     emptyTags(),
 					Enable:                   true,
 					RemoveCompletedDownloads: true,
 					RemoveFailedDownloads:    true,
@@ -574,6 +607,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						Name:                     clientName,
 						Implementation:           "SABnzbd",
 						ConfigContract:           "SABnzbdSettings",
+						Tags:                     preserveTags(existing.Tags),
 						Enable:                   true,
 						RemoveCompletedDownloads: true,
 						RemoveFailedDownloads:    true,
@@ -602,6 +636,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					Name:                     clientName,
 					Implementation:           "SABnzbd",
 					ConfigContract:           "SABnzbdSettings",
+					Tags:                     emptyTags(),
 					Enable:                   true,
 					RemoveCompletedDownloads: true,
 					RemoveFailedDownloads:    true,
@@ -673,6 +708,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						Name:                     clientName,
 						Implementation:           "SABnzbd",
 						ConfigContract:           "SABnzbdSettings",
+						Tags:                     preserveTags(existing.Tags),
 						Enable:                   true,
 						RemoveCompletedDownloads: true,
 						RemoveFailedDownloads:    true,
@@ -701,6 +737,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					Name:                     clientName,
 					Implementation:           "SABnzbd",
 					ConfigContract:           "SABnzbdSettings",
+					Tags:                     emptyTags(),
 					Enable:                   true,
 					RemoveCompletedDownloads: true,
 					RemoveFailedDownloads:    true,
@@ -772,6 +809,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 						Name:           clientName,
 						Implementation: "SABnzbd",
 						ConfigContract: "SABnzbdSettings",
+						Tags:           preserveTags(existing.Tags),
 						Enable:         true,
 						Priority:       1,
 						Protocol:       "Usenet",
@@ -799,6 +837,7 @@ func (m *Manager) EnsureDownloadClientRegistration(ctx context.Context, altmount
 					Name:           clientName,
 					Implementation: "SABnzbd",
 					ConfigContract: "SABnzbdSettings",
+					Tags:           emptyTags(),
 					Enable:         true,
 					Priority:       1,
 					Protocol:       "Usenet",
@@ -853,6 +892,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 				Name:                     "AltMount Test",
 				Implementation:           "SABnzbd",
 				ConfigContract:           "SABnzbdSettings",
+				Tags:                     emptyTags(),
 				Enable:                   true,
 				RemoveCompletedDownloads: true,
 				RemoveFailedDownloads:    true,
@@ -885,6 +925,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 				Name:                     "AltMount Test",
 				Implementation:           "SABnzbd",
 				ConfigContract:           "SABnzbdSettings",
+				Tags:                     emptyTags(),
 				Enable:                   true,
 				RemoveCompletedDownloads: true,
 				RemoveFailedDownloads:    true,
@@ -917,6 +958,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 				Name:                     "AltMount Test",
 				Implementation:           "SABnzbd",
 				ConfigContract:           "SABnzbdSettings",
+				Tags:                     emptyTags(),
 				Enable:                   true,
 				RemoveCompletedDownloads: true,
 				RemoveFailedDownloads:    true,
@@ -949,6 +991,7 @@ func (m *Manager) TestDownloadClientRegistration(ctx context.Context, altmountHo
 				Name:           "AltMount Test",
 				Implementation: "SABnzbd",
 				ConfigContract: "SABnzbdSettings",
+				Tags:           emptyTags(),
 				Enable:         true,
 				Priority:       1,
 				Protocol:       "Usenet",

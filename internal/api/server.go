@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -15,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/kipsilabs/altmount/internal/arrs"
 	"github.com/kipsilabs/altmount/internal/auth"
+	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
 	"github.com/kipsilabs/altmount/internal/health"
 	"github.com/kipsilabs/altmount/internal/importer"
@@ -85,6 +88,17 @@ type Server struct {
 	// stremioFailures records releases that failed without leaving a 'failed' queue row,
 	// so they stop being offered in the stream list.
 	stremioFailures *stremioFailureCache
+	// importHealth tracks the background saved-library backfill across requests.
+	importHealthMu sync.Mutex
+	importHealth   importHealthState
+
+	// libraryRepair tracks the automatic poster/identity repair loop.
+	// libraryRepairMu guards both loop lifecycle (libraryRepairCancel) and
+	// the single repair-pass slot shared by the loop and the manual import
+	// backfill's phase-2 pass.
+	libraryRepairMu     sync.Mutex
+	libraryRepairActive bool
+	libraryRepairCancel context.CancelFunc
 }
 
 // NewServer creates a new API server that can optionally register routes on the provided mux (for backwards compatibility)
@@ -192,6 +206,9 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 		AllowHeaders: "Origin, Content-Type, Accept",
 		AllowMethods: "GET, OPTIONS",
 	}))
+	stremioGroup.Get("/:key/catalog/:type/:catalog/:extra.json", s.handleLibraryCatalog)
+	stremioGroup.Get("/:key/catalog/:type/:catalog.json", s.handleLibraryCatalog)
+	stremioGroup.Get("/:key/meta/:type/:id.json", s.handleLibraryMeta)
 	stremioGroup.Get("/:key/manifest.json", s.handleStremioManifest)
 	stremioGroup.Get("/:key/stream/:type/:id.json", s.handleStremioAddonStream)
 	stremioGroup.Get("/:key/play", s.handleStremioAddonPlay)
@@ -258,6 +275,14 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Delete("/import/nzbdav/pending-migrations", s.handleClearPendingNzbdavMigrations)
 	api.Delete("/import/nzbdav/migrations", s.handleClearAllNzbdavMigrations)
 	api.Post("/import/nzbdav/migrate-symlinks", s.handleMigrateNzbdavSymlinks)
+
+	api.Get("/library", s.handleLibraryList)
+	api.Get("/library/recent", s.handleLibraryRecent)
+	api.Post("/library/save", s.handleLibrarySave)
+	api.Post("/library/import-health", s.handleLibraryImportHealth)
+	api.Get("/library/import-health/status", s.handleLibraryImportHealthStatus)
+	api.Delete("/library/releases/:id", s.handleLibraryUnsave)
+	api.Get("/library/:type/:imdbID", s.handleLibraryDetail)
 
 	// Queue endpoints
 	api.Get("/queue", s.handleListQueue)
@@ -421,10 +446,162 @@ func (s *Server) SetupRoutes(app *fiber.App) {
 	api.Post("/user/logout", s.handleAuthLogout)
 	api.Post("/user/api-key/regenerate", s.handleRegenerateAPIKey)
 	api.Put("/user/password", s.handleChangeOwnPassword)
+
+	// Self-maintenance: run the ledger-backed poster/identity repair pass on
+	// its own cadence so posterless titles converge without an operator
+	// pressing "Import local library files" after every restart. The health
+	// import backfill itself stays behind its manual button / explicit
+	// library.auto_import_health opt-in.
+	s.startLibraryRepairLoop()
+}
+
+const (
+	// libraryRepairSettleDelay gives startup (mount, providers, ARR webhook
+	// registration) time to settle before the first automatic repair pass.
+	libraryRepairSettleDelay = 90 * time.Second
+	// libraryRepairPassBudget bounds one automatic pass so a hung enrichment
+	// call can never occupy the repair slot indefinitely.
+	libraryRepairPassBudget = 8 * time.Minute
+	// libraryRepairDisabledPoll re-checks a disabled configuration so runtime
+	// configuration changes apply without a restart.
+	libraryRepairDisabledPoll = time.Minute
+)
+
+// parseLibraryRepairIntervalMinutes parses the operator override in minutes.
+// valid=false covers non-integers and out-of-range values (outside 0..1440);
+// the caller must report and fall back to configuration in that case.
+func parseLibraryRepairIntervalMinutes(raw string) (minutes int, valid bool) {
+	minutes, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || minutes < 0 || minutes > config.MaxLibraryRepairIntervalMinutes {
+		return 0, false
+	}
+	return minutes, true
+}
+
+// libraryRepairInterval resolves the automatic repair pass cadence. The
+// operator override (ALTMOUNT_LIBRARY_REPAIR_INTERVAL_MINUTES) wins when
+// valid; otherwise library.repair_interval_minutes applies (default 10
+// minutes, 0 disables). Invalid overrides are reported and fall back to
+// configuration instead of silently disabling maintenance.
+func (s *Server) libraryRepairInterval() (time.Duration, bool) {
+	ctx := context.Background()
+	if raw, ok := os.LookupEnv("ALTMOUNT_LIBRARY_REPAIR_INTERVAL_MINUTES"); ok {
+		minutes, valid := parseLibraryRepairIntervalMinutes(raw)
+		switch {
+		case !valid:
+			slog.WarnContext(ctx, "Ignoring invalid ALTMOUNT_LIBRARY_REPAIR_INTERVAL_MINUTES; falling back to configuration",
+				"value", raw, "allowed", "0..1440 (minutes; 0 disables)")
+		case minutes == 0:
+			return 0, false
+		default:
+			return time.Duration(minutes) * time.Minute, true
+		}
+	}
+	if s.configManager == nil {
+		return time.Duration(config.DefaultLibraryRepairIntervalMinutes) * time.Minute, true
+	}
+	minutes := s.configManager.GetConfig().EffectiveLibraryRepairIntervalMinutes()
+	if minutes == 0 {
+		return 0, false
+	}
+	return time.Duration(minutes) * time.Minute, true
+}
+
+// claimLibraryRepairSlot reserves the single repair-pass slot; false means
+// another pass (automatic or manual phase-2) is already running. The caller
+// must call releaseLibraryRepairSlot after claiming.
+func (s *Server) claimLibraryRepairSlot() bool {
+	s.libraryRepairMu.Lock()
+	defer s.libraryRepairMu.Unlock()
+	if s.libraryRepairActive {
+		return false
+	}
+	s.libraryRepairActive = true
+	return true
+}
+
+// releaseLibraryRepairSlot frees the repair-pass slot.
+func (s *Server) releaseLibraryRepairSlot() {
+	s.libraryRepairMu.Lock()
+	s.libraryRepairActive = false
+	s.libraryRepairMu.Unlock()
+}
+
+// startLibraryRepairLoop starts the automatic, repair-only maintenance
+// worker: after a startup settle delay it runs the ledger-backed poster/
+// identity repair pass on a fixed cadence, decoupled from the health-import
+// backfill so import stalls can never starve repairs. Each pass gets a
+// bounded context; a disabled interval parks the loop and is re-resolved on
+// every wake so configuration changes apply without a restart. Safe against
+// double-start and against overlap with the manual import's phase-2 pass.
+func (s *Server) startLibraryRepairLoop() {
+	s.libraryRepairMu.Lock()
+	if s.libraryRepairCancel != nil {
+		s.libraryRepairMu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	s.libraryRepairCancel = cancel
+	s.libraryRepairMu.Unlock()
+
+	go func() {
+		defer cancel()
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(libraryRepairSettleDelay):
+		}
+		for {
+			interval, enabled := s.libraryRepairInterval()
+			if enabled {
+				s.runAutomaticLibraryRepairPass(ctx)
+			}
+			wait := interval
+			if !enabled {
+				wait = libraryRepairDisabledPoll
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(wait):
+			}
+		}
+	}()
+}
+
+// runAutomaticLibraryRepairPass runs one bounded, slot-guarded repair pass.
+// runLibraryRepairPass logs its own structured summary; skipped work renders
+// as a debug line only, matching steady-state silence.
+func (s *Server) runAutomaticLibraryRepairPass(parent context.Context) {
+	if s.configManager == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, libraryRepairPassBudget)
+	defer cancel()
+	if !isStremioEnabled(s.configManager.GetConfig()) {
+		// Stremio integration is disabled: the Library feature (Files entry,
+		// ledger repair, Cinemeta/CDN enrichment) is dormant. No provider or
+		// artwork calls are made; each cadence tick re-resolves the switch so
+		// enabling Stremio restarts repairs without a container restart.
+		slog.DebugContext(ctx, "Skipping library repair pass; Stremio integration disabled")
+		return
+	}
+	if !s.claimLibraryRepairSlot() {
+		slog.DebugContext(ctx, "Library repair pass already in flight; skipping automatic pass")
+		return
+	}
+	defer s.releaseLibraryRepairSlot()
+	_ = s.runLibraryRepairPass(ctx, s.configManager.GetConfig().GetUserAgent())
 }
 
 // Shutdown shuts down the API server and its managed resources
 func (s *Server) Shutdown(ctx context.Context) {
+	s.libraryRepairMu.Lock()
+	cancel := s.libraryRepairCancel
+	s.libraryRepairMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 	if s.fuseManager != nil {
 		s.fuseManager.Stop()
 	}

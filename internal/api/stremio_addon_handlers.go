@@ -170,10 +170,13 @@ func (s *Server) handleStremioManifest(c *fiber.Ctx) error {
 		Version:     "1.1.0",
 		Name:        "AltMount Usenet",
 		Description: "Stream from Usenet via Prowlarr",
-		Resources:   []string{"stream"},
+		Resources:   []string{"stream", "catalog", "meta"},
 		Types:       []string{"movie", "series"},
-		Catalogs:    []any{},
-		IDPrefixes:  []string{"tt"},
+		Catalogs: []any{
+			fiber.Map{"type": "movie", "id": "altmount-saved", "name": "AltMount Saved Movies", "extra": []fiber.Map{{"name": "skip", "isRequired": false}, {"name": "search", "isRequired": false}}},
+			fiber.Map{"type": "series", "id": "altmount-saved", "name": "AltMount Saved Series", "extra": []fiber.Map{{"name": "skip", "isRequired": false}, {"name": "search", "isRequired": false}}},
+		},
+		IDPrefixes: []string{"tt", librarySyntheticIDPrefix},
 	})
 }
 
@@ -199,7 +202,7 @@ func (s *Server) handleStremioAddonStream(c *fiber.Ctx) error {
 		return emptyStreamsResponse(c)
 	}
 	cfg := s.configManager.GetConfig()
-	if !isStremioEnabled(cfg) || !stremioProviderAvailable(cfg) {
+	if !isStremioEnabled(cfg) {
 		return emptyStreamsResponse(c)
 	}
 
@@ -214,15 +217,26 @@ func (s *Server) handleStremioAddonStream(c *fiber.Ctx) error {
 
 	rawID, _ := url.PathUnescape(c.Params("id"))
 
-	// Parse Stremio ID: tt1234567 (movie) or tt1234567:season:episode (series)
+	// Parse Stremio ID: tt1234567 (movie) or tt1234567:season:episode (series).
+	// Saved-library synthetic IDs (altm-...) carry no colons, so episode
+	// suffixes still parse unambiguously.
 	imdbID, season, episode := parseStremioContentID(rawID)
 
+	baseURL := resolveBaseURL(c, cfg.Stremio.BaseURL)
 	if !strings.HasPrefix(imdbID, "tt") {
-		return emptyStreamsResponse(c)
+		// Non-IMDb (local library) IDs: serve saved matches only.
+		return c.JSON(fiber.Map{"streams": s.savedLibraryStreams(ctx, streamType, imdbID, baseURL, key, season, episode)})
 	}
 
-	baseURL := resolveBaseURL(c, cfg.Stremio.BaseURL)
-	libraryStreams := s.findHealthyLibraryStreams(ctx, cfg, streamType, imdbID, baseURL, key, season, episode)
+	libraryStreams := s.savedLibraryStreams(ctx, streamType, imdbID, baseURL, key, season, episode)
+	// Explicit saves remain playable independently of optional general-library discovery.
+	if len(libraryStreams) > 0 {
+		return c.JSON(fiber.Map{"streams": libraryStreams})
+	}
+	if !stremioProviderAvailable(cfg) {
+		return emptyStreamsResponse(c)
+	}
+	libraryStreams = s.findHealthyLibraryStreams(ctx, cfg, streamType, imdbID, baseURL, key, season, episode)
 
 	// Map Stremio type to Prowlarr search type
 	prowlarrType := "search"
@@ -363,14 +377,6 @@ func formatLibraryStreamName(h *database.FileHealth) string {
 		return fmt.Sprintf("⚡ Altmount Library\n%s", res)
 	}
 	return "⚡ Altmount Library"
-}
-
-func isSampleFile(path string, size ...int64) bool {
-	var s int64
-	if len(size) > 0 {
-		s = size[0]
-	}
-	return fileinfo.IsSampleOrProof(path, s)
 }
 
 func (s *Server) isHealthRecordSample(h *database.FileHealth) bool {
@@ -1894,18 +1900,18 @@ func isSameOrigin(urlStr1, urlStr2 string) bool {
 	return strings.EqualFold(u1.Scheme, u2.Scheme) && strings.EqualFold(u1.Host, u2.Host)
 }
 
-//	@Summary		List available Prowlarr indexers
-//	@Description	Queries the configured Prowlarr instance and returns all enabled indexers
-//	@Tags			Stremio
-//	@Accept			json
-//	@Produce		json
-//	@Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
-//	@Success		200		{object}	APIResponse
-//	@Failure		400		{object}	APIResponse
-//	@Failure		500		{object}	APIResponse
-//	@Failure		503		{object}	APIResponse
-//	@Security		BearerAuth
-//	@Router			/prowlarr/indexers [post]
+// @Summary		List available Prowlarr indexers
+// @Description	Queries the configured Prowlarr instance and returns all enabled indexers
+// @Tags			Stremio
+// @Accept			json
+// @Produce		json
+// @Param			request	body		prowlarrIndexersRequest	false	"Optional host/api_key override"
+// @Success		200		{object}	APIResponse
+// @Failure		400		{object}	APIResponse
+// @Failure		500		{object}	APIResponse
+// @Failure		503		{object}	APIResponse
+// @Security		BearerAuth
+// @Router			/prowlarr/indexers [post]
 func (s *Server) handleListProwlarrIndexers(c *fiber.Ctx) error {
 	if s.configManager == nil {
 		return RespondServiceUnavailable(c, "Configuration not available", "")

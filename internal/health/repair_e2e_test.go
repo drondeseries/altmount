@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	nntppool "github.com/javi11/nntppool/v5"
 	"github.com/kipsilabs/altmount/internal/arrs"
 	"github.com/kipsilabs/altmount/internal/arrs/model"
 	"github.com/kipsilabs/altmount/internal/config"
@@ -18,7 +19,6 @@ import (
 	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/pool"
 	"github.com/kipsilabs/altmount/internal/testsupport/fakepool"
-	nntppool "github.com/javi11/nntppool/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

@@ -11,6 +11,7 @@ import (
 	"github.com/go-pkgz/auth/v2/token"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/adaptor"
+	"github.com/gofiber/fiber/v2/middleware/compress"
 	fLogger "github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/kipsilabs/altmount/internal/api"
 	"github.com/kipsilabs/altmount/internal/arrs"
@@ -200,6 +201,20 @@ func createFiberApp(ctx context.Context, cfg *config.Config) (*fiber.App, *bool)
 
 	// Conditional Fiber request logging - only in debug mode
 	debugMode := cfg.Log.Level == "debug"
+
+	// Compress responses. Nothing else in the stack (Traefik, static filesystem,
+	// API handlers) gzips, so the JSON API and the ~1.6MB JS bundle shipped
+	// uncompressed over the wire. fasthttp only compresses text/* and
+	// application/* bodies, so media (video/*) is untouched; SSE, media streams,
+	// and WebDAV bypass Fiber entirely (see createHTTPServer) and never reach
+	// this middleware. File downloads are skipped explicitly: SendFile answers
+	// Range requests with 206 partial bodies, which must not be re-encoded.
+	app.Use(compress.New(compress.Config{
+		Level: compress.LevelBestSpeed,
+		Next: func(c *fiber.Ctx) bool {
+			return strings.HasSuffix(c.Path(), "/download")
+		},
+	}))
 
 	// Create the logger middleware but wrap it to check debug mode
 	fiberLogger := fLogger.New()

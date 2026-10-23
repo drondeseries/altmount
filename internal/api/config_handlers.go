@@ -11,10 +11,10 @@ import (
 	"time"
 
 	"github.com/gofiber/fiber/v2"
+	"github.com/javi11/nntppool/v5"
 	"github.com/kipsilabs/altmount/internal/auth"
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/slogutil"
-	"github.com/javi11/nntppool/v5"
 )
 
 // ConfigManager interface defines methods for configuration management
@@ -237,7 +237,7 @@ func (s *Server) handlePatchConfigSection(c *fiber.Ctx) error {
 				newConfig.Providers[i].Password = oldPwdByID[newConfig.Providers[i].ID]
 			}
 		}
-	case "webdav", "api", "auth", "database", "metadata", "streaming", "health", "rclone", "import", "log", "sabnzbd", "arrs", "fuse", "segment_cache", "system", "mount_path", "mount", "stremio", "network", "par2_repair":
+	case "webdav", "api", "auth", "database", "metadata", "streaming", "health", "rclone", "import", "log", "sabnzbd", "arrs", "fuse", "segment_cache", "system", "mount_path", "mount", "stremio", "network", "par2_repair", "library":
 		err = c.BodyParser(newConfig)
 		// BodyParser will map fields like "profiler_enabled" from JSON to the root of newConfig
 		// because Config struct has it with `json:"profiler_enabled"`.
@@ -502,6 +502,7 @@ func (s *Server) handleTestProvider(c *fiber.Ctx) error {
 //	@Failure		400		{object}	APIResponse
 //	@Security		BearerAuth
 //	@Router			/providers [post]
+//
 // nextProviderID picks the lowest-numbered "provider_N" id not already used
 // by an existing provider. Providers can be deleted, so the next free index
 // is not simply len(existing)+1 — that can collide with a surviving provider.

@@ -81,6 +81,15 @@ func (s *StremioCleanupService) cleanupExpired(ctx context.Context) {
 	for _, item := range items {
 		s.deleteItem(ctx, item)
 	}
+	// Unsave snapshots survive queue clearing and receive at least 24 hours of grace.
+	if releases, err := s.queueRepo.LibraryReleases(ctx); err == nil {
+		for _, release := range releases {
+			if !release.Saved && release.ExpiresAt <= time.Now().Unix() {
+				s.deleteItem(ctx, &release.Snapshot)
+				_ = s.queueRepo.DeleteExpiredLibraryReference(ctx, release.ID)
+			}
+		}
+	}
 
 	if len(items) > 0 {
 		slog.InfoContext(ctx, "StremioCleanup: cleaned up expired items", "count", len(items))
@@ -88,6 +97,16 @@ func (s *StremioCleanupService) cleanupExpired(ctx context.Context) {
 }
 
 func (s *StremioCleanupService) deleteItem(ctx context.Context, item *database.ImportQueueItem) {
+	database.LibraryAssetMu.Lock()
+	defer database.LibraryAssetMu.Unlock()
+	storage := ""
+	if item.StoragePath != nil {
+		storage = *item.StoragePath
+	}
+	if s.queueRepo.LibraryAssetProtected(ctx, item.NzbPath, storage) {
+		return
+	}
+
 	files := s.itemFiles(item)
 	if linked := s.libraryLinkedFile(ctx, files); linked != "" {
 		// An ARR imported this very file, so the library's symlink points at
@@ -100,7 +119,6 @@ func (s *StremioCleanupService) deleteItem(ctx context.Context, item *database.I
 		}
 		return
 	}
-
 	if item.StoragePath != nil && *item.StoragePath != "" {
 		storagePath := *item.StoragePath
 		if s.metadataService.DirectoryExists(storagePath) {

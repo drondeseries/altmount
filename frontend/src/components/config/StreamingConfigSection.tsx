@@ -199,9 +199,9 @@ export function StreamingConfigSection({
 								<div className="min-w-0">
 									<h5 className="font-bold text-base-content text-xs">Failure Threshold</h5>
 									<p className="mt-1 break-words text-[10px] text-base-content/50 leading-relaxed">
-										Number of consecutive failures required before hiding the file from the
-										library and requesting repair. 1 acts immediately; higher values tolerate
-										more transient hiccups.
+										Number of consecutive failures required before hiding the file from the library
+										and requesting repair. 1 acts immediately; higher values tolerate more transient
+										hiccups.
 									</p>
 								</div>
 								<div className="flex shrink-0 items-center gap-3">
@@ -245,9 +245,9 @@ export function StreamingConfigSection({
 								<div className="min-w-0 flex-1 text-[11px] leading-relaxed opacity-80">
 									<span className="font-bold">What happens at each stage: </span>
 									failures below the threshold are counted and the file is queued for a health
-									recheck. At the threshold the file is hidden from the library (MASKED badge on
-									the Health page) and repair is requested when health repair is enabled. Unmask
-									from the Health page to clear the mask and request verification.
+									recheck. At the threshold the file is hidden from the library (MASKED badge on the
+									Health page) and repair is requested when health repair is enabled. Unmask from
+									the Health page to clear the mask and request verification.
 								</div>
 							</div>
 						</div>

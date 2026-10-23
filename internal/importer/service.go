@@ -239,6 +239,11 @@ func (s *Service) GetPostProcessor() *postprocessor.Coordinator {
 	return s.postProcessor
 }
 
+// ImportCompletedHook runs after a queue item is marked completed. It must
+// be fast and never fail the import; implementations should detach and run
+// best-effort work (e.g. saved-library auto-save) asynchronously.
+type ImportCompletedHook func(ctx context.Context, queueID int64)
+
 // Service provides NZB import functionality with manual directory scanning and queue-based processing
 type Service struct {
 	config          ServiceConfig
@@ -254,6 +259,7 @@ type Service struct {
 	configGetter    config.ConfigGetter           // Config getter for dynamic configuration access
 	sabnzbdClient   *sabnzbd.SABnzbdClient        // SABnzbd client for fallback
 	arrsService     *arrs.Service                 // ARRs service for triggering scans
+	completedHook   ImportCompletedHook           // Optional post-completion hook (e.g. library auto-save)
 	healthRepo      *database.HealthRepository    // Health repository for updating health status
 	broadcaster     *progress.ProgressBroadcaster // WebSocket progress broadcaster
 	userRepo        *database.UserRepository      // User repository for API key lookup
@@ -371,8 +377,17 @@ func NewService(config ServiceConfig, metadataService *metadata.MetadataService,
 	return service, nil
 }
 
-// AddImportHistory records a successful file import in persistent history
+// AddImportHistory records a successful file import in persistent history.
+// The history row inherits the queue item's indexer when the processor did
+// not resolve one: without this, backfill lookups by download_id find a NULL
+// indexer even though the queue row knew it (issue: import_history.indexer
+// almost entirely NULL).
 func (s *Service) AddImportHistory(ctx context.Context, history *database.ImportHistory) error {
+	if (history.Indexer == nil || *history.Indexer == "") && history.NzbID != nil {
+		if item, err := s.database.Repository.GetQueueItem(ctx, *history.NzbID); err == nil && item != nil && item.Indexer != nil && *item.Indexer != "" {
+			history.Indexer = item.Indexer
+		}
+	}
 	return s.database.Repository.AddImportHistory(ctx, history)
 }
 
@@ -615,6 +630,15 @@ func (s *Service) SetArrsService(service any) {
 	if s.postProcessor != nil {
 		s.postProcessor.SetArrsService(as)
 	}
+}
+
+// SetImportCompletedHook registers a callback invoked after a queue item is
+// marked completed. The hook runs in its own goroutine with a detached
+// context so slow observers never stall import workers.
+func (s *Service) SetImportCompletedHook(hook ImportCompletedHook) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.completedHook = hook
 }
 
 // GetQueueStats returns current queue statistics from database
@@ -1436,6 +1460,16 @@ func (s *Service) handleProcessingSuccess(ctx context.Context, item *database.Im
 	if s.broadcaster != nil {
 		s.broadcaster.NotifyComplete(int(item.ID), "completed")
 		s.broadcaster.BroadcastQueueChanged()
+	}
+
+	// Fire-and-forget post-completion observers (library auto-save). Detached
+	// context and goroutine: observers must never stall import workers.
+	s.mu.RLock()
+	hook := s.completedHook
+	s.mu.RUnlock()
+	if hook != nil {
+		queueID := item.ID
+		go hook(context.WithoutCancel(ctx), queueID)
 	}
 
 	s.log.InfoContext(ctx, "Successfully processed queue item", "queue_id", item.ID, "file", item.NzbPath)

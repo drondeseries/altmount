@@ -1252,7 +1252,8 @@ func (lsw *LibrarySyncWorker) isLibraryFileEligibleForDeletion(
 		return false, fmt.Sprintf("cannot lstat file: %v", err)
 	}
 
-	if cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+	switch cfg.Import.ImportStrategy {
+	case config.ImportStrategySYMLINK:
 		// Only delete if it's actually a symlink
 		if info.Mode()&os.ModeSymlink == 0 {
 			return false, "not a symlink"
@@ -1284,7 +1285,7 @@ func (lsw *LibrarySyncWorker) isLibraryFileEligibleForDeletion(
 				return false, "import history exists for this file"
 			}
 		}
-	} else if cfg.Import.ImportStrategy == config.ImportStrategySTRM {
+	case config.ImportStrategySTRM:
 		// Only delete if it's actually a .strm file
 		if !strings.HasSuffix(strings.ToLower(file), ".strm") {
 			return false, "not a .strm file"

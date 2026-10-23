@@ -141,6 +141,19 @@ export const HealthTableRow = memo(function HealthTableRow({
 							)}
 						</div>
 						<div className="break-all text-base-content/70 text-sm">{item.file_path}</div>
+						{item.download_id && (
+							<div className="mt-1 flex flex-wrap gap-1">
+								{item.download_id.startsWith("stremio:") ? (
+									<span className="badge badge-info badge-xs" title="Requested by Stremio">
+										Stremio
+									</span>
+								) : (
+									<span className="badge badge-ghost badge-xs" title="Not requested by Stremio">
+										Library
+									</span>
+								)}
+							</div>
+						)}
 					</div>
 				</div>
 			</td>
@@ -167,6 +180,17 @@ export const HealthTableRow = memo(function HealthTableRow({
 							{(parsedMetadata.series?.tvdbId || parsedMetadata.tvdbId) && (
 								<span className="badge badge-ghost badge-xs" title="TVDB ID">
 									TVDBID: {parsedMetadata.series?.tvdbId || parsedMetadata.tvdbId}
+								</span>
+							)}
+							{(parsedMetadata.imdb_id || parsedMetadata.imdbId) && (
+								<span className="badge badge-ghost badge-xs" title="IMDb ID">
+									IMDb: {parsedMetadata.imdb_id || parsedMetadata.imdbId}
+								</span>
+							)}
+							{parsedMetadata.season > 0 && parsedMetadata.episode > 0 && (
+								<span className="badge badge-ghost badge-xs" title="Season and episode">
+									S{String(parsedMetadata.season || 0).padStart(2, "0")}E
+									{String(parsedMetadata.episode || 0).padStart(2, "0")}
 								</span>
 							)}
 							{parsedMetadata.episodeFile?.id && (

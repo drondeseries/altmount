@@ -141,6 +141,19 @@ export const HealthItemCard = memo(function HealthItemCard({
 							<div className="min-w-0 break-all font-bold text-sm">
 								{item.file_path.split("/").pop() || ""}
 							</div>
+							{item.download_id && (
+								<div className="mt-1 flex flex-wrap gap-1">
+									{item.download_id.startsWith("stremio:") ? (
+										<span className="badge badge-info badge-xs" title="Requested by Stremio">
+											Stremio
+										</span>
+									) : (
+										<span className="badge badge-ghost badge-xs" title="Not requested by Stremio">
+											Library
+										</span>
+									)}
+								</div>
+							)}
 						</div>
 
 						{/* Quick Info Pills */}
@@ -304,6 +317,17 @@ export const HealthItemCard = memo(function HealthItemCard({
 													{(meta.series?.tvdbId || meta.tvdbId) && (
 														<span className="badge badge-ghost badge-xs" title="TVDB ID">
 															TVDBID: {meta.series?.tvdbId || meta.tvdbId}
+														</span>
+													)}
+													{(meta.imdb_id || meta.imdbId) && (
+														<span className="badge badge-ghost badge-xs" title="IMDb ID">
+															IMDb: {meta.imdb_id || meta.imdbId}
+														</span>
+													)}
+													{meta.season > 0 && meta.episode > 0 && (
+														<span className="badge badge-ghost badge-xs" title="Season and episode">
+															S{String(meta.season || 0).padStart(2, "0")}E
+															{String(meta.episode || 0).padStart(2, "0")}
 														</span>
 													)}
 													{meta.episodeFile?.id && (

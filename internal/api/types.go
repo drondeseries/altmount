@@ -721,6 +721,7 @@ type HealthItemResponse struct {
 	MaxRepairRetries int                     `json:"max_repair_retries"`
 	Indexer          *string                 `json:"indexer,omitempty"` // Added indexer
 	Metadata         *string                 `json:"metadata,omitempty"`
+	DownloadID       *string                 `json:"download_id,omitempty"`
 	CreatedAt        time.Time               `json:"created_at"`
 	UpdatedAt        time.Time               `json:"updated_at"`
 	ScheduledCheckAt *time.Time              `json:"scheduled_check_at,omitempty"`
@@ -1034,6 +1035,7 @@ func ToHealthItemResponse(item *database.FileHealth) *HealthItemResponse {
 		MaxRepairRetries:      item.MaxRepairRetries,
 		Indexer:               item.Indexer, // Fixed: use pointer directly
 		Metadata:              item.Metadata,
+		DownloadID:            item.DownloadID,
 		CreatedAt:             item.CreatedAt,
 		UpdatedAt:             item.UpdatedAt,
 		ScheduledCheckAt:      item.ScheduledCheckAt,

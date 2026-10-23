@@ -344,7 +344,7 @@ func (c *SonarrV5Client) GetNotificationsContext(ctx context.Context) ([]*sonarr
 }
 
 func (c *SonarrV5Client) AddNotificationContext(ctx context.Context, notif *sonarr.NotificationInput) (*sonarr.NotificationOutput, error) {
-	payload, err := json.Marshal(notif)
+	payload, err := marshalV5Payload(notif)
 	if err != nil {
 		return nil, err
 	}
@@ -357,7 +357,7 @@ func (c *SonarrV5Client) AddNotificationContext(ctx context.Context, notif *sona
 }
 
 func (c *SonarrV5Client) UpdateNotificationContext(ctx context.Context, notif *sonarr.NotificationInput) (*sonarr.NotificationOutput, error) {
-	payload, err := json.Marshal(notif)
+	payload, err := marshalV5Payload(notif)
 	if err != nil {
 		return nil, err
 	}
@@ -379,12 +379,18 @@ func (c *SonarrV5Client) GetDownloadClientsContext(ctx context.Context) ([]*sona
 }
 
 func (c *SonarrV5Client) AddDownloadClientContext(ctx context.Context, dc *sonarr.DownloadClientInput) (*sonarr.DownloadClientOutput, error) {
-	payload, err := json.Marshal(dc)
+	payload, err := marshalV5Payload(dc)
 	if err != nil {
 		return nil, err
 	}
 	var out sonarr.DownloadClientOutput
-	req := starr.Request{URI: "/api/v5/downloadclient", Body: bytes.NewReader(payload)}
+	// forceSave mirrors starr's own Add (which sends ?forceSave=true): persist
+	// the client even if Sonarr's immediate reachability test fails, so
+	// AltMount's follow-up verification step reports the real error instead of
+	// registration never landing at all.
+	params := make(url.Values)
+	params.Set("forceSave", "true")
+	req := starr.Request{URI: "/api/v5/downloadclient", Query: params, Body: bytes.NewReader(payload)}
 	if err := c.cfg.PostInto(ctx, req, &out); err != nil {
 		return nil, err
 	}
@@ -392,7 +398,7 @@ func (c *SonarrV5Client) AddDownloadClientContext(ctx context.Context, dc *sonar
 }
 
 func (c *SonarrV5Client) UpdateDownloadClientContext(ctx context.Context, dc *sonarr.DownloadClientInput, force bool) (*sonarr.DownloadClientOutput, error) {
-	payload, err := json.Marshal(dc)
+	payload, err := marshalV5Payload(dc)
 	if err != nil {
 		return nil, err
 	}
@@ -414,13 +420,48 @@ func (c *SonarrV5Client) UpdateDownloadClientContext(ctx context.Context, dc *so
 }
 
 func (c *SonarrV5Client) TestDownloadClientContext(ctx context.Context, dc *sonarr.DownloadClientInput) error {
-	payload, err := json.Marshal(dc)
+	payload, err := marshalV5Payload(dc)
 	if err != nil {
 		return err
 	}
 	return c.postNoContent(ctx, "/api/v5/downloadclient/test", bytes.NewReader(payload))
 }
 
+// marshalV5Payload encodes an ARR input while guaranteeing that array-valued
+// keys Sonarr v5 validates are present as JSON arrays rather than null/absent.
+//
+// starr's input structs disagree on these fields: DownloadClientInput declares
+// `json:"tags"` and `json:"fields"` without omitempty, so a nil slice becomes
+// `null`, while NotificationInput declares `json:"tags,omitempty"`, so an
+// empty slice disappears from the payload entirely. Sonarr v5 requires arrays
+// and answers 400 "The ... field is required" for null or absent, so normalize
+// here rather than relying on every caller to pre-seed the slices.
+func marshalV5Payload(v any) ([]byte, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return nil, err
+	}
+
+	// tags is always required by Sonarr v5, even when the struct omitted it.
+	if tags, ok := payload["tags"]; !ok || string(tags) == "null" {
+		payload["tags"] = json.RawMessage("[]")
+	}
+
+	// fields is only normalized when the struct models it (a null there would
+	// also be rejected); payloads without a fields concept are left alone.
+	if fields, ok := payload["fields"]; ok && string(fields) == "null" {
+		payload["fields"] = json.RawMessage("[]")
+	}
+
+	return json.Marshal(payload)
+}
+
+// translateV5URI maps any v3-style or bare URI onto the v5 surface.
 func translateV5URI(uri string) string {
 	clean := strings.TrimPrefix(uri, "/")
 	if strings.HasPrefix(clean, "api/v3/") {

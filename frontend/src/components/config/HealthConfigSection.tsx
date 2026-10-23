@@ -310,7 +310,9 @@ export function HealthConfigSection({
 							</h5>
 							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Base Interval (Minutes)</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Base Interval (Minutes)
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -331,7 +333,9 @@ export function HealthConfigSection({
 								</fieldset>
 
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Max Cooldown (Hours)</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Max Cooldown (Hours)
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -357,7 +361,9 @@ export function HealthConfigSection({
 							</h5>
 							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Max Repair Retries</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Max Repair Retries
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -711,9 +717,8 @@ export function HealthConfigSection({
 								</div>
 							</div>
 							<p className="break-words text-[10px] text-base-content/50">
-								Cleanup aborts when more than this share of metadata looks orphaned
-								(default 20%). Set to 100% to clear a verified backlog, run two syncs,
-								then restore the default.
+								Cleanup aborts when more than this share of metadata looks orphaned (default 20%).
+								Set to 100% to clear a verified backlog, run two syncs, then restore the default.
 							</p>
 						</div>
 					)}
@@ -755,14 +760,15 @@ export function HealthConfigSection({
 								{dryRunResult.orphan_candidates !== undefined && (
 									<p className="break-words font-mono text-[11px] text-base-content/70">
 										{dryRunResult.orphan_candidates} metadata orphans (
-										{((dryRunResult.orphan_ratio ?? 0) * 100).toFixed(1)}% of scanned,
-										limit {((dryRunResult.orphan_max_ratio ?? 0.2) * 100).toFixed(0)}%)
+										{((dryRunResult.orphan_ratio ?? 0) * 100).toFixed(1)}% of scanned, limit{" "}
+										{((dryRunResult.orphan_max_ratio ?? 0.2) * 100).toFixed(0)}%)
 										{dryRunResult.lib_orphan_candidates !== undefined &&
 											dryRunResult.lib_orphan_candidates > 0 && (
 												<>
-													{" "}+ {dryRunResult.lib_orphan_candidates} library orphans (
-													{((dryRunResult.lib_orphan_ratio ?? 0) * 100).toFixed(1)}% of
-													library files)
+													{" "}
+													+ {dryRunResult.lib_orphan_candidates} library orphans (
+													{((dryRunResult.lib_orphan_ratio ?? 0) * 100).toFixed(1)}% of library
+													files)
 												</>
 											)}
 									</p>
@@ -1046,7 +1052,9 @@ export function HealthConfigSection({
 									</p>
 								</fieldset>
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Read Timeout (Sec)</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Read Timeout (Sec)
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1076,7 +1084,9 @@ export function HealthConfigSection({
 							</h5>
 							<div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2">
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Parallel Processing</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Parallel Processing
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1096,7 +1106,9 @@ export function HealthConfigSection({
 									</p>
 								</fieldset>
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Sync Interval (Minutes)</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Sync Interval (Minutes)
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1137,7 +1149,9 @@ export function HealthConfigSection({
 									</p>
 								</fieldset>
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Sync Concurrency</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Sync Concurrency
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"
@@ -1196,7 +1210,9 @@ export function HealthConfigSection({
 									</p>
 								</fieldset>
 								<fieldset className="fieldset min-w-0 rounded-xl border border-base-300/60 bg-base-100/40 p-4">
-									<legend className="fieldset-legend px-1 font-semibold text-xs">Check Batch Size</legend>
+									<legend className="fieldset-legend px-1 font-semibold text-xs">
+										Check Batch Size
+									</legend>
 									<input
 										type="number"
 										className="input input-bordered w-full bg-base-100 font-mono text-sm"

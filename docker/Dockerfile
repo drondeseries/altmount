@@ -34,11 +34,19 @@ RUN --mount=type=cache,target=/tmp/bun-build-cache,sharing=locked \
     bun run build
 
 # Backend build stage with native arch support (no cross-compilation)
-FROM golang:1.27-alpine AS backend-builder
+FROM golang:1.27-bookworm AS backend-builder
 
 # Install build dependencies including sqlite with cache mount
-RUN --mount=type=cache,target=/var/cache/apk,sharing=locked \
-    apk add --no-cache git gcc g++ musl-dev sqlite-dev
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+        git \
+        gcc \
+        g++ \
+        libc6-dev \
+        libsqlite3-dev && \
+    rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /app

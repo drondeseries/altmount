@@ -8,8 +8,7 @@ import (
 	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
 )
 
-// sampleProofPattern matches filenames containing "sample" or "proof" as a standalone word.
-var sampleProofPattern = fileinfo.SampleProofPattern
+
 
 // isSampleOrProof checks if a filename looks like a sample or proof file
 func isSampleOrProof(filename string, size int64) bool {

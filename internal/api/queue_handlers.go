@@ -28,8 +28,10 @@ import (
 // Missing files are ignored; other errors are logged so the caller can still
 // report the DB deletion as successful.
 func (s *Server) removeQueueNzbFiles(c *fiber.Ctx, paths []string) {
+	database.LibraryAssetMu.Lock()
+	defer database.LibraryAssetMu.Unlock()
 	for _, p := range paths {
-		if p == "" {
+		if p == "" || s.queueRepo.LibraryAssetProtected(c.Context(), p, "") {
 			continue
 		}
 		if err := os.Remove(p); err != nil && !os.IsNotExist(err) {

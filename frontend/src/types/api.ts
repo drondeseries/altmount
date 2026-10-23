@@ -219,6 +219,7 @@ export interface FileHealth {
 	is_masked: boolean;
 	indexer?: string;
 	metadata?: string;
+	download_id?: string;
 }
 
 // Only active jobs exist: finished repairs are translated to the file's

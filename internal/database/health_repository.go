@@ -2194,6 +2194,111 @@ func (r *HealthRepository) GetFilesByPaths(ctx context.Context, filePaths []stri
 	return files, nil
 }
 
+// GetHealthStatusByDownloadIDs returns the worst file_health status per
+// download ID for the given IDs in a single query. Unknown IDs are absent
+// from the map. Severity order (worst wins): corrupted > degraded >
+// repair_triggered > checking > pending > healthy.
+func (r *HealthRepository) GetHealthStatusByDownloadIDs(ctx context.Context, downloadIDs []string) (map[string]HealthStatus, error) {
+	out := map[string]HealthStatus{}
+	uniq := make([]string, 0, len(downloadIDs))
+	seen := map[string]struct{}{}
+	for _, id := range downloadIDs {
+		if id == "" {
+			continue
+		}
+		if _, dup := seen[id]; dup {
+			continue
+		}
+		seen[id] = struct{}{}
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out, nil
+	}
+	placeholders := make([]string, len(uniq))
+	args := make([]any, len(uniq))
+	for i, id := range uniq {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := r.db.QueryContext(ctx, fmt.Sprintf(
+		`SELECT download_id, status FROM file_health WHERE download_id IN (%s)`,
+		strings.Join(placeholders, ",")), args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query health by download IDs: %w", err)
+	}
+	defer rows.Close()
+	rank := map[HealthStatus]int{
+		HealthStatusHealthy:         0,
+		HealthStatusPending:         1,
+		HealthStatusChecking:        2,
+		HealthStatusRepairTriggered: 3,
+		HealthStatusDegraded:        4,
+		HealthStatusCorrupted:       5,
+	}
+	for rows.Next() {
+		var id string
+		var status HealthStatus
+		if err := rows.Scan(&id, &status); err != nil {
+			return nil, fmt.Errorf("failed to scan health status: %w", err)
+		}
+		if cur, ok := out[id]; !ok || rank[status] > rank[cur] {
+			out[id] = status
+		}
+	}
+	return out, rows.Err()
+}
+
+// ListHealthyLibraryFiles returns playable file_health records (healthy or
+// degraded) for saved-library backfill, oldest first, bounded by limit.
+// Rows already referenced by library_releases (saved or grace) are excluded
+// so repeated runs converge through large backlogs instead of re-scanning
+// the same prefix. Falls back to the unfiltered shape on pre-043 databases.
+func (r *HealthRepository) ListHealthyLibraryFiles(ctx context.Context, limit int) ([]*FileHealth, error) {
+	if limit <= 0 {
+		limit = 2000
+	}
+	query := fmt.Sprintf(`
+		SELECT fh.id, fh.file_path, fh.library_path, fh.status, fh.metadata, fh.indexer, fh.download_id, fh.source_nzb_path
+		FROM file_health fh
+		LEFT JOIN library_releases lr ON lr.file_health_id = fh.id
+		WHERE fh.status IN ('healthy','degraded') AND lr.id IS NULL
+		ORDER BY fh.file_path ASC
+		LIMIT %d
+	`, limit)
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") || strings.Contains(msg, "does not exist") ||
+			strings.Contains(msg, "undefined table") || strings.Contains(msg, "unknown table") ||
+			strings.Contains(msg, "no such column") || strings.Contains(msg, "column") {
+			legacy, lerr := r.db.QueryContext(ctx, fmt.Sprintf(`
+				SELECT id, file_path, library_path, status, metadata, indexer, download_id, source_nzb_path
+				FROM file_health
+				WHERE status IN ('healthy','degraded')
+				ORDER BY file_path ASC
+				LIMIT %d
+			`, limit))
+			if lerr != nil {
+				return nil, fmt.Errorf("failed to query healthy library files: %w", err)
+			}
+			rows = legacy
+		} else {
+			return nil, fmt.Errorf("failed to query healthy library files: %w", err)
+		}
+	}
+	defer rows.Close()
+	var out []*FileHealth
+	for rows.Next() {
+		var h FileHealth
+		if err := rows.Scan(&h.ID, &h.FilePath, &h.LibraryPath, &h.Status, &h.Metadata, &h.Indexer, &h.DownloadID, &h.SourceNzbPath); err != nil {
+			return nil, fmt.Errorf("failed to scan healthy library file: %w", err)
+		}
+		out = append(out, &h)
+	}
+	return out, rows.Err()
+}
+
 // GetFilesForLibrarySync returns all health records to verify their physical presence in the library
 func (r *HealthRepository) GetFilesForLibrarySync(ctx context.Context) ([]*FileHealth, error) {
 	query := `

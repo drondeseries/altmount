@@ -209,7 +209,7 @@ func (mvf *MetadataVirtualFile) reportStreamingFailure(rep *streamingFailureRepo
 // Returns nil for ineligible files or non-hole failures (yEnc corruption,
 // pool errors), which follow the plain corruption path.
 func (mvf *MetadataVirtualFile) classifyStreamingFailure(dcErr *usenet.DataCorruptionError, snap ...*streamingFailureSnapshot) *holes.Impact {
-	if snap != nil && len(snap) > 0 && snap[0] != nil {
+	if len(snap) > 0 && snap[0] != nil {
 		return mvf.classifyStreamingFailureWithSnapshot(dcErr, snap[0])
 	}
 	if !mvf.holeEligible() || !usenet.IsArticleNotFound(dcErr.UnderlyingErr) {

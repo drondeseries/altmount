@@ -1176,12 +1176,12 @@ func (r *Repository) UpdateQueueItemsPriorityBulk(ctx context.Context, ids []int
 func (r *Repository) AddImportHistory(ctx context.Context, history *ImportHistory) error {
 	virtualPath := normalizeHealthPath(history.VirtualPath)
 	query := `
-		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, indexer, completed_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+		INSERT INTO import_history (download_id, nzb_id, nzb_name, file_name, file_size, virtual_path, category, metadata, indexer, completed_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
 	`
 	_, err := r.db.ExecContext(ctx, query,
 		history.DownloadID, history.NzbID, history.NzbName, history.FileName, history.FileSize,
-		virtualPath, history.Category, history.Indexer)
+		virtualPath, history.Category, history.Metadata, history.Indexer)
 	if err != nil {
 		return fmt.Errorf("failed to add import history: %w", err)
 	}
@@ -2266,13 +2266,33 @@ func (r *Repository) GetExpiredStremioQueueItems(ctx context.Context, ttlHours i
 		WHERE status = 'completed'
 		  AND completed_at < %s
 		  AND download_id LIKE 'stremio:%%'
+		  AND NOT EXISTS (
+		      SELECT 1 FROM library_releases lr
+		      WHERE lr.queue_id = import_queue.id AND (lr.saved = 1 OR lr.expires_at > %d)
+		  )
 		ORDER BY completed_at ASC
 		LIMIT 100
-	`, cutoffExpr)
+	`, cutoffExpr, time.Now().Unix())
 
 	rows, err := r.db.QueryContext(ctx, query)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query expired stremio queue items: %w", err)
+		msg := strings.ToLower(err.Error())
+		if strings.Contains(msg, "no such table") || strings.Contains(msg, "does not exist") || strings.Contains(msg, "undefined table") || strings.Contains(msg, "unknown table") {
+			fallback := fmt.Sprintf(`
+		SELECT id, download_id, nzb_path, relative_path, category, priority, status, created_at, updated_at,
+		       started_at, completed_at, retry_count, max_retries, error_message, batch_id, metadata, file_size, storage_path, target_path
+		FROM import_queue
+		WHERE status = 'completed'
+		  AND completed_at < %s
+		  AND download_id LIKE 'stremio:%%'
+		ORDER BY completed_at ASC
+		LIMIT 100
+	`, cutoffExpr)
+			rows, err = r.db.QueryContext(ctx, fallback)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to query expired stremio queue items: %w", err)
+		}
 	}
 	defer rows.Close()
 

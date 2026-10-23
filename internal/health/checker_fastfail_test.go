@@ -7,11 +7,11 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/javi11/nntppool/v5"
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
 	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/testsupport/fakepool"
-	"github.com/javi11/nntppool/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

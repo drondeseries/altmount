@@ -53,6 +53,16 @@ import type {
 	ProviderUpdateRequest,
 } from "../types/config";
 
+import {
+	type LibraryDetail,
+	type LibraryDigestResponse,
+	type LibraryMediaType,
+	type LibraryRelease,
+	type LibraryTitle,
+	type LibraryTitleResponse,
+	libraryTitleFromDigest,
+	libraryTitleFromResponse,
+} from "../types/library";
 import type { UpdateChannel, UpdateStatusResponse } from "../types/update";
 
 export interface LogEntry {
@@ -154,7 +164,10 @@ class APIClient {
 
 			const data: APIResponse<T> = await response.json();
 
-			if (!data.success) {
+			// Library handlers use a data-only envelope; explicit failures still fail.
+			const libraryDataEnvelope =
+				endpoint.startsWith("/library") && data.success === undefined && "data" in data;
+			if (!data.success && !libraryDataEnvelope) {
 				// Handle error in the success=false format
 				const errorMessage =
 					(typeof data.error === "object" ? data.error?.message : data.error) ||
@@ -170,6 +183,58 @@ class APIClient {
 			}
 			throw new APIError(0, error instanceof Error ? error.message : "Network error", "");
 		}
+	}
+
+	async getLibrary(params?: { stremioOnly?: boolean }): Promise<LibraryTitle[]> {
+		const query = params?.stremioOnly ? "?stremio_only=1" : "";
+		const titles = await this.request<LibraryTitleResponse[]>(`/library${query}`);
+		return (titles || []).map(libraryTitleFromResponse);
+	}
+
+	/** Compact grid payload: identity + artwork + filter/sort aggregates, no metadata blob. */
+	async getLibraryDigest(): Promise<LibraryTitle[]> {
+		const digests = await this.request<LibraryDigestResponse[]>("/library?stremio_only=1&digest=1");
+		return (digests || []).map(libraryTitleFromDigest);
+	}
+
+	getRecentLibraryReleases(params?: { stremioOnly?: boolean }): Promise<LibraryRelease[]> {
+		const query = params?.stremioOnly ? "?stremio_only=1" : "";
+		return this.request(`/library/recent${query}`);
+	}
+
+	async getLibraryDetail(type: LibraryMediaType, imdbID: string): Promise<LibraryDetail> {
+		return libraryTitleFromResponse(
+			await this.request<LibraryTitleResponse>(`/library/${type}/${encodeURIComponent(imdbID)}`),
+		);
+	}
+
+	saveLibraryRelease(queueID: number): Promise<LibraryRelease> {
+		return this.request("/library/save", {
+			method: "POST",
+			body: JSON.stringify({ queue_id: queueID }),
+		});
+	}
+
+	unsaveLibraryRelease(id: number): Promise<void> {
+		return this.request(`/library/releases/${id}`, { method: "DELETE" });
+	}
+
+	importHealthyLibraryFiles(): Promise<{ started?: boolean; running?: boolean }> {
+		return this.request("/library/import-health", { method: "POST" });
+	}
+
+	getImportHealthStatus(): Promise<{
+		running: boolean;
+		imported: number;
+		skipped: number;
+		refreshed?: number;
+		relinked?: number;
+		posters?: number;
+		complete: boolean;
+		error: string;
+		updatedAt: number;
+	}> {
+		return this.request("/library/import-health/status");
 	}
 
 	private async requestWithMeta<T>(

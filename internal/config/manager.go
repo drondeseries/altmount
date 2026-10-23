@@ -65,6 +65,7 @@ type Config struct {
 	SABnzbd      SABnzbdConfig      `yaml:"sabnzbd" mapstructure:"sabnzbd" json:"sabnzbd"`
 	Arrs         ArrsConfig         `yaml:"arrs" mapstructure:"arrs" json:"arrs"`
 	Stremio      StremioConfig      `yaml:"stremio" mapstructure:"stremio" json:"stremio"`
+	Library      LibraryConfig      `yaml:"library" mapstructure:"library" json:"library"`
 	Fuse         FuseConfig         `yaml:"fuse" mapstructure:"fuse" json:"fuse"`
 	SegmentCache SegmentCacheConfig `yaml:"segment_cache" mapstructure:"segment_cache" json:"segment_cache"`
 	Providers    []ProviderConfig   `yaml:"providers" mapstructure:"providers" json:"providers"`
@@ -454,6 +455,22 @@ type StremioConfig struct {
 	// Import.FailedItemRetentionHours. Set to 0 to exclude for as long as the record
 	// survives. Defaults to 24 hours.
 	FailedReleaseTTLHours int `yaml:"failed_release_ttl_hours" mapstructure:"failed_release_ttl_hours" json:"failed_release_ttl_hours"`
+	// LibraryAutoSave automatically pins completed imports into the saved library
+	// (protecting them from TTL cleanup) without an explicit Save action.
+	// One of "off", "stremio" (Stremio plays only), "arrs" (SABnzbd/ARR
+	// post-processing imports carrying series_title/movie_title only), or "all"
+	// (every completed import with storage). Defaults to "off".
+	//
+	// Deprecated: use the top-level library section instead. Still honored as
+	// a fallback for configs written before that section existed.
+	LibraryAutoSave string `yaml:"library_auto_save" mapstructure:"library_auto_save" json:"library_auto_save,omitempty"`
+	// LibraryAutoImportHealth, when true, periodically pins playable local
+	// library files (healthy file_health records) into the saved library so
+	// the browsable collection stays in sync. Defaults to false.
+	//
+	// Deprecated: use the top-level library section instead. Still honored as
+	// a fallback for configs written before that section existed.
+	LibraryAutoImportHealth *bool `yaml:"library_auto_import_health" mapstructure:"library_auto_import_health" json:"library_auto_import_health,omitempty"`
 	// MaxFallbackReleases caps how many *extra* releases a single play request may try
 	// after the first one fails. Set to 0 to disable fallback. Defaults to 2.
 	MaxFallbackReleases int `yaml:"max_fallback_releases" mapstructure:"max_fallback_releases" json:"max_fallback_releases"`
@@ -502,6 +519,109 @@ func (s StremioConfig) EffectiveIncludeLibraryStreams() bool {
 		return true
 	}
 	return *s.IncludeLibraryStreams
+}
+
+// EffectiveLibraryAutoSave normalizes the saved-library auto-save scope to one
+// of "off", "stremio", "arrs" or "all". Unknown values fail closed to "off".
+func (s StremioConfig) EffectiveLibraryAutoSave() string {
+	switch strings.ToLower(strings.TrimSpace(s.LibraryAutoSave)) {
+	case "stremio", "arrs", "all":
+		return strings.ToLower(strings.TrimSpace(s.LibraryAutoSave))
+	default:
+		return "off"
+	}
+}
+
+// EffectiveLibraryAutoImportHealth reports whether playable local library
+// files should be periodically pinned into the saved library. Defaults to false.
+func (s StremioConfig) EffectiveLibraryAutoImportHealth() bool {
+	return s.LibraryAutoImportHealth != nil && *s.LibraryAutoImportHealth
+}
+
+// LibraryConfig governs the saved NZB library: explicit saves plus
+// automatic pinning of completed imports and healthy local files.
+type LibraryConfig struct {
+	// AutoSave automatically pins completed imports into the saved library
+	// (protecting them from TTL cleanup) without an explicit Save action.
+	// One of "off", "stremio" (Stremio plays only), "arrs" (SABnzbd/ARR
+	// post-processing imports carrying series_title/movie_title only), or "all"
+	// (every completed import with storage). Defaults to "off".
+	AutoSave string `yaml:"auto_save" mapstructure:"auto_save" json:"auto_save,omitempty"`
+	// AutoImportHealth, when true, periodically pins playable local library
+	// files (healthy file_health records) into the saved library so the
+	// browsable collection stays in sync. Defaults to false.
+	AutoImportHealth *bool `yaml:"auto_import_health" mapstructure:"auto_import_health" json:"auto_import_health,omitempty"`
+	// RepairIntervalMinutes is the cadence, in minutes, of the automatic
+	// poster/identity repair pass over posterless library titles (ledger
+	// backed: bounded leases, backoff, review parking). Defaults to 10;
+	// 0 disables the automatic pass (the manual import button still runs
+	// one repair pass at the end of its import backfill).
+	RepairIntervalMinutes *int `yaml:"repair_interval_minutes" mapstructure:"repair_interval_minutes" json:"repair_interval_minutes,omitempty"`
+}
+
+// normalizeLibraryAutoSave maps any value to off/stremio/arrs/all.
+func normalizeLibraryAutoSave(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "stremio", "arrs", "all":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "off"
+	}
+}
+
+const (
+	// DefaultLibraryRepairIntervalMinutes is the automatic poster/identity
+	// repair pass cadence when library.repair_interval_minutes is unset.
+	DefaultLibraryRepairIntervalMinutes = 10
+	// MaxLibraryRepairIntervalMinutes bounds the automatic repair cadence to
+	// at most once a day; larger values are clamped instead of rejected so a
+	// typo never disables maintenance outright.
+	MaxLibraryRepairIntervalMinutes = 1440
+)
+
+// normalizeLibraryRepairInterval validates the repair cadence in minutes:
+// 0 explicitly disables the automatic pass, negatives fail safe to the
+// default, and values beyond a day are clamped to it.
+func normalizeLibraryRepairInterval(minutes int) int {
+	switch {
+	case minutes == 0:
+		return 0
+	case minutes < 0:
+		return DefaultLibraryRepairIntervalMinutes
+	case minutes > MaxLibraryRepairIntervalMinutes:
+		return MaxLibraryRepairIntervalMinutes
+	default:
+		return minutes
+	}
+}
+
+// EffectiveLibraryAutoSave reports the auto-save scope, falling back to the
+// deprecated stremio.library_auto_save for configs written before the
+// dedicated library section existed.
+func (c Config) EffectiveLibraryAutoSave() string {
+	if scope := normalizeLibraryAutoSave(c.Library.AutoSave); scope != "off" || c.Library.AutoSave != "" {
+		return scope
+	}
+	return normalizeLibraryAutoSave(c.Stremio.LibraryAutoSave)
+}
+
+// EffectiveLibraryAutoImportHealth reports whether healthy local files are
+// auto-imported, including the deprecated stremio-level fallback.
+func (c Config) EffectiveLibraryAutoImportHealth() bool {
+	if c.Library.AutoImportHealth != nil {
+		return *c.Library.AutoImportHealth
+	}
+	return c.Stremio.EffectiveLibraryAutoImportHealth()
+}
+
+// EffectiveLibraryRepairIntervalMinutes returns the automatic poster/identity
+// repair pass cadence in minutes: default 10, 0 disables, negatives fail safe
+// to the default, values beyond a day clamp to it.
+func (c Config) EffectiveLibraryRepairIntervalMinutes() int {
+	if c.Library.RepairIntervalMinutes == nil {
+		return DefaultLibraryRepairIntervalMinutes
+	}
+	return normalizeLibraryRepairInterval(*c.Library.RepairIntervalMinutes)
 }
 
 // EffectiveFastFailHeaderOnly reports whether Stremio imports should fast-fail
@@ -2253,6 +2373,7 @@ func DefaultConfig(configDir ...string) *Config {
 			NzbTTLHours:           24,
 			FailedReleaseTTLHours: 24,
 			MaxFallbackReleases:   2,
+			LibraryAutoSave:       "off",
 			FastFailHeaderOnly:    &stremioFastFailHeaderOnly,
 			Prowlarr: ProwlarrConfig{
 				Enabled:    &prowlarrEnabled,

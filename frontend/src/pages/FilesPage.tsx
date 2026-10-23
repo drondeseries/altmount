@@ -5,13 +5,16 @@ import {
 	Gamepad2,
 	HardDrive,
 	History,
+	Library,
 	Music,
 	Tv,
 	Wifi,
 	WifiOff,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { FileExplorer } from "../components/files/FileExplorer";
+import { StremioLibrary } from "../components/library/StremioLibrary";
 import { useConfig } from "../hooks/useConfig";
 import { useWebDAVConnection } from "../hooks/useWebDAV";
 
@@ -19,13 +22,34 @@ type FileView = string;
 
 const SECONDARY_SHORTCUTS = [{ id: "recent", title: "Recently Added", icon: History }];
 
+const LIBRARY_SHORTCUT = { id: "library", title: "Stremio Library", icon: Library } as const;
+
 export function FilesPage() {
 	const { data: config } = useConfig();
 	const { isConnected, hasConnectionFailed, connect, isConnecting, connectionError } =
 		useWebDAVConnection();
+	const [searchParams, setSearchParams] = useSearchParams();
 
-	const [activeView, setActiveView] = useState<FileView>("all");
+	const [activeView, setActiveView] = useState<FileView>(() =>
+		searchParams.get("view") === "library" ? "library" : "all",
+	);
+	const showLibrary = config?.stremio?.enabled === true;
+	const secondaryShortcuts = useMemo(
+		() => (showLibrary ? [...SECONDARY_SHORTCUTS, LIBRARY_SHORTCUT] : SECONDARY_SHORTCUTS),
+		[showLibrary],
+	);
 	const [initialPath, setInitialPath] = useState("/");
+
+	// Keep Files Library selection URL-backed so refresh/back preserves it.
+	// When the Stremio Library is disabled, a stale ?view=library URL falls
+	// back to the plain files view instead of showing a hidden page.
+	useEffect(() => {
+		if (searchParams.get("view") === "library" && showLibrary) {
+			setActiveView((current) => (current === "library" ? current : "library"));
+		} else {
+			setActiveView((current) => (current === "library" ? "all" : current));
+		}
+	}, [searchParams, showLibrary]);
 
 	const fileShortcuts = useMemo(() => {
 		const shortcuts = [{ id: "all", title: "All Files", path: "/", icon: Folder }];
@@ -119,22 +143,42 @@ export function FilesPage() {
 		if (path) {
 			setInitialPath(path);
 		}
+		const next = new URLSearchParams(searchParams);
+		if (viewId === "library") next.set("view", "library");
+		else next.delete("view");
+		setSearchParams(next, { replace: true });
 	};
+
+	const isLibraryView = showLibrary && activeView === "library";
 
 	return (
 		<div className="space-y-6">
-			{/* Header */}
+			{/* Header — transfers to Stremio Library when active */}
 			<div className="flex flex-col justify-between gap-4 sm:flex-row sm:items-center">
 				<div className="flex items-center space-x-3">
-					<div className="rounded-xl bg-primary/10 p-2">
-						<HardDrive className="h-8 w-8 text-primary" />
-					</div>
-					<div>
-						<h1 className="font-bold text-3xl tracking-tight">File Explorer</h1>
-						<p className="text-base-content/60 text-sm">
-							Browse and manage your cloud media library
-						</p>
-					</div>
+					{isLibraryView ? (
+						<>
+							<div className="rounded-xl bg-primary/10 p-2">
+								<Library className="h-8 w-8 text-primary" />
+							</div>
+							<div>
+								<p className="font-medium text-primary text-sm">Stremio</p>
+								<h1 className="font-bold text-3xl tracking-tight">Stremio Library</h1>
+							</div>
+						</>
+					) : (
+						<>
+							<div className="rounded-xl bg-primary/10 p-2">
+								<HardDrive className="h-8 w-8 text-primary" />
+							</div>
+							<div>
+								<h1 className="font-bold text-3xl tracking-tight">File Explorer</h1>
+								<p className="text-base-content/60 text-sm">
+									Browse and manage your cloud media library
+								</p>
+							</div>
+						</>
+					)}
 				</div>
 
 				<div className="flex items-center gap-3">
@@ -165,7 +209,7 @@ export function FilesPage() {
 						<div className="card-body p-2 sm:p-4">
 							<div className="space-y-6">
 								<div>
-									<h3 className="mb-2 px-4 font-bold text-base-content/40 text-xs uppercase tracking-widest">
+									<h3 className="mb-2 px-4 font-semibold text-base-content/60 text-xs tracking-wide">
 										Library
 									</h3>
 									<ul className="menu menu-md gap-1 p-0">
@@ -193,11 +237,11 @@ export function FilesPage() {
 								</div>
 
 								<div>
-									<h3 className="mb-2 px-4 font-bold text-base-content/40 text-xs uppercase tracking-widest">
+									<h3 className="mb-2 px-4 font-semibold text-base-content/60 text-xs tracking-wide">
 										Filters
 									</h3>
 									<ul className="menu menu-md gap-1 p-0">
-										{SECONDARY_SHORTCUTS.map((item) => {
+										{secondaryShortcuts.map((item) => {
 											const Icon = item.icon;
 											const isActive = activeView === item.id;
 											return (
@@ -229,16 +273,20 @@ export function FilesPage() {
 					{" "}
 					<div className="card min-h-[600px] border-2 border-base-300/50 bg-base-100 shadow-md">
 						<div className="card-body p-0 sm:p-0">
-							<div className="p-4 sm:p-8">
-								<FileExplorer
-									isConnected={isConnected}
-									hasConnectionFailed={hasConnectionFailed}
-									isConnecting={isConnecting}
-									connectionError={connectionError}
-									onRetryConnection={handleRetryConnection}
-									initialPath={initialPath}
-									activeView={activeView}
-								/>
+							<div className="p-4 sm:p-8" key={isLibraryView ? "files-library" : "files"}>
+								{isLibraryView ? (
+									<StremioLibrary />
+								) : (
+									<FileExplorer
+										isConnected={isConnected}
+										hasConnectionFailed={hasConnectionFailed}
+										isConnecting={isConnecting}
+										connectionError={connectionError}
+										onRetryConnection={handleRetryConnection}
+										initialPath={initialPath}
+										activeView={activeView}
+									/>
+								)}
 							</div>
 						</div>
 					</div>

@@ -257,7 +257,7 @@ export function FileExplorer({
 			<section className="space-y-4">
 				<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 					<div className="flex-1 overflow-hidden">
-						<div className="flex items-center gap-2 font-bold text-base-content/40 text-xs uppercase tracking-widest">
+						<div className="flex items-center gap-2 font-semibold text-base-content/60 text-xs tracking-wide">
 							{isRecentView ? (
 								<>
 									<History className="h-3 w-3" />
@@ -298,8 +298,8 @@ export function FileExplorer({
 			{/* Search & Filters Section */}
 			<section className="space-y-4">
 				<div className="flex items-center gap-2">
-					<h4 className="font-bold text-base-content/40 text-xs uppercase tracking-widest">
-						Search & Filters
+					<h4 className="font-semibold text-base-content/60 text-xs tracking-wide">
+						Search this folder
 					</h4>
 					<div className="h-px flex-1 bg-base-300" />
 				</div>
@@ -311,7 +311,7 @@ export function FileExplorer({
 						</div>
 						<input
 							type="text"
-							placeholder="Search files..."
+							placeholder="Search this folder..."
 							className="input input-sm w-full bg-base-200/50 pl-10 font-medium"
 							value={searchTerm}
 							onChange={(e) => setSearchTerm(e.target.value)}
@@ -364,9 +364,7 @@ export function FileExplorer({
 			{/* File List Section */}
 			<section className="space-y-4">
 				<div className="flex items-center gap-2">
-					<h4 className="font-bold text-base-content/40 text-xs uppercase tracking-widest">
-						Contents
-					</h4>
+					<h4 className="font-semibold text-base-content/60 text-xs tracking-wide">Contents</h4>
 					<div className="h-px flex-1 bg-base-300" />
 				</div>
 

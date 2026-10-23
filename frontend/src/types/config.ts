@@ -20,6 +20,7 @@ export interface ConfigResponse {
 	sabnzbd: SABnzbdConfig;
 	arrs: ArrsConfig;
 	stremio: StremioConfig;
+	library?: LibraryConfig;
 	providers: ProviderConfig[];
 	user_agent?: string;
 	network: NetworkConfig;
@@ -407,6 +408,7 @@ export interface ConfigUpdateRequest {
 	sabnzbd?: SABnzbdUpdateRequest;
 	arrs?: ArrsConfig;
 	stremio?: Partial<StremioConfig>;
+	library?: Partial<LibraryConfig>;
 	providers?: ProviderUpdateRequest[];
 	user_agent?: string;
 	network?: NetworkConfig;
@@ -614,6 +616,7 @@ export type ConfigSection =
 	| "sabnzbd"
 	| "arrs"
 	| "stremio"
+	| "library"
 	| "network"
 	| "par2_repair"
 	| "system";
@@ -861,6 +864,12 @@ export interface UserAgentInfo {
 	source: string;
 }
 
+// Saved NZB library automation (explicit saves plus auto-save / auto-import)
+export interface LibraryConfig {
+	auto_save?: string;
+	auto_import_health?: boolean;
+}
+
 // Stremio integration configuration
 export interface StremioConfig {
 	enabled: boolean;
@@ -880,6 +889,8 @@ export interface StremioConfig {
 	include_library_streams?: boolean;
 	fast_fail_header_only?: boolean;
 	skip_repair?: boolean;
+	library_auto_save?: string;
+	library_auto_import_health?: boolean;
 	prowlarr: ProwlarrConfig;
 }
 
@@ -1038,6 +1049,14 @@ export const CONFIG_SECTIONS: Record<ConfigSection | "system", ConfigSectionInfo
 			"Upload an NZB for instant stream URLs, or enable the addon to automatically search Prowlarr by IMDB ID and stream results directly from Stremio.",
 		icon: "Tv",
 		canEdit: true,
+	},
+	library: {
+		title: "Saved Library",
+		description:
+			"Automatic pinning of completed NZBs and healthy local files into the browsable saved collection.",
+		icon: "Library",
+		canEdit: true,
+		hidden: true,
 	},
 	network: {
 		title: "Network & User Agent",

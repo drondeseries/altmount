@@ -376,7 +376,7 @@ func (f *nestedTailFile) ReadAt(p []byte, off int64) (int, error) {
 }
 
 func (f *nestedTailFile) Read(p []byte) (int, error) {
-	pos, err := f.File.Seek(0, io.SeekCurrent)
+	pos, err := f.Seek(0, io.SeekCurrent)
 	if err != nil {
 		return 0, err
 	}

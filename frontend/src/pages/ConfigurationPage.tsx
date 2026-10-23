@@ -52,6 +52,7 @@ import type {
 	ConfigSection,
 	HealthConfig,
 	ImportConfig,
+	LibraryConfig,
 	LogFormData,
 	MetadataConfig,
 	NetworkConfig,
@@ -124,6 +125,8 @@ export function ConfigurationPage() {
 		if (section === "rclone" || section === "fuse") return "mount" as ConfigSection;
 		// NZBLNK settings now live inside the Network section
 		if (section === "nzblnk") return "network" as ConfigSection;
+		// Saved Library settings were removed from the UI; fall back to Stremio
+		if (section === "library") return "stremio" as ConfigSection;
 		const validSections = Object.keys(CONFIG_SECTIONS) as (ConfigSection | "system")[];
 		return validSections.includes(section as ConfigSection | "system")
 			? (section as ConfigSection | "system")
@@ -138,6 +141,8 @@ export function ConfigurationPage() {
 			navigate("/config/mount", { replace: true });
 		} else if (section === "nzblnk") {
 			navigate("/config/network", { replace: true });
+		} else if (section === "library") {
+			navigate("/config/stremio", { replace: true });
 		}
 	}, [section, navigate]);
 
@@ -267,6 +272,11 @@ export function ConfigurationPage() {
 				await updateConfigSection.mutateAsync({
 					section: "stremio",
 					config: { stremio: data as unknown as StremioConfig },
+				});
+			} else if (section === "library") {
+				await updateConfigSection.mutateAsync({
+					section: "library",
+					config: { library: data as unknown as LibraryConfig },
 				});
 			} else if (section === "providers") {
 				await updateConfigSection.mutateAsync({
