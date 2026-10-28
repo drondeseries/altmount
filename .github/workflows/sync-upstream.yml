@@ -1,0 +1,64 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 * * * *' # Runs every 1 hour
+  workflow_dispatch:     # Allows manual trigger from GitHub Actions UI
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync-upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Fork
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Add Upstream Remote & Fetch
+        run: |
+          git remote add upstream https://github.com/kipsilabs/altmount.git || git remote set-url upstream https://github.com/kipsilabs/altmount.git
+          git fetch upstream main
+
+      - name: Merge Upstream into Main
+        id: merge
+        run: |
+          # Check if there is anything new from upstream
+          BEHIND_COUNT=$(git rev-list --count HEAD..upstream/main)
+          echo "Commits behind upstream: $BEHIND_COUNT"
+          if [ "$BEHIND_COUNT" -eq 0 ]; then
+            echo "Already up-to-date with upstream/main."
+            echo "merged=noop" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          if git merge --no-edit upstream/main; then
+            echo "merged=true" >> $GITHUB_OUTPUT
+            git push origin main
+          else
+            echo "merged=false" >> $GITHUB_OUTPUT
+            echo "Merge conflicts detected."
+            git add -A
+          fi
+
+      - name: Create PR on Conflict
+        if: steps.merge.outputs.merged == 'false'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          branch: sync/upstream-conflicts
+          title: "⚠️ Upstream Sync: Merge Conflicts Detected"
+          body: |
+            Automated sync with upstream (`kipsilabs/altmount:main`) encountered merge conflicts when trying to merge into `main`.
+            
+            Please resolve the conflicts manually on this branch or pull down and resolve locally.
