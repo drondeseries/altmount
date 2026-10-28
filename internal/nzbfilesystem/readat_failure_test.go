@@ -299,3 +299,86 @@ func TestEncryptedRead_StalledFetch_TimesOut(t *testing.T) {
 		})
 	}
 }
+
+// TestEncryptedRead_MissingIVSegment_CountsStreamingFailure verifies that when
+// an AES-encrypted file fails during reader initialization (e.g. a seek/range
+// read where aesCipher.Open reads the preceding ciphertext block as IV and hits
+// 430 Article Not Found), the error is classified through classifyReadError so
+// streaming failure masking and health repairs are triggered rather than looping
+// silently forever.
+func TestEncryptedRead_MissingIVSegment_CountsStreamingFailure(t *testing.T) {
+	const (
+		segCount = 8
+		segSize  = 1024
+	)
+
+	for _, mode := range []string{"webdav-tail", "fuse-tail", "fuse-seek"} {
+		t.Run(mode, func(t *testing.T) {
+			repo, db, ms := setupStreamHealthEnv(t)
+			ctx := context.Background()
+
+			filePath := "series/encrypted.s01e08.mkv"
+			_, err := db.Exec(
+				`INSERT INTO file_health (file_path, library_path, status, scheduled_check_at, streaming_failure_count)
+				 VALUES (?, ?, 'healthy', datetime('now'), 0)`,
+				filePath, "/media/library/encrypted.s01e08.mkv",
+			)
+			require.NoError(t, err)
+
+			fp := fakepool.New()
+			configurePoolForFile(fp, segCount, segSize, fakepool.SegmentBehavior{})
+
+			healthEnabled := true
+			maskingEnabled := true
+			cfg := config.DefaultConfig()
+			cfg.Health.Enabled = &healthEnabled
+			cfg.Streaming.FailureMasking.Enabled = &maskingEnabled
+			cfg.Streaming.FailureMasking.Threshold = 3
+			cfg.MountPath = ""
+
+			mvf := withConfig(newTestMVF(t, ctx, fp, segCount, segSize, 2), cfg)
+			for i, seg := range mvf.meta.SegmentData {
+				seg.Id = t.Name() + "-" + seg.Id
+				if i >= 3 {
+					// Segments covering offset 4096 and its preceding IV block are missing (430)
+					fp.SetBehavior(seg.Id, fakepool.SegmentBehavior{Err: nntppool.ErrArticleNotFound})
+				} else {
+					fp.SetBehavior(seg.Id, fakepool.SegmentBehavior{Bytes: segments.Payload(i, segSize)})
+				}
+			}
+
+			mvf.name = filePath
+			mvf.healthRepository = repo
+			mvf.metadataService = ms
+			mvf.meta.Encryption = metapb.Encryption_AES
+			mvf.meta.AesKey = make([]byte, 32)
+			mvf.meta.AesIv = make([]byte, 16)
+			mvf.aesCipher = aes.NewAesCipher()
+			mvf.meta.ClipBoundaries = []*metapb.ClipBoundary{{}}
+
+			if mode == "webdav-tail" || mode == "fuse-tail" {
+				_, seekErr := mvf.Seek(4096, io.SeekStart)
+				require.NoError(t, seekErr)
+			}
+
+			buf := make([]byte, 64)
+			var readErr error
+			switch mode {
+			case "webdav-tail":
+				_, readErr = mvf.Read(buf)
+			case "fuse-tail", "fuse-seek":
+				_, readErr = mvf.ReadAtContext(ctx, buf, 4096)
+			}
+			require.Error(t, readErr)
+
+			var corrErr *CorruptedFileError
+			require.ErrorAs(t, readErr, &corrErr, "missing IV segment during AES open must be classified as CorruptedFileError")
+
+			fh, err := repo.GetFileHealth(ctx, filePath)
+			require.NoError(t, err)
+			require.NotNil(t, fh)
+			assert.Equal(t, 1, fh.StreamingFailureCount,
+				"missing IV block on encrypted seek/range open must increment streaming failure count")
+		})
+	}
+}

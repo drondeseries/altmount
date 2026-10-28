@@ -2,6 +2,7 @@ package postprocessor
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -156,15 +157,19 @@ func (c *Coordinator) createAbsoluteSymlink(actualPath, destPath string, pinTime
 		return fmt.Errorf("failed to create parent directory for target symlink: %w", err)
 	}
 
-	// Remove existing symlink if present
-	if _, err := os.Lstat(destPath); err == nil {
-		if err := os.Remove(destPath); err != nil {
-			return fmt.Errorf("failed to remove existing file at target path: %w", err)
-		}
+	// Remove existing symlink/file if present (unconditional remove avoids TOCTOU / FUSE cache misses)
+	if err := os.Remove(destPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("failed to remove existing file at target path: %w", err)
 	}
 
 	if err := os.Symlink(actualPath, destPath); err != nil {
-		return fmt.Errorf("failed to create symlink at target path: %w", err)
+		if errors.Is(err, fs.ErrExist) {
+			_ = os.Remove(destPath)
+			err = os.Symlink(actualPath, destPath)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to create symlink at target path: %w", err)
+		}
 	}
 
 	if pinTimestamp != nil {
@@ -190,16 +195,20 @@ func (c *Coordinator) createSingleSymlink(actualPath, resultingPath string) erro
 
 	symlinkPath := filepath.Join(*cfg.Import.ImportDir, strings.TrimPrefix(resultingPath, "/"))
 
-	// Remove existing symlink if present
-	if _, err := os.Lstat(symlinkPath); err == nil {
-		if err := os.Remove(symlinkPath); err != nil {
-			return fmt.Errorf("failed to remove existing symlink: %w", err)
-		}
+	// Remove existing symlink/file if present (unconditional remove avoids TOCTOU / FUSE cache misses)
+	if err := os.Remove(symlinkPath); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return fmt.Errorf("failed to remove existing symlink: %w", err)
 	}
 
 	// Create the symlink using the absolute actual path
 	if err := os.Symlink(actualPath, symlinkPath); err != nil {
-		return fmt.Errorf("failed to create symlink: %w", err)
+		if errors.Is(err, fs.ErrExist) {
+			_ = os.Remove(symlinkPath)
+			err = os.Symlink(actualPath, symlinkPath)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to create symlink: %w", err)
+		}
 	}
 
 	if cfg.Import.PinSymlinkTimestamp != nil {

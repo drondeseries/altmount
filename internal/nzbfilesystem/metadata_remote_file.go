@@ -1321,7 +1321,7 @@ func (mvf *MetadataVirtualFile) Read(p []byte) (n int, err error) {
 	stalledAt := int64(-1)
 	for n < len(p) {
 		if err := mvf.ensureReader(); err != nil {
-			return n, err
+			return n, mvf.classifyReadError(err, &pending)
 		}
 
 		totalRead, readErr := mvf.reader.Read(p[n:])
@@ -1451,7 +1451,7 @@ func (mvf *MetadataVirtualFile) ReadAtContext(readCtx context.Context, p []byte,
 
 	if useShared {
 		if err := mvf.ensureReader(); err != nil {
-			return 0, err
+			return 0, mvf.classifyReadError(err, &pending)
 		}
 
 		// Forward-skip: discard the gap between the shared reader's current
@@ -1576,7 +1576,7 @@ ephemeral:
 
 	reader, err := mvf.createReaderAtOffset(readCtx, off, end)
 	if err != nil {
-		return 0, err
+		return 0, mvf.classifyReadError(err, &pending)
 	}
 	defer reader.Close()
 
