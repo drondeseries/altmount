@@ -722,6 +722,11 @@ type ImportConfig struct {
 	FilterSampleFiles        *bool          `yaml:"filter_sample_files" mapstructure:"filter_sample_files" json:"filter_sample_files,omitempty"`
 	FailedItemRetentionHours *int           `yaml:"failed_item_retention_hours" mapstructure:"failed_item_retention_hours" json:"failed_item_retention_hours,omitempty"`
 	HistoryRetentionDays     *int           `yaml:"history_retention_days" mapstructure:"history_retention_days" json:"history_retention_days,omitempty"`
+	// PinSymlinkTimestamp, when set to an RFC3339 datetime (e.g.
+	// "2020-01-01T01:00:00Z"), forces every library symlink's mtime/atime to
+	// that fixed value. This prevents media servers (Plex, Jellyfin, etc.) from
+	// treating files as new after a regeneration. Empty/nil = disabled.
+	PinSymlinkTimestamp *string `yaml:"pin_symlink_timestamp" mapstructure:"pin_symlink_timestamp" json:"pin_symlink_timestamp,omitempty"`
 	// VerifyContent, when true, probes each eligible video/audio file's
 	// first bytes through the serving stack after import and fails the
 	// import if no recognized media container signature is found.
@@ -2301,6 +2306,7 @@ func DefaultConfig(configDir ...string) *Config {
 			IsoAnalyzeTimeoutSeconds:    &isoAnalyzeTimeoutSeconds,
 			ImportStrategy:              ImportStrategyNone, // Default: no import strategy (direct import)
 			ImportDir:                   nil,                // No default import directory
+			PinSymlinkTimestamp:         nil,                // Disabled by default
 			WatchDir:                    nil,
 			WatchIntervalSeconds:        &watchIntervalSeconds,
 			FailedItemRetentionHours:    &failedItemRetentionHours,

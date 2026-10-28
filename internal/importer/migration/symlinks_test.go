@@ -266,6 +266,7 @@ func TestRewriteLibrarySymlinks(t *testing.T) {
 				source,
 				tc.lookup,
 				tc.dryRun,
+				nil,
 			)
 
 			if tc.name == "context cancellation stops walk" {
