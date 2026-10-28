@@ -163,9 +163,9 @@ func libraryMatchPath(h *database.FileHealth) string {
 
 // isPlayableLibraryFile reports whether a health record points at a real media
 // file rather than a sample or non-media artifact.
-func isPlayableLibraryFile(h *database.FileHealth) bool {
+func (s *Server) isPlayableLibraryFile(h *database.FileHealth) bool {
 	return h != nil && h.FilePath != "" &&
-		isMediaExtension(filepath.Ext(h.FilePath)) && !isSampleFile(h.FilePath)
+		isMediaExtension(filepath.Ext(h.FilePath)) && !s.isHealthRecordSample(h)
 }
 
 // inspectLibraryReleases returns local library files matching the request as
@@ -214,7 +214,7 @@ func (s *Server) collectLibraryMovies(
 
 	yearNum, _ := strconv.Atoi(meta.Year)
 	for _, h := range healthyFiles {
-		if !isPlayableLibraryFile(h) {
+		if !s.isPlayableLibraryFile(h) {
 			continue
 		}
 		matchPath := libraryMatchPath(h)
@@ -246,7 +246,7 @@ func (s *Server) collectLibraryEpisodes(
 
 	selector := &stremioEpisodeSelector{Season: req.Season, Episode: req.Episode}
 	for _, h := range healthyFiles {
-		if !isPlayableLibraryFile(h) {
+		if !s.isPlayableLibraryFile(h) {
 			continue
 		}
 		matchPath := libraryMatchPath(h)

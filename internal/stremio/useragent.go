@@ -18,19 +18,19 @@ const (
 
 // UserAgentInfo holds the current active user agents and detection metadata.
 type UserAgentInfo struct {
-	TVUserAgent     string    `json:"tv_user_agent"`
-	MovieUserAgent  string    `json:"movie_user_agent"`
-	SonarrVersion   string    `json:"sonarr_version"`
-	RadarrVersion   string    `json:"radarr_version"`
-	LastUpdated     time.Time `json:"last_updated"`
-	Source          string    `json:"source"` // "local_instance", "github_release", "builtin_default"
+	TVUserAgent    string    `json:"tv_user_agent"`
+	MovieUserAgent string    `json:"movie_user_agent"`
+	SonarrVersion  string    `json:"sonarr_version"`
+	RadarrVersion  string    `json:"radarr_version"`
+	LastUpdated    time.Time `json:"last_updated"`
+	Source         string    `json:"source"` // "local_instance", "github_release", "builtin_default"
 }
 
 // UserAgentManager manages dynamic detection and caching of ARR User-Agents.
 type UserAgentManager struct {
-	mu            sync.RWMutex
-	httpClient    *http.Client
-	info          UserAgentInfo
+	mu         sync.RWMutex
+	httpClient *http.Client
+	info       UserAgentInfo
 }
 
 var (
@@ -220,7 +220,8 @@ func (m *UserAgentManager) fetchGitHubReleaseTag(ctx context.Context, repo, user
 }
 
 func (m *UserAgentManager) fetchARRStatus(ctx context.Context, baseURL, apiKey string) (*arrSystemStatusResp, error) {
-	statusURL := fmt.Sprintf("%s/api/v3/system/status", strings.TrimRight(baseURL, "/"))
+	base := strings.TrimRight(baseURL, "/")
+	statusURL := fmt.Sprintf("%s/api/v3/system/status", base)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, statusURL, nil)
 	if err != nil {
 		return nil, err
@@ -233,6 +234,29 @@ func (m *UserAgentManager) fetchARRStatus(ctx context.Context, baseURL, apiKey s
 		return nil, err
 	}
 	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		// Fallback for Sonarr v5 native API
+		v5URL := fmt.Sprintf("%s/api/v5/system/status", base)
+		v5Req, err := http.NewRequestWithContext(ctx, http.MethodGet, v5URL, nil)
+		if err == nil {
+			v5Req.Header.Set("X-Api-Key", apiKey)
+			v5Req.Header.Set("Accept", "application/json")
+			if v5Resp, err := m.httpClient.Do(v5Req); err == nil {
+				defer v5Resp.Body.Close()
+				if v5Resp.StatusCode == http.StatusOK {
+					body, err := io.ReadAll(v5Resp.Body)
+					if err == nil {
+						var status arrSystemStatusResp
+						if err := json.Unmarshal(body, &status); err == nil {
+							return &status, nil
+						}
+					}
+				}
+			}
+		}
+		return nil, fmt.Errorf("system status returned HTTP %d", resp.StatusCode)
+	}
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("system status returned HTTP %d", resp.StatusCode)
