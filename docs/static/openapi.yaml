@@ -4119,9 +4119,26 @@ components:
       type: object
     api.DryRunSyncResult:
       properties:
+        cleanup_blocked_reason:
+          type: string
         database_records_to_clean:
           description: Number of database records to clean
           type: integer
+        orphan_candidates:
+          description: Metadata files looking orphaned this run (pre two-pass)
+          type: integer
+        orphan_max_ratio:
+          description: Configured health.orphan_cleanup_max_ratio
+          type: number
+        orphan_ratio:
+          description: OrphanCandidates / total metadata scanned
+          type: number
+        lib_orphan_candidates:
+          description: Library files without metadata, observed even when cleanup is ineligible
+          type: integer
+        lib_orphan_ratio:
+          description: LibOrphanCandidates / total library files scanned
+          type: number
         orphaned_library_files:
           description: Number of orphaned library files (symlinks/STRM)
           type: integer
@@ -4129,7 +4146,11 @@ components:
           description: Number of orphaned metadata files
           type: integer
         would_cleanup:
-          description: Whether cleanup would occur based on config
+          description: >-
+            Whether cleanup passed all guards (two-pass confirmation still
+            applies). A non-empty cleanup_blocked_reason with
+            would_cleanup=true is informational only (metadata-only "nothing
+            to clean" note).
           type: boolean
       type: object
     api.FileMetadataResponse:
@@ -5536,6 +5557,14 @@ components:
           type: integer
         cleanup_orphaned_metadata:
           type: boolean
+        orphan_cleanup_max_ratio:
+          description: >-
+            OrphanCleanupMaxRatio bounds the fraction of metadata files that
+            may look orphaned in a single library sync before cleanup is
+            aborted as suspicious (a dead mount looks like mass deletion).
+            Valid range is 0-1; 1.0 permits any ratio. nil preserves the
+            historical 0.20 default.
+          type: number
         corrupted_retention_days:
           description: >-
             CorruptedRetentionDays bounds how long the corrupted_metadata safety

@@ -124,12 +124,28 @@ export interface SegmentCacheConfig {
 	memory_mb: number; // in-memory tier of decoded articles; 0 disables
 }
 
+// Tiered recheck schedule for healthy/degraded files. Zero = default
+// (fresh 0-72h every 2h, early 3-7d every 12h, mid 7-30d daily, aged >30d weekly).
+export interface HealthRecheckConfig {
+	fresh_age_hours?: number;
+	fresh_hours?: number;
+	early_age_days?: number;
+	early_hours?: number;
+	mid_age_days?: number;
+	mid_hours?: number;
+	aged_days?: number;
+	min_minutes?: number;
+}
+
 // Health configuration
 export interface HealthConfig {
 	enabled?: boolean;
 	library_dir?: string;
 	cleanup_orphaned_metadata?: boolean;
+	/** Max share (0-1) of metadata that may look orphaned before cleanup aborts; 1.0 permits any ratio. */
+	orphan_cleanup_max_ratio?: number;
 	check_interval_seconds?: number;
+	recheck?: HealthRecheckConfig;
 	/** Max in-flight STAT checks per sweep. 0 or absent = adapt to pool + stream activity. */
 	max_concurrent_segment_checks?: number;
 	/** @deprecated renamed to max_concurrent_segment_checks; migrated automatically. */
@@ -170,12 +186,22 @@ export interface RepairConfig {
 	file_delete_confirm_seconds: number; // Wait for the ARR to report the deleted file record as unlinked; 0 disables
 }
 
-// Dry run result for library sync
+// Dry run result for library sync. would_cleanup reports whether cleanup
+// passed all guards; it does not guarantee any deletion (two-pass
+// confirmation still applies). A non-empty cleanup_blocked_reason with
+// would_cleanup=true is informational only: the metadata-only "nothing to
+// clean" note, never a tripped guard.
 export interface DryRunSyncResult {
 	orphaned_metadata_count: number; // Number of orphaned metadata files
 	orphaned_library_files: number; // Number of orphaned library files (symlinks/STRM)
 	database_records_to_clean: number; // Number of database records to clean
-	would_cleanup: boolean; // Whether cleanup would occur based on config
+	would_cleanup: boolean; // Whether cleanup passed all guards (two-pass confirmation still applies)
+	orphan_candidates?: number;
+	orphan_ratio?: number;
+	orphan_max_ratio?: number;
+	lib_orphan_candidates?: number;
+	lib_orphan_ratio?: number;
+	cleanup_blocked_reason?: string;
 }
 
 // RClone configuration (sanitized)
@@ -282,6 +308,7 @@ export interface ImportConfig {
 	filter_sample_files?: boolean;
 	failed_item_retention_hours?: number | null;
 	history_retention_days?: number | null;
+	pin_symlink_timestamp?: string | null;
 	verify_content?: boolean; // Probe each media file's header for a valid container signature before reporting import success
 	verify_content_timeout_seconds?: number; // Per-file content probe timeout (default 15s)
 }
@@ -438,6 +465,7 @@ export interface HealthUpdateRequest {
 	enabled?: boolean;
 	library_dir?: string;
 	cleanup_orphaned_metadata?: boolean;
+	orphan_cleanup_max_ratio?: number;
 	check_interval_seconds?: number; // Interval in seconds (optional)
 	/** Max in-flight STAT checks per sweep. 0 or absent = adapt to pool + stream activity. */
 	max_concurrent_segment_checks?: number;

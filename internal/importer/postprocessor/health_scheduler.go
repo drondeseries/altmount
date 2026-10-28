@@ -51,11 +51,14 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 	// (.nfo, .srt, ...) would sit permanently ineligible in pending until the
 	// next library sync deletes them, so don't schedule them here. Any sidecar
 	// an ARR does copy into the library is still registered — with a real
-	// library path — by the library sync.
+	// library path — by the library sync. This pre-metadata filter is
+	// extension-only: sample/proof exclusion happens after metadata (with size)
+	// is read below, so a full-length title containing a token (e.g.
+	// "Proof.2005.1080p.mkv") is never dropped here.
 	if cfg.Import.ImportStrategy != config.ImportStrategyNone {
 		media := make([]string, 0, len(paths))
 		for _, p := range paths {
-			if isArrImportableMedia(p) {
+			if isArrImportableMediaExtension(p) {
 				media = append(media, p)
 			}
 		}
@@ -96,16 +99,38 @@ func (c *Coordinator) ScheduleHealthCheck(ctx context.Context, item *database.Im
 		// the batch outlive the loop and do not retain the proto message.
 		filePath := p
 		srcNzb := fileMeta.SourceNzbPath
+
+		// Sample and proof files must never inherit ARR repair authority from the
+		// release (which would cause a corrupted 20MB sample to trigger an ARR redownload
+		// of the entire 50GB release). Under non-NONE strategies the size-aware
+		// check here is authoritative: small clips are excluded from scheduling
+		// entirely (ARRs never import them), and any that slip through (NONE
+		// strategy) are stripped of authority below.
+		if cfg.Import.ImportStrategy != config.ImportStrategyNone && !isArrImportableMedia(p, fileMeta.FileSize) {
+			slog.DebugContext(ctx, "Skipping health check for ancillary sample/proof file",
+				"path", p)
+			continue
+		}
+		fileMetadata := itemMetadata
+		fileDownloadID := downloadID
+		clearAuthority := false
+		if fileinfo.IsSampleOrProof(p, fileMeta.FileSize) {
+			fileMetadata = nil
+			fileDownloadID = nil
+			clearAuthority = true
+		}
+
 		records = append(records, database.HealthCheckUpsert{
-			FilePath:         filePath,
-			LibraryPath:      &filePath,
-			SourceNzbPath:    &srcNzb,
-			Indexer:          indexer,
-			Priority:         database.HealthPriorityNext,
-			MaxRetries:       cfg.GetMaxRetries(),
-			MaxRepairRetries: cfg.GetMaxRepairRetries(),
-			DownloadID:       downloadID,
-			Metadata:         itemMetadata,
+			FilePath:              filePath,
+			LibraryPath:           &filePath,
+			SourceNzbPath:         &srcNzb,
+			Indexer:               indexer,
+			Priority:              database.HealthPriorityNext,
+			MaxRetries:            cfg.GetMaxRetries(),
+			MaxRepairRetries:      cfg.GetMaxRepairRetries(),
+			DownloadID:            fileDownloadID,
+			Metadata:              fileMetadata,
+			ClearReleaseAuthority: clearAuthority,
 		})
 		repairDirs[filepath.Dir(p)] = struct{}{}
 	}
@@ -154,14 +179,26 @@ var arrAudioBookExtensions = map[string]bool{
 	".epub": true, ".pdf": true, ".cbz": true, ".cbr": true, ".mobi": true, ".azw3": true,
 }
 
-// isArrImportableMedia reports whether the virtual path is a media file an ARR could
-// import into the library — i.e. one that can ever be relinked to a real library path
-// by a Download webhook and so become eligible for health checks under SYMLINK/STRM.
-func isArrImportableMedia(p string) bool {
+// isArrImportableMediaExtension reports whether the virtual path has a media
+// extension an ARR could import into the library — i.e. one that can ever be
+// relinked to a real library path by a Download webhook and so become eligible
+// for health checks under SYMLINK/STRM. Extension-only: sample/proof exclusion
+// happens after metadata (with size) is read, so a full-length title token
+// (e.g. "Proof.2005.1080p.mkv") is never dropped here.
+func isArrImportableMediaExtension(p string) bool {
 	if fileinfo.IsVideoFile(p) {
 		return true
 	}
 	return arrAudioBookExtensions[strings.ToLower(path.Ext(p))]
+}
+
+// isArrImportableMedia is the size-aware variant used once metadata is read:
+// extension-eligible and not an ancillary sample/proof clip.
+func isArrImportableMedia(p string, size int64) bool {
+	if !isArrImportableMediaExtension(p) {
+		return false
+	}
+	return !fileinfo.IsSampleOrProof(p, size)
 }
 // expandWrittenPaths resolves "DIR:"-prefixed entries (whole-directory imports such
 // as RAR/7z archives, which only report their NZB folder) into the per-file virtual

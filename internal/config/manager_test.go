@@ -542,3 +542,63 @@ func TestPar2RepairArrFirstDefaultsOn(t *testing.T) {
 	assert.NotNil(t, cfg.Par2Repair.ArrFirst)
 	assert.True(t, *cfg.Par2Repair.ArrFirst)
 }
+
+func TestConfig_Validate_RecheckSchedule(t *testing.T) {
+	t.Run("defaults validate", func(t *testing.T) {
+		c := DefaultConfig()
+		assert.NoError(t, c.Validate())
+	})
+
+	t.Run("inverted ages rejected", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.FreshAgeHours = 200
+		c.Health.Recheck.EarlyAgeDays = 7
+		c.Health.Recheck.MidAgeDays = 30
+		err := c.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "strictly increasing")
+	})
+
+	t.Run("decreasing intervals rejected", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.FreshHours = 24
+		c.Health.Recheck.EarlyHours = 12
+		err := c.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "non-decreasing")
+	})
+
+	t.Run("mid over aged rejected", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.MidHours = 48
+		c.Health.Recheck.AgedDays = 1
+		err := c.Validate()
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "non-decreasing")
+	})
+
+	t.Run("negatives rejected", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.FreshHours = -1
+		assert.Error(t, c.Validate())
+	})
+
+	t.Run("partial config resolves faithfully", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.FreshHours = 3
+		assert.NoError(t, c.Validate())
+		sched := c.GetHealthRecheckSchedule()
+		assert.Equal(t, 3*3600*1000000000, int(sched.Fresh.Nanoseconds()))
+		// Untouched tiers stay default.
+		assert.Equal(t, DefaultRecheckSchedule().Early, sched.Early)
+	})
+
+	t.Run("validate is idempotent", func(t *testing.T) {
+		c := DefaultConfig()
+		c.Health.Recheck.FreshHours = 3
+		assert.NoError(t, c.Validate())
+		first := c.Health.Recheck
+		assert.NoError(t, c.Validate())
+		assert.Equal(t, first, c.Health.Recheck, "second validation must not mutate")
+	})
+}

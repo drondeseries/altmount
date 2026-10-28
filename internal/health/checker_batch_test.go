@@ -3,6 +3,8 @@ package health
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"runtime"
 	"testing"
 
@@ -249,6 +251,37 @@ func TestCheckFile_ParityWithBatch(t *testing.T) {
 	t.Run("metadata missing", func(t *testing.T) {
 		client := fakepool.New()
 		env := newBatchTestEnv(t, t.TempDir(), client)
+
+		// Seed the root with a live file first: confirmed-removal requires
+		// a demonstrably live metadata root (RootLive), and a fresh empty
+		// root is indistinguishable from an exposed empty mountpoint —
+		// which must stay inconclusive, never delete tracking.
+		writeHealthyFile(t, env, "complete/sibling.mkv")
+
+		event := env.healthChecker.CheckFile(context.Background(), "complete/never-written.mkv")
+		assert.Equal(t, EventTypeFileRemoved, event.Type)
+	})
+
+	t.Run("metadata missing on empty root stays inconclusive", func(t *testing.T) {
+		client := fakepool.New()
+		env := newBatchTestEnv(t, t.TempDir(), client)
+
+		// Fresh empty root: cannot distinguish "never existed" from
+		// "storage disappeared", so the check must not drop tracking.
+		event := env.healthChecker.CheckFile(context.Background(), "complete/never-written.mkv")
+		assert.Equal(t, EventTypeCheckInconclusive, event.Type)
+	})
+
+	t.Run("sentinel-only root still removes a missing file", func(t *testing.T) {
+		client := fakepool.New()
+		env := newBatchTestEnv(t, t.TempDir(), client)
+
+		// A populated root proves liveness even without a sibling .meta:
+		// the .ids sentinel dir alone is sufficient proof of the backing
+		// store, so a genuinely absent file is still confirmed removed.
+		// (WriteFileMetadata is bypassed to avoid creating any .meta.)
+		metaRoot := env.metadataService.RootPath()
+		require.NoError(t, os.MkdirAll(filepath.Join(metaRoot, ".ids"), 0755))
 
 		event := env.healthChecker.CheckFile(context.Background(), "complete/never-written.mkv")
 		assert.Equal(t, EventTypeFileRemoved, event.Type)

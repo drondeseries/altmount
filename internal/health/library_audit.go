@@ -129,10 +129,13 @@ func (lsw *LibrarySyncWorker) AuditLibrary(ctx context.Context, grace time.Durat
 		GracePeriodSeconds: grace.Seconds(),
 	}
 
-	metaFiles, err := lsw.getAllMetadataFiles(ctx)
+	metaFiles, metaWalkErrs, err := lsw.getAllMetadataFiles(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("scan metadata: %w", err)
 	}
+	// A partial metadata walk must fail closed like any other partial scan:
+	// counts surface into the audit's existing cleanup-block guard.
+	audit.WalkErrors += metaWalkErrs
 	files := make(map[string]bool, len(metaFiles))
 	for _, metaPath := range metaFiles {
 		rel := lsw.metaPathToMountRelativePath(metaPath)

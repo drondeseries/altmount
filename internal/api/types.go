@@ -166,12 +166,13 @@ type ImportAPIResponse struct {
 	ImportDir                 *string               `json:"import_dir"`
 	WatchDir                  *string               `json:"watch_dir"`
 
-	WatchIntervalSeconds        *int  `json:"watch_interval_seconds,omitempty"`
-	AllowNestedRarExtraction    *bool `json:"allow_nested_rar_extraction,omitempty"`
-	RenameToNzbName             *bool `json:"rename_to_nzb_name,omitempty"`
-	FilterSampleFiles           *bool `json:"filter_sample_files,omitempty"`
-	VerifyContent               *bool `json:"verify_content,omitempty"`
-	VerifyContentTimeoutSeconds *int  `json:"verify_content_timeout_seconds,omitempty"`
+	WatchIntervalSeconds        *int    `json:"watch_interval_seconds,omitempty"`
+	AllowNestedRarExtraction    *bool   `json:"allow_nested_rar_extraction,omitempty"`
+	RenameToNzbName             *bool   `json:"rename_to_nzb_name,omitempty"`
+	FilterSampleFiles           *bool   `json:"filter_sample_files,omitempty"`
+	PinSymlinkTimestamp         *string `json:"pin_symlink_timestamp,omitempty"`
+	VerifyContent               *bool   `json:"verify_content,omitempty"`
+	VerifyContentTimeoutSeconds *int    `json:"verify_content_timeout_seconds,omitempty"`
 }
 
 // SABnzbdAPIResponse sanitizes SABnzbd config for API responses
@@ -597,14 +598,13 @@ func ToImportAPIResponse(importConfig config.ImportConfig) ImportAPIResponse {
 		SegmentSamplePercentage:        importConfig.SegmentSamplePercentage,
 		ImportStrategy:                 importConfig.ImportStrategy,
 		ImportDir:                      importConfig.ImportDir,
-		WatchDir:                       importConfig.WatchDir,
-
-		WatchIntervalSeconds:        importConfig.WatchIntervalSeconds,
-		AllowNestedRarExtraction:    importConfig.AllowNestedRarExtraction,
-		RenameToNzbName:             importConfig.RenameToNzbName,
-		FilterSampleFiles:           importConfig.FilterSampleFiles,
-		VerifyContent:               importConfig.VerifyContent,
-		VerifyContentTimeoutSeconds: importConfig.VerifyContentTimeoutSeconds,
+		WatchIntervalSeconds:           importConfig.WatchIntervalSeconds,
+		AllowNestedRarExtraction:       importConfig.AllowNestedRarExtraction,
+		RenameToNzbName:                importConfig.RenameToNzbName,
+		FilterSampleFiles:              importConfig.FilterSampleFiles,
+		PinSymlinkTimestamp:            importConfig.PinSymlinkTimestamp,
+		VerifyContent:                  importConfig.VerifyContent,
+		VerifyContentTimeoutSeconds:    importConfig.VerifyContentTimeoutSeconds,
 	}
 }
 
@@ -1290,10 +1290,20 @@ type ProviderSpeedTestHistoryResponse struct {
 
 // Library Sync API Types
 
-// DryRunSyncResult represents the results of a library sync dry run
+// DryRunSyncResult represents the results of a library sync dry run.
+// WouldCleanup reports whether cleanup passed all guards; it does not
+// guarantee any deletion this run (two-pass confirmation still applies).
+// A non-empty CleanupBlockedReason with WouldCleanup=true is informational
+// only: the metadata-only "nothing to clean" note, never a tripped guard.
 type DryRunSyncResult struct {
-	OrphanedMetadataCount  int  `json:"orphaned_metadata_count"`   // Number of orphaned metadata files
-	OrphanedLibraryFiles   int  `json:"orphaned_library_files"`    // Number of orphaned library files (symlinks/STRM)
-	DatabaseRecordsToClean int  `json:"database_records_to_clean"` // Number of database records to clean
-	WouldCleanup           bool `json:"would_cleanup"`             // Whether cleanup would occur based on config
+	OrphanedMetadataCount  int     `json:"orphaned_metadata_count"`   // Number of orphaned metadata files
+	OrphanedLibraryFiles   int     `json:"orphaned_library_files"`    // Number of orphaned library files (symlinks/STRM)
+	DatabaseRecordsToClean int     `json:"database_records_to_clean"` // Number of database records to clean
+	WouldCleanup           bool    `json:"would_cleanup"`             // Whether cleanup passed all guards (two-pass confirmation still applies)
+	OrphanCandidates       int     `json:"orphan_candidates"`         // Metadata files looking orphaned this run (pre two-pass)
+	OrphanRatio            float64 `json:"orphan_ratio"`              // OrphanCandidates / total metadata scanned
+	OrphanMaxRatio         float64 `json:"orphan_max_ratio"`          // Configured health.orphan_cleanup_max_ratio
+	LibOrphanCandidates    int     `json:"lib_orphan_candidates"`     // Library files without metadata, observed even when cleanup is ineligible
+	LibOrphanRatio         float64 `json:"lib_orphan_ratio"`          // LibOrphanCandidates / total library files scanned
+	CleanupBlockedReason   string  `json:"cleanup_blocked_reason,omitempty"`
 }

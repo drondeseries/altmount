@@ -190,6 +190,7 @@ health:
   enabled: false # Enable health monitoring service (default: false)
   library_dir: '' # Library directory to monitor (required when health is enabled, must be absolute path)
   cleanup_orphaned_metadata: false # Clean up orphaned files, metadata, and empty directories (when false, no cleanup occurs; when true, deletes orphaned library files, metadata files, and removes empty directories from library, import, and metadata paths, default: false)
+  orphan_cleanup_max_ratio: 0.2 # Max fraction of metadata files that may look orphaned before cleanup aborts as suspicious (0-1; 1.0 permits any ratio for backlog recovery, default: 0.2). Requires cleanup_orphaned_metadata: true; other guards (empty scan, walk errors) always still apply and cleanup still needs two consecutive syncs.
   check_interval_seconds: 5 # Health check interval in seconds (default: 5)
   # Max concurrent STAT checks within a single sweep. Omit or set 0 to let the
   # pool adapt: it narrows the sweep while a stream is playing and widens it to

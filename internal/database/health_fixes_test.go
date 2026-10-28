@@ -334,3 +334,63 @@ func TestBatchAddFileToHealthCheck_PreservesRepairBudget(t *testing.T) {
 	require.NotNil(t, fresh, "new path normalized and inserted")
 	assert.Equal(t, HealthStatusPending, fresh.Status)
 }
+
+func TestBatchAddFileToHealthCheck_SampleClearsAuthority(t *testing.T) {
+	repo := setupTestDB(t)
+	ctx := context.Background()
+
+	meta := `{"movie":{"id":42}}`
+	dl := "sabnzbd:abc123"
+	_, err := repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, status, metadata, download_id)
+		VALUES ('movies/Pack/sample.mkv', 'repair_triggered', ?, ?)
+	`, meta, dl)
+	require.NoError(t, err)
+
+	lib := "movies/Pack/sample.mkv"
+	err = repo.BatchAddFileToHealthCheck(ctx, []HealthCheckUpsert{
+		{FilePath: "movies/Pack/sample.mkv", LibraryPath: &lib, Priority: HealthPriorityNext, MaxRetries: 3, MaxRepairRetries: 3, ClearReleaseAuthority: true},
+	})
+	require.NoError(t, err)
+
+	cleared, err := repo.GetFileHealth(ctx, "movies/Pack/sample.mkv")
+	require.NoError(t, err)
+	require.NotNil(t, cleared)
+	assert.Nil(t, cleared.Metadata, "sample reschedule must clear stale ARR metadata")
+	assert.Nil(t, cleared.DownloadID, "sample reschedule must clear stale download id")
+
+	newLib := "movies/Other/sample.mkv"
+	err = repo.BatchAddFileToHealthCheck(ctx, []HealthCheckUpsert{
+		{FilePath: "movies/Other/sample.mkv", LibraryPath: &newLib, Priority: HealthPriorityNext, MaxRetries: 3, MaxRepairRetries: 3, ClearReleaseAuthority: true},
+	})
+	require.NoError(t, err)
+
+	fresh, err := repo.GetFileHealth(ctx, "movies/Other/sample.mkv")
+	require.NoError(t, err)
+	require.NotNil(t, fresh, "new sample path inserted")
+	assert.Nil(t, fresh.Metadata, "new sample stores NULL metadata, not empty string")
+	assert.Nil(t, fresh.DownloadID, "new sample stores NULL download id, not empty string")
+
+	// Normal nil-valued upsert preserves existing authority.
+	keepMeta := `{"movie":{"id":7}}`
+	keepDL := "sabnzbd:keep"
+	_, err = repo.db.ExecContext(ctx, `
+		INSERT INTO file_health (file_path, status, metadata, download_id)
+		VALUES ('movies/Keep/movie.mkv', 'pending', ?, ?)
+	`, keepMeta, keepDL)
+	require.NoError(t, err)
+
+	keepLib := "movies/Keep/movie.mkv"
+	err = repo.BatchAddFileToHealthCheck(ctx, []HealthCheckUpsert{
+		{FilePath: "movies/Keep/movie.mkv", LibraryPath: &keepLib, Priority: HealthPriorityNext, MaxRetries: 3, MaxRepairRetries: 3},
+	})
+	require.NoError(t, err)
+
+	kept, err := repo.GetFileHealth(ctx, "movies/Keep/movie.mkv")
+	require.NoError(t, err)
+	require.NotNil(t, kept)
+	require.NotNil(t, kept.Metadata)
+	assert.Equal(t, keepMeta, *kept.Metadata, "normal upsert preserves metadata")
+	require.NotNil(t, kept.DownloadID)
+	assert.Equal(t, keepDL, *kept.DownloadID, "normal upsert preserves download id")
+}

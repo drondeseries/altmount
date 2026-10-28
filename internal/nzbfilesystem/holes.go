@@ -155,11 +155,63 @@ func (mvf *MetadataVirtualFile) onHole(segIndex int, segID string) holes.Decisio
 	return holes.DecisionPad
 }
 
+// streamingFailureSnapshot carries the mvf.meta-derived fields needed to
+// report a streaming failure to the health pipeline, captured under mvf.mu
+// so the deferred report (which runs after the lock is released) cannot race
+// with Close(), which nils mvf.meta under the same lock.
+type streamingFailureSnapshot struct {
+	sourceNzbPath string
+	fileSize      int64
+	totalSegments int
+	encryption    metapb.Encryption
+	nestedSources int
+	clipBounds    int
+	knownHoles    []*metapb.HoleRun
+	segmentData   []*metapb.SegmentData
+}
+
+// streamingFailureReport pairs a captured corruption error with its
+// lock-captured metadata snapshot and retry flag.
+type streamingFailureReport struct {
+	dataCorruptionErr *usenet.DataCorruptionError
+	snap              *streamingFailureSnapshot
+	noRetry           bool
+}
+
+// snapshotStreamingFailure captures the mvf.meta-derived fields needed to
+// report a streaming failure to the health pipeline. Must be called with
+// mvf.mu held and mvf.meta non-nil.
+func (mvf *MetadataVirtualFile) snapshotStreamingFailure() *streamingFailureSnapshot {
+	return &streamingFailureSnapshot{
+		sourceNzbPath: mvf.meta.SourceNzbPath,
+		fileSize:      mvf.meta.FileSize,
+		totalSegments: len(mvf.meta.SegmentData),
+		encryption:    mvf.meta.Encryption,
+		nestedSources: len(mvf.meta.NestedSources),
+		clipBounds:    len(mvf.meta.ClipBoundaries),
+		knownHoles:    mvf.meta.KnownHoles,
+		segmentData:   mvf.meta.SegmentData,
+	}
+}
+
+// reportStreamingFailure runs a lock-captured streaming failure report
+// outside mvf.mu. Safe to call after Close(): it touches only the snapshot,
+// never mvf.meta.
+func (mvf *MetadataVirtualFile) reportStreamingFailure(rep *streamingFailureReport) {
+	if rep == nil || rep.dataCorruptionErr == nil {
+		return
+	}
+	mvf.updateFileHealthOnErrorWithSnapshot(rep.dataCorruptionErr, rep.snap, rep.noRetry)
+}
+
 // classifyStreamingFailure builds the playback-impact summary for a stream
 // that FAILED on a missing article (hooks absent, or pad caps exceeded).
 // Returns nil for ineligible files or non-hole failures (yEnc corruption,
 // pool errors), which follow the plain corruption path.
-func (mvf *MetadataVirtualFile) classifyStreamingFailure(dcErr *usenet.DataCorruptionError) *holes.Impact {
+func (mvf *MetadataVirtualFile) classifyStreamingFailure(dcErr *usenet.DataCorruptionError, snap ...*streamingFailureSnapshot) *holes.Impact {
+	if snap != nil && len(snap) > 0 && snap[0] != nil {
+		return mvf.classifyStreamingFailureWithSnapshot(dcErr, snap[0])
+	}
 	if !mvf.holeEligible() || !usenet.IsArticleNotFound(dcErr.UnderlyingErr) {
 		return nil
 	}
@@ -189,6 +241,49 @@ func (mvf *MetadataVirtualFile) classifyStreamingFailure(dcErr *usenet.DataCorru
 		TotalSegments: totalSegments,
 		PaddedRatio:   paddedRatio(acc.Total(), segBytes, mvf.meta.FileSize),
 	}
+}
+
+// classifyStreamingFailureWithSnapshot is the snapshot variant of
+// classifyStreamingFailure, using lock-captured metadata instead of mvf.meta.
+func (mvf *MetadataVirtualFile) classifyStreamingFailureWithSnapshot(dcErr *usenet.DataCorruptionError, snap *streamingFailureSnapshot) *holes.Impact {
+	if !mvf.snapshotHoleEligible(snap) || !usenet.IsArticleNotFound(dcErr.UnderlyingErr) {
+		return nil
+	}
+
+	var acc holes.Accumulator
+	acc.Load(metadata.KnownHolesFromProto(snap.knownHoles))
+	mvf.holeMu.Lock()
+	if mvf.holeAcc != nil {
+		acc.Load(mvf.holeAcc.Runs())
+	}
+	mvf.holeMu.Unlock()
+
+	// Fold in the failing segment when its position is known.
+	if dcErr.FileOffset >= 0 {
+		idx := buildSegmentIndex(snap.segmentData)
+		if segIdx := idx.findSegmentForOffset(dcErr.FileOffset); segIdx >= 0 {
+			acc.Add(segIdx)
+		}
+	}
+
+	totalSegments := snap.totalSegments
+	segBytes := avgSegBytes(snap.fileSize, totalSegments)
+	return &holes.Impact{
+		Verdict:       holes.Classify(acc.Runs(), snap.fileSize, segBytes),
+		TotalMissing:  acc.Total(),
+		LongestRun:    acc.LongestRun(),
+		TotalSegments: totalSegments,
+		PaddedRatio:   paddedRatio(acc.Total(), segBytes, snap.fileSize),
+	}
+}
+
+// snapshotHoleEligible reports whether missing segments may be zero-filled,
+// using a lock-captured snapshot rather than mvf.meta.
+func (mvf *MetadataVirtualFile) snapshotHoleEligible(snap *streamingFailureSnapshot) bool {
+	return holes.EligibleFile(mvf.name) &&
+		snap.encryption == metapb.Encryption_NONE &&
+		snap.nestedSources == 0 &&
+		snap.clipBounds == 0
 }
 
 // avgSegBytes estimates the decoded segment size for the byte-ratio guard.

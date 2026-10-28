@@ -19,6 +19,7 @@ import (
 	"github.com/kipsilabs/altmount/internal/database"
 	"github.com/kipsilabs/altmount/internal/holes"
 	"github.com/kipsilabs/altmount/internal/importer"
+	"github.com/kipsilabs/altmount/internal/importer/parser/fileinfo"
 	"github.com/kipsilabs/altmount/internal/metadata"
 	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/progress"
@@ -507,7 +508,7 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 			releaseDate = &fh.CreatedAt
 		}
 
-		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC())
+		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC(), hw.configGetter().GetHealthRecheckSchedule())
 		update.Type = database.UpdateTypeHealthy
 		update.Status = database.HealthStatusHealthy
 		update.ScheduledCheckAt = nextCheck
@@ -576,7 +577,7 @@ func (hw *HealthWorker) prepareUpdateForResult(ctx context.Context, fh *database
 		if releaseDate == nil {
 			releaseDate = &fh.CreatedAt
 		}
-		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC())
+		nextCheck := CalculateNextCheck(releaseDate.UTC(), time.Now().UTC(), hw.configGetter().GetHealthRecheckSchedule())
 
 		update.Type = database.UpdateTypeDegraded
 		update.Status = database.HealthStatusDegraded
@@ -1095,7 +1096,18 @@ func (hw *HealthWorker) runHealthCheckCycle(ctx context.Context) error {
 		paths[i] = fh.FilePath
 		statuses[i] = fh.Status
 	}
-	events := hw.healthChecker.CheckFilesBatch(ctx, paths, statuses, CheckOptions{OnProgress: reportProgress})
+	// Wire per-file cancellation into the sweep: a file cancelled mid-cycle
+	// stops consuming STAT work (ShouldStop fail-fast), skips its content
+	// probe, and — as before — has its result discarded below. Only files
+	// this batch registered are reported: a path the batch never registered
+	// (e.g. a concurrent manual check) is not ours to cancel.
+	isCancelled := func(filePath string) bool {
+		if c, ok := fileCtxs[filePath]; ok && c != nil {
+			return c.Err() != nil
+		}
+		return false
+	}
+	events := hw.healthChecker.CheckFilesBatch(ctx, paths, statuses, CheckOptions{OnProgress: reportProgress, IsCancelled: isCancelled})
 
 	// Phase B: per-file result handling (repair side effects, ARR API calls,
 	// VFS notifications), bounded by maxJobs.
@@ -1309,6 +1321,36 @@ func applyRepairOutcome(update *database.HealthStatusUpdate, outcome repairOutco
 	}
 }
 
+// isAncillarySampleClip reports whether filePath is an ancillary scene
+// sample/proof clip that must never drive ARR release-level repair. The size
+// is resolved from metadata when available so full-length media whose
+// release-title tokens contain "sample"/"proof" (e.g.
+// "Proof.2005.1080p/movie.mkv") is not misclassified: files over
+// fileinfo.MaxSampleSizeBytes are never samples. With unknown size (e.g. after
+// the streaming path moved metadata to the safety folder) the worker stays
+// conservative and never suppresses repair: an ambiguous basename token alone
+// (e.g. "Proof.2005.1080p.mkv") cannot prove the file is a small clip, so
+// repair proceeds.
+func (hw *HealthWorker) isAncillarySampleClip(ctx context.Context, filePath string) bool {
+	if hw.metadataService != nil {
+		if meta, err := hw.metadataService.ReadFileMetadata(filePath); err == nil && meta != nil {
+			return fileinfo.IsSampleOrProof(filePath, meta.FileSize)
+		}
+	}
+	return false
+}
+
+// isAncillarySampleClipWithSize is the size-aware variant used when the caller
+// already resolved live metadata (e.g. triggerFileRepair captured the size
+// before any safety-folder move). A known size is authoritative; an unknown
+// size never suppresses repair (see isAncillarySampleClip).
+func (hw *HealthWorker) isAncillarySampleClipWithSize(ctx context.Context, filePath string, size int64, ok bool) bool {
+	if ok {
+		return fileinfo.IsSampleOrProof(filePath, size)
+	}
+	return hw.isAncillarySampleClip(ctx, filePath)
+}
+
 // resolvePathForRescan determines the absolute path that ARR should rescan for a given file.
 // It checks LibraryPath first, then LibraryDir, then ImportDir, and falls back to MountPath.
 func (hw *HealthWorker) resolvePathForRescan(item *database.FileHealth) string {
@@ -1362,6 +1404,8 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 	// Check if file metadata still exists. If not, the file is gone (likely upgraded/deleted by Sonarr already)
 	// and this health record is a zombie.
 	var metadataErr error
+	var liveMetaSize int64
+	var liveMetaOK bool
 	{
 		meta, err := hw.metadataService.ReadFileMetadata(filePath)
 		if err != nil {
@@ -1378,6 +1422,9 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 				return repairOutcomeDeleted, delErr
 			}
 			return repairOutcomeDeleted, nil
+		} else {
+			liveMetaSize = meta.FileSize
+			liveMetaOK = true
 		}
 	}
 
@@ -1391,6 +1438,23 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 		} else {
 			slog.WarnContext(ctx, "Regeneration attempt failed, proceeding with normal repair", "file_path", filePath, "error", regenErr)
 		}
+	}
+
+	// Ancillary sample/proof protection: scene releases frequently bundle small sample
+	// or proof clips. These clips are never tracked as library entities by ARRs, and
+	// attempting an ARR rescan on them using parent metadata would blocklist the entire
+	// release and redownload the healthy main media. The live metadata size (when
+	// available) is authoritative; with unknown size (e.g. after the streaming path
+	// moved metadata to the safety folder) repair is never suppressed on an
+	// ambiguous token alone.
+	if hw.isAncillarySampleClipWithSize(ctx, filePath, liveMetaSize, liveMetaOK) {
+		slog.WarnContext(ctx, "Corrupted file is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
+			"file_path", filePath)
+		if hw.configGetter().GetHealthDeleteOnCorruption() {
+			hw.cleanupZombieRecord(ctx, item)
+			return repairOutcomeDeleted, nil
+		}
+		return repairOutcomeCorrupted, nil
 	}
 
 	slog.InfoContext(ctx, "Triggering file repair using direct ARR API approach", "file_path", filePath)
@@ -1462,6 +1526,23 @@ func (hw *HealthWorker) triggerFileRepair(ctx context.Context, item *database.Fi
 // Callers must apply the returned outcome to the HealthStatusUpdate before the bulk DB write.
 func (hw *HealthWorker) retriggerFileRepair(ctx context.Context, item *database.FileHealth) (repairOutcome, error) {
 	filePath := item.FilePath
+
+	// After the streaming path moves metadata to the safety folder the size is
+	// unknowable here, so the worker never suppresses repair on an ambiguous
+	// token alone (see isAncillarySampleClip). A genuine small clip that
+	// reaches repair_triggered without live metadata still gets repaired
+	// rather than skipped — the scheduler already strips its ARR authority, so
+	// the rescan resolves to no-op/path-miss instead of blocklisting the
+	// parent release.
+	if hw.isAncillarySampleClip(ctx, filePath) {
+		slog.WarnContext(ctx, "File in repair is an ancillary sample/proof clip; skipping ARR rescan to protect main release",
+			"file_path", filePath)
+		if hw.configGetter().GetHealthDeleteOnCorruption() {
+			hw.cleanupZombieRecord(ctx, item)
+			return repairOutcomeDeleted, nil
+		}
+		return repairOutcomeCorrupted, nil
+	}
 
 	pathForRescan := hw.resolvePathForRescan(item)
 	metadataStr := hw.ensureMetadata(ctx, item)

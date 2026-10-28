@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"log/slog"
 	"maps"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
+	metapb "github.com/kipsilabs/altmount/internal/metadata/proto"
 	"github.com/kipsilabs/altmount/internal/utils"
 )
 
@@ -1202,6 +1204,35 @@ func (s *Server) handleUnmaskHealth(c *fiber.Ctx) error {
 		return RespondInternalError(c, "Failed to unmask file", err.Error())
 	}
 
+	// Re-arm file for immediate health verification. A failure here must not
+	// be silent: the endpoint promises recovery, so surface it explicitly.
+	if err := s.healthRepo.UpdateScheduledCheckTime(c.Context(), item.FilePath, time.Now().UTC()); err != nil {
+		slog.WarnContext(c.Context(), "Unmasked file but failed to re-arm health verification",
+			"id", id, "file_path", item.FilePath, "error", err)
+		return RespondInternalError(c, "File unmasked but failed to schedule re-verification", err.Error())
+	}
+
+	// Reconcile metadata: if the metadata file is still present and was marked corrupted
+	// while the DB item status is pending, restore it to healthy so it can be re-accessed and re-verified.
+	// Uses the pre-unmask status snapshot; the worker may concurrently transition the
+	// record, so this is best-effort and failures are logged, not fatal.
+	metadataReconciled := false
+	if s.metadataService != nil {
+		if meta, metaErr := s.metadataService.ReadFileMetadata(item.FilePath); metaErr != nil {
+			slog.WarnContext(c.Context(), "Unmasked file but failed to read metadata for reconciliation",
+				"id", id, "file_path", item.FilePath, "error", metaErr)
+		} else if meta != nil {
+			if meta.Status == metapb.FileStatus_FILE_STATUS_CORRUPTED && item.Status == database.HealthStatusPending {
+				if updErr := s.metadataService.UpdateFileStatus(item.FilePath, metapb.FileStatus_FILE_STATUS_HEALTHY); updErr != nil {
+					slog.WarnContext(c.Context(), "Unmasked file but failed to reconcile metadata status",
+						"id", id, "file_path", item.FilePath, "error", updErr)
+				} else {
+					metadataReconciled = true
+				}
+			}
+		}
+	}
+
 	// Get the updated health record
 	updatedItem, err := s.healthRepo.GetFileHealthByID(c.Context(), id)
 	if err != nil {
@@ -1209,11 +1240,12 @@ func (s *Server) handleUnmaskHealth(c *fiber.Ctx) error {
 	}
 
 	response := map[string]any{
-		"message":     "File unmasked successfully",
-		"id":          id,
-		"file_path":   item.FilePath,
-		"updated_at":  time.Now().Format(time.RFC3339),
-		"health_data": ToHealthItemResponse(updatedItem),
+		"message":             "File unmasked successfully",
+		"id":                  id,
+		"file_path":           item.FilePath,
+		"updated_at":          time.Now().Format(time.RFC3339),
+		"health_data":         ToHealthItemResponse(updatedItem),
+		"metadata_reconciled": metadataReconciled,
 	}
 
 	return RespondSuccess(c, response)
@@ -1485,6 +1517,15 @@ func (s *Server) handleRegenerateLibraryFiles(c *fiber.Ctx) error {
 			continue
 		}
 
+		// Pin the symlink timestamp if configured
+		if cfg.Import.PinSymlinkTimestamp != nil && cfg.Import.ImportStrategy == config.ImportStrategySYMLINK {
+			if err := utils.PinSymlinkTime(libraryPath, *cfg.Import.PinSymlinkTimestamp); err != nil {
+				slog.WarnContext(ctx, "Failed to pin symlink timestamp",
+					"library_path", libraryPath,
+					"error", err)
+			}
+		}
+
 		slog.InfoContext(ctx, "Library file recreated",
 			"file_path", file.FilePath,
 			"library_path", libraryPath,
@@ -1557,4 +1598,85 @@ func deleteLibraryFile(ctx context.Context, cfg *config.Config, item *database.F
 	}
 
 	return true
+}
+
+// handlePinLibrarySymlinkTimestamps handles POST /api/health/pin-symlink-timestamps
+//
+//	@Summary		Apply pinned date to existing library symlinks
+//	@Description	Sets the configured pin_symlink_timestamp on every stored library path that is a symlink. Existing symlinks are only touched in place (utimensat): nothing is removed, recreated, or re-pointed, so ARR-managed library layouts are never altered.
+//	@Tags			Health
+//	@Success		200	{object}	APIResponse
+//	@Failure		400	{object}	APIResponse
+//	@Security		BearerAuth
+//	@Router			/health/pin-symlink-timestamps [post]
+func (s *Server) handlePinLibrarySymlinkTimestamps(c *fiber.Ctx) error {
+	ctx := c.Context()
+	cfg := s.configManager.GetConfig()
+
+	if cfg.Import.PinSymlinkTimestamp == nil || *cfg.Import.PinSymlinkTimestamp == "" {
+		return RespondBadRequest(c, "No pinned date configured",
+			"Set 'Pin Symlink Timestamp' in Settings > Import first")
+	}
+
+	files, err := s.healthRepo.GetFilesForLibrarySync(ctx)
+	if err != nil {
+		return RespondInternalError(c, "Failed to retrieve health records", err.Error())
+	}
+
+	pinned, skippedNoPath, skippedMissing, skippedNotSymlink, errorCount := 0, 0, 0, 0, 0
+	errors := make([]string, 0)
+
+	for _, file := range files {
+		if file == nil || file.LibraryPath == nil || *file.LibraryPath == "" {
+			skippedNoPath++
+			continue
+		}
+		info, err := os.Lstat(*file.LibraryPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				skippedMissing++
+				continue
+			}
+			errorCount++
+			errors = append(errors, fmt.Sprintf("%s: %v", *file.LibraryPath, err))
+			continue
+		}
+		// Only touch real symlinks. Hardlinks/copies created by ARR applications
+		// are left completely alone.
+		if info.Mode()&fs.ModeSymlink == 0 {
+			skippedNotSymlink++
+			continue
+		}
+		if err := utils.PinSymlinkTime(*file.LibraryPath, *cfg.Import.PinSymlinkTimestamp); err != nil {
+			errorCount++
+			errors = append(errors, fmt.Sprintf("%s: %v", *file.LibraryPath, err))
+			continue
+		}
+		pinned++
+	}
+
+	slog.InfoContext(ctx, "Applied pinned timestamp to existing library symlinks",
+		"records", len(files),
+		"pinned", pinned,
+		"skipped_no_path", skippedNoPath,
+		"skipped_missing", skippedMissing,
+		"skipped_not_symlink", skippedNotSymlink,
+		"error_count", errorCount)
+
+	response := fiber.Map{
+		"message":             fmt.Sprintf("Pinned %d of %d library entries to %s", pinned, len(files), *cfg.Import.PinSymlinkTimestamp),
+		"records":             len(files),
+		"pinned":              pinned,
+		"skipped_no_path":     skippedNoPath,
+		"skipped_missing":     skippedMissing,
+		"skipped_not_symlink": skippedNotSymlink,
+		"errors":              errors,
+		"error_count":         errorCount,
+		"completed_at":        time.Now().Format(time.RFC3339),
+	}
+	if errorCount > 0 {
+		response["warning"] = fmt.Sprintf("%d symlink(s) could not be updated", errorCount)
+	}
+
+	return RespondSuccess(c, response)
 }

@@ -4,6 +4,7 @@ import (
 	"crypto/tls"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -675,6 +676,11 @@ const (
 // DefaultConfig and the accessor fallbacks.
 const defaultVerifyContentTimeoutSeconds = 15
 
+// DefaultOrphanCleanupMaxRatio is the default ceiling for the fraction of
+// metadata files that may look orphaned in a single library sync before
+// cleanup is aborted as suspicious (e.g. a dead mount). 1.0 permits any ratio.
+const DefaultOrphanCleanupMaxRatio = 0.20
+
 // ImportConfig represents import processing configuration
 type ImportConfig struct {
 	// RSSFeedURL is an optional indexer cart feed; empty disables polling.
@@ -769,7 +775,12 @@ type HealthConfig struct {
 	Enabled                 *bool   `yaml:"enabled" mapstructure:"enabled" json:"enabled,omitempty"`
 	LibraryDir              *string `yaml:"library_dir" mapstructure:"library_dir" json:"library_dir,omitempty"`
 	CleanupOrphanedMetadata *bool   `yaml:"cleanup_orphaned_metadata" mapstructure:"cleanup_orphaned_metadata" json:"cleanup_orphaned_metadata,omitempty"`
-	CheckIntervalSeconds    int     `yaml:"check_interval_seconds" mapstructure:"check_interval_seconds" json:"check_interval_seconds,omitempty"`
+	// OrphanCleanupMaxRatio bounds the fraction of metadata files that may
+	// look orphaned in a single library sync before cleanup is aborted as
+	// suspicious (a dead mount looks like mass deletion). Valid range is
+	// 0-1; 1.0 permits any ratio. nil preserves the historical 0.20 default.
+	OrphanCleanupMaxRatio *float64 `yaml:"orphan_cleanup_max_ratio" mapstructure:"orphan_cleanup_max_ratio" json:"orphan_cleanup_max_ratio,omitempty"`
+	CheckIntervalSeconds  int      `yaml:"check_interval_seconds" mapstructure:"check_interval_seconds" json:"check_interval_seconds,omitempty"`
 	// MaxConcurrentSegmentChecks bounds how many STAT checks a health sweep keeps
 	// in flight. STAT is bodyless and pipelines many per connection, so connection
 	// count is the wrong unit — the import path already sizes its sweep by STAT
@@ -821,6 +832,24 @@ type HealthConfig struct {
 	// nil or 0 means keep forever, which is what every install did before this
 	// setting existed.
 	CorruptedRetentionDays *int `yaml:"corrupted_retention_days" mapstructure:"corrupted_retention_days" json:"corrupted_retention_days,omitempty"`
+	// Recheck controls how often healthy/degraded files are re-verified, in
+	// decay-shaped tiers by NZB age. Zero values mean "use the default"
+	// (fresh 0-72h every 2h, early 3-7d every 12h, mid 7-30d daily, aged >30d
+	// weekly, 30min floor). Existing configs upgrade silently.
+	Recheck HealthRecheckConfig `yaml:"recheck" mapstructure:"recheck" json:"recheck,omitempty"`
+}
+
+// HealthRecheckConfig configures the tiered recheck schedule for
+// healthy/degraded files. All fields are optional; zero means default.
+type HealthRecheckConfig struct {
+	FreshAgeHours int `yaml:"fresh_age_hours" mapstructure:"fresh_age_hours" json:"fresh_age_hours,omitempty"`
+	FreshHours    int `yaml:"fresh_hours" mapstructure:"fresh_hours" json:"fresh_hours,omitempty"`
+	EarlyAgeDays  int `yaml:"early_age_days" mapstructure:"early_age_days" json:"early_age_days,omitempty"`
+	EarlyHours    int `yaml:"early_hours" mapstructure:"early_hours" json:"early_hours,omitempty"`
+	MidAgeDays    int `yaml:"mid_age_days" mapstructure:"mid_age_days" json:"mid_age_days,omitempty"`
+	MidHours      int `yaml:"mid_hours" mapstructure:"mid_hours" json:"mid_hours,omitempty"`
+	AgedDays      int `yaml:"aged_days" mapstructure:"aged_days" json:"aged_days,omitempty"`
+	MinMinutes    int `yaml:"min_minutes" mapstructure:"min_minutes" json:"min_minutes,omitempty"`
 }
 
 // Path validation functions have been moved to internal/utils/path.go
@@ -1292,6 +1321,13 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("import verify_content_timeout_seconds must be greater than 0")
 	}
 
+	// Validate pin symlink timestamp if configured
+	if c.Import.PinSymlinkTimestamp != nil && *c.Import.PinSymlinkTimestamp != "" {
+		if _, err := time.Parse(time.RFC3339, *c.Import.PinSymlinkTimestamp); err != nil {
+			return fmt.Errorf("pin_symlink_timestamp must be a valid RFC3339 timestamp (e.g. 2026-08-21T14:30:00Z): %w", err)
+		}
+	}
+
 	// Validate log level (both old and new config)
 	if c.Log.Level != "" {
 		validLevels := []string{"debug", "info", "warn", "error"}
@@ -1348,6 +1384,68 @@ func (c *Config) Validate() error {
 
 	// Validate streaming configuration
 
+	// Validate health recheck schedule. Zero means unset (resolved to the
+	// default in GetHealthRecheckSchedule); negatives are rejected so
+	// validation stays idempotent (a negative must not normalize to 0 on one
+	// pass and then to the default on the next). Ages must be ordered and the
+	// full interval chain fresh <= early <= mid <= aged must hold.
+	if c.Health.Recheck.FreshAgeHours < 0 || c.Health.Recheck.FreshAgeHours > 24*365 {
+		return fmt.Errorf("health recheck fresh_age_hours must be between 0 (default) and %d", 24*365)
+	}
+	if c.Health.Recheck.EarlyAgeDays < 0 || c.Health.Recheck.EarlyAgeDays > 365 {
+		return fmt.Errorf("health recheck early_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MidAgeDays < 0 || c.Health.Recheck.MidAgeDays > 365 {
+		return fmt.Errorf("health recheck mid_age_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.FreshHours < 0 || c.Health.Recheck.FreshHours > 24*30 {
+		return fmt.Errorf("health recheck fresh_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.EarlyHours < 0 || c.Health.Recheck.EarlyHours > 24*30 {
+		return fmt.Errorf("health recheck early_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.MidHours < 0 || c.Health.Recheck.MidHours > 24*30 {
+		return fmt.Errorf("health recheck mid_hours must be between 0 (default) and %d", 24*30)
+	}
+	if c.Health.Recheck.AgedDays < 0 || c.Health.Recheck.AgedDays > 365 {
+		return fmt.Errorf("health recheck aged_days must be between 0 (default) and 365")
+	}
+	if c.Health.Recheck.MinMinutes < 0 || c.Health.Recheck.MinMinutes > 60*24*30 {
+		return fmt.Errorf("health recheck min_minutes must be between 0 (default) and %d", 60*24*30)
+	}
+	// Ordering checks resolve zeros to defaults first (mirrors the accessor),
+	// so partially-set configs validate against what will actually execute.
+	rh := c.Health.Recheck
+	fA, eA, mA := rh.FreshAgeHours, rh.EarlyAgeDays*24, rh.MidAgeDays*24
+	if fA == 0 {
+		fA = 72
+	}
+	if eA == 0 {
+		eA = 7 * 24
+	}
+	if mA == 0 {
+		mA = 30 * 24
+	}
+	if fA >= eA || eA >= mA {
+		return fmt.Errorf("health recheck ages must be strictly increasing (fresh_age_hours < early_age_days*24 < mid_age_days*24)")
+	}
+	fH, eH, mH, aI := rh.FreshHours, rh.EarlyHours, rh.MidHours, rh.AgedDays*24
+	if fH == 0 {
+		fH = 2
+	}
+	if eH == 0 {
+		eH = 12
+	}
+	if mH == 0 {
+		mH = 24
+	}
+	if aI == 0 {
+		aI = 7 * 24
+	}
+	if fH > eH || eH > mH || mH > aI {
+		return fmt.Errorf("health recheck intervals must be non-decreasing (fresh_hours <= early_hours <= mid_hours <= aged_days*24)")
+	}
+
 	// Validate health configuration (always active)
 	if c.Health.CheckIntervalSeconds <= 0 {
 		return fmt.Errorf("health check_interval_seconds must be greater than 0")
@@ -1366,6 +1464,9 @@ func (c *Config) Validate() error {
 	}
 	if c.Health.VerifyContentTimeoutSeconds != nil && *c.Health.VerifyContentTimeoutSeconds <= 0 {
 		return fmt.Errorf("health verify_content_timeout_seconds must be greater than 0")
+	}
+	if c.Health.OrphanCleanupMaxRatio != nil && (math.IsNaN(*c.Health.OrphanCleanupMaxRatio) || *c.Health.OrphanCleanupMaxRatio < 0 || *c.Health.OrphanCleanupMaxRatio > 1) {
+		return fmt.Errorf("health orphan_cleanup_max_ratio must be between 0 and 1")
 	}
 	if c.Health.CorruptedRetentionDays != nil && *c.Health.CorruptedRetentionDays < 0 {
 		return fmt.Errorf("health corrupted_retention_days must be zero (keep forever) or greater")
@@ -2167,6 +2268,7 @@ func DefaultConfig(configDir ...string) *Config {
 	healthVerifyContent := false // Content verification disabled by default (destructive if misfired)
 	healthVerifyContentTimeoutSeconds := defaultVerifyContentTimeoutSeconds
 	healthCorruptedRetentionDays := 0
+	orphanCleanupMaxRatio := DefaultOrphanCleanupMaxRatio
 
 	// Set paths based on whether we're running in Docker or have a specific config directory
 	var dbPath, metadataPath, logPath, rclonePath, cachePath, backupPath string
@@ -2325,6 +2427,7 @@ func DefaultConfig(configDir ...string) *Config {
 		Health: HealthConfig{
 			Enabled:                             &healthEnabled,           // Disabled by default
 			CleanupOrphanedMetadata:             &cleanupOrphanedMetadata, // Disabled by default
+			OrphanCleanupMaxRatio:               &orphanCleanupMaxRatio,   // Default: abort cleanup above 20% orphans
 			CheckIntervalSeconds:                5,
 			CheckBatchSize:                      50,
 			MaxConcurrentJobs:                   1,                                  // Default: 1 concurrent job

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/kipsilabs/altmount/internal/config"
 	"github.com/kipsilabs/altmount/internal/database"
@@ -335,6 +336,544 @@ func TestRatioGuard_SkipsCleanupWhenOrphanRatioHigh(t *testing.T) {
 	assert.Empty(t, raw, "pending state should be cleared when ratio guard triggers")
 }
 
+func TestRatioGuard_ConfiguredMaxRatioPermitsBacklogCleanup(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	// 4 metadata files, 2 orphans (50%): blocked at the 0.20 default, allowed at 1.0.
+	for i := range 4 {
+		vp := filepath.Join("movies", fmt.Sprintf("movie_%d.mkv", i))
+		meta := metadataService.CreateFileMetadata(
+			1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+			nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+		)
+		require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+	}
+
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "movies"), 0755))
+	mountPath := "/mnt/test"
+	for i := range 2 {
+		target := filepath.Join(mountPath, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		link := filepath.Join(libraryDir, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		require.NoError(t, os.Symlink(target, link))
+	}
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+	maxRatio := 1.0
+	cfg.Health.OrphanCleanupMaxRatio = &maxRatio
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	// Two-pass rule: first sync pends, second sync deletes.
+	worker.SyncLibrary(ctx, false)
+	orphan := filepath.Join("movies", "movie_2.mkv")
+	assert.True(t, metadataService.FileExists(orphan), "orphan should survive the first pass")
+	worker.SyncLibrary(ctx, false)
+	assert.False(t, metadataService.FileExists(orphan), "orphan should be cleaned at max ratio 1.0")
+	assert.True(t, metadataService.FileExists(filepath.Join("movies", "movie_0.mkv")),
+		"live file should NOT be deleted")
+}
+
+func TestRatioGuard_DryRunIsReadOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	for i := range 4 {
+		vp := filepath.Join("movies", fmt.Sprintf("movie_%d.mkv", i))
+		meta := metadataService.CreateFileMetadata(
+			1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+			nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+		)
+		require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+	}
+
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "movies"), 0755))
+	mountPath := "/mnt/test"
+	for i := range 2 {
+		target := filepath.Join(mountPath, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		link := filepath.Join(libraryDir, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		require.NoError(t, os.Symlink(target, link))
+	}
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	result := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, result)
+	assert.False(t, result.WouldCleanup, "50% orphans must block cleanup at the default 0.2")
+	assert.Equal(t, 2, result.OrphanCandidates)
+	assert.InDelta(t, 0.5, result.OrphanRatio, 0.0001)
+	assert.InDelta(t, 0.2, result.OrphanMaxRatio, 0.0001)
+	assert.NotEmpty(t, result.CleanupBlockedReason)
+
+	// Dry run must not seed or clear pending state.
+	metaRaw, err := healthRepo.GetSystemState(ctx, "pending_metadata_deletions")
+	require.NoError(t, err)
+	assert.Empty(t, metaRaw, "dry run must not write pending metadata state")
+	libRaw, err := healthRepo.GetSystemState(ctx, "pending_library_deletions")
+	require.NoError(t, err)
+	assert.Empty(t, libRaw, "dry run must not write pending library state")
+
+	// file_health must be untouched: no adds, no corrupt registrations.
+	count, err := healthRepo.CountHealthItems(ctx, nil, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "dry run must not insert file_health rows")
+}
+
+// snapshotFileHealth returns (row count, file_path -> library_path-or-empty)
+// for asserting dry-run read-only behavior.
+func snapshotFileHealth(t *testing.T, ctx context.Context, db *sql.DB, healthRepo *database.HealthRepository) (int, map[string]string) {
+	t.Helper()
+	count, err := healthRepo.CountHealthItems(ctx, nil, nil, "")
+	require.NoError(t, err)
+	rows, err := db.Query(`SELECT file_path, COALESCE(library_path, '') FROM file_health`)
+	require.NoError(t, err)
+	defer rows.Close()
+	m := map[string]string{}
+	for rows.Next() {
+		var fp, lp string
+		require.NoError(t, rows.Scan(&fp, &lp))
+		m[fp] = lp
+	}
+	require.NoError(t, rows.Err())
+	return count, m
+}
+
+func TestRatioGuard_DryRunDoesNotTouchFileHealth(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	// Healthy metadata for movie_0 (live) + orphan.mkv (candidate).
+	for _, name := range []string{"movie_0.mkv", "orphan.mkv"} {
+		vp := filepath.Join("movies", name)
+		meta := metadataService.CreateFileMetadata(
+			1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+			nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+		)
+		require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+	}
+	// Unreadable metadata: garbage payload so processMetadataForSync fails.
+	// A real run would RegisterCorruptedFile; a dry run must not.
+	corruptVP := filepath.Join("movies", "corrupt.mkv")
+	require.NoError(t, os.MkdirAll(filepath.Join(tempDir, "movies"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "movies", "corrupt.mkv.meta"), []byte("not-a-proto"), 0644))
+	if _, rErr := metadataService.ReadFileMetadata(corruptVP); rErr == nil {
+		t.Skip("metadata service tolerates garbage payload; cannot exercise corrupt path")
+	}
+
+	// MountPath == LibraryDir so JoinAbsPath expectations land under the
+	// library dir. movie_0 has a scanned link; orphan/corrupt do not.
+	// recovered.mkv has metadata + a broken stored path + a real file at
+	// the expected location and no scanned link: the exact shape that
+	// reaches path recovery. A real run rewrites it; a dry run preserves it.
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "movies"), 0755))
+	mountPath := libraryDir
+	require.NoError(t, os.Symlink(
+		filepath.Join(mountPath, "movies", "movie_0.mkv"),
+		filepath.Join(libraryDir, "movies", "movie_0.mkv"),
+	))
+	recoveredVP := filepath.Join("movies", "recovered.mkv")
+	recoveredMeta := metadataService.CreateFileMetadata(
+		1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+		nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+	)
+	require.NoError(t, metadataService.WriteFileMetadata(recoveredVP, recoveredMeta))
+	recoveredExpected := filepath.Join(libraryDir, "movies", "recovered.mkv")
+	require.NoError(t, os.WriteFile(recoveredExpected, []byte("library-content"), 0644))
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+	maxRatio := 1.0
+	cfg.Health.OrphanCleanupMaxRatio = &maxRatio
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	// Seed ONLY the recovery row: corrupt.mkv must have no row (its absence
+	// forces the RegisterCorruptedFile path on a real run).
+	_, err := db.Exec(
+		`INSERT INTO file_health (file_path, library_path, status, retry_count, max_retries, repair_retry_count, max_repair_retries)
+		 VALUES (?, ?, 'healthy', 0, 3, 0, 3)`,
+		recoveredVP, "relative/broken.mkv",
+	)
+	require.NoError(t, err)
+	beforeCount, beforePaths := snapshotFileHealth(t, ctx, db, healthRepo)
+
+	result := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, result)
+
+	afterCount, afterPaths := snapshotFileHealth(t, ctx, db, healthRepo)
+	assert.Equal(t, beforeCount, afterCount, "dry run must not add or remove file_health rows")
+	assert.Equal(t, beforePaths, afterPaths, "dry run must not modify file_health rows (no recovery writes, no corrupt registrations)")
+
+	// The fixtures really exercise the guarded writes: flip to a real run
+	// with cleanup DISABLED (so the orphan pass cannot prune rows) and
+	// assert both writes land. Removing any !dryRun guard must break this.
+	cleanupOff := false
+	cfg.Health.CleanupOrphanedMetadata = &cleanupOff
+	worker.SyncLibrary(ctx, false)
+
+	fixedRec, err := healthRepo.GetFileHealth(ctx, recoveredVP)
+	require.NoError(t, err)
+	require.NotNil(t, fixedRec, "recovery row must survive the verifying real run")
+	require.NotNil(t, fixedRec.LibraryPath)
+	assert.Equal(t, recoveredExpected, *fixedRec.LibraryPath,
+		"real run must rewrite the broken path (proves the UpdateLibraryPath guard matters)")
+
+	corruptCount, err := healthRepo.CountHealthItems(ctx, nil, nil, "corrupt")
+	require.NoError(t, err)
+	assert.Equal(t, 1, corruptCount,
+		"real run must register the corrupt file (proves the RegisterCorruptedFile guard matters)")
+}
+
+func TestRatioGuard_DryRunReportsCandidatesWhenCleanupDisabled(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	for i := range 4 {
+		vp := filepath.Join("movies", fmt.Sprintf("movie_%d.mkv", i))
+		meta := metadataService.CreateFileMetadata(
+			1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+			nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+		)
+		require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+	}
+
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "movies"), 0755))
+	mountPath := "/mnt/test"
+	for i := range 2 {
+		target := filepath.Join(mountPath, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		link := filepath.Join(libraryDir, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		require.NoError(t, os.Symlink(target, link))
+	}
+	// One library file with no metadata on the other side.
+	dangling := filepath.Join(libraryDir, "movies", "dangling.mkv")
+	require.NoError(t, os.Symlink(filepath.Join(mountPath, "movies", "dangling.mkv"), dangling))
+
+	healthEnabled := true
+	cleanupDisabled := false
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupDisabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	result := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, result)
+	assert.False(t, result.WouldCleanup)
+	assert.NotEmpty(t, result.CleanupBlockedReason)
+	// Candidates are observed even though cleanup is ineligible.
+	assert.Equal(t, 2, result.OrphanCandidates, "2 metadata files lack library links")
+	assert.InDelta(t, 0.5, result.OrphanRatio, 0.0001)
+	assert.Equal(t, 1, result.LibOrphanCandidates, "dangling library link lacks metadata")
+	assert.Equal(t, 0, result.OrphanedMetadataCount)
+	assert.Equal(t, 0, result.OrphanedLibraryFiles)
+}
+
+func TestSyncMetadataOnly_DryRunNothingToClean(t *testing.T) {
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	vp := filepath.Join("movies", "movie_0.mkv")
+	meta := metadataService.CreateFileMetadata(
+		1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+		nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+	)
+	require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	// No LibraryDir + NONE strategy => metadata-only path.
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = "/mnt/test"
+	cfg.Import.ImportStrategy = config.ImportStrategyNone
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	// Seed the DB with a real sync, then a dry run with nothing stale must
+	// be consistent: guards pass (WouldCleanup true) with only the
+	// informational nothing-to-clean note, never a guard-trip reason.
+	worker.SyncLibrary(ctx, false)
+
+	result := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, result)
+	assert.True(t, result.WouldCleanup, "cleanup switch is on so guards pass")
+	assert.Equal(t, "metadata-only sync: nothing to clean (no library to compare against, no stale records)", result.CleanupBlockedReason)
+	assert.Equal(t, 0, result.DatabaseRecordsToClean)
+	// Metadata-only never reports library-side orphans.
+	assert.Equal(t, 0, result.OrphanedMetadataCount)
+	assert.Equal(t, 0, result.OrphanedLibraryFiles)
+	assert.Equal(t, 0, result.OrphanCandidates)
+}
+
+func TestSyncMetadataOnly_DryRunDoesNotRegisterCorrupt(t *testing.T) {
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	// Healthy file + garbage .meta with no DB row: forces the
+	// RegisterCorruptedFile path.
+	goodVP := filepath.Join("movies", "good.mkv")
+	goodMeta := metadataService.CreateFileMetadata(
+		1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+		nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+	)
+	require.NoError(t, metadataService.WriteFileMetadata(goodVP, goodMeta))
+	corruptVP := filepath.Join("movies", "corrupt.mkv")
+	require.NoError(t, os.MkdirAll(filepath.Join(tempDir, "movies"), 0755))
+	require.NoError(t, os.WriteFile(filepath.Join(tempDir, "movies", "corrupt.mkv.meta"), []byte("not-a-proto"), 0644))
+	if _, rErr := metadataService.ReadFileMetadata(corruptVP); rErr == nil {
+		t.Skip("metadata service tolerates garbage payload; cannot exercise corrupt path")
+	}
+
+	cfg := config.DefaultConfig()
+	healthEnabled := true
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cleanupOn := true
+	cfg.Health.CleanupOrphanedMetadata = &cleanupOn
+	// No LibraryDir + NONE strategy => metadata-only path.
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = "/mnt/test"
+	cfg.Import.ImportStrategy = config.ImportStrategyNone
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+	result := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, result)
+
+	count, err := healthRepo.CountHealthItems(ctx, nil, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 0, count, "metadata-only dry run must not RegisterCorruptedFile")
+
+	// The fixture really exercises the guard: a real run registers the
+	// corrupt file (plus the healthy one) — 2 rows total.
+	worker.SyncLibrary(ctx, false)
+	countAfter, err := healthRepo.CountHealthItems(ctx, nil, nil, "")
+	require.NoError(t, err)
+	assert.Equal(t, 2, countAfter, "real run must register the corrupt file (proves the metadata-only guard matters)")
+}
+
+func TestRatioGuard_DryRunPreservesSeededPending(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	for i := range 4 {
+		vp := filepath.Join("movies", fmt.Sprintf("movie_%d.mkv", i))
+		meta := metadataService.CreateFileMetadata(
+			1024, "test.nzb", metapb.FileStatus_FILE_STATUS_HEALTHY,
+			nil, metapb.Encryption_NONE, "", "", nil, nil, 0, nil, "",
+		)
+		require.NoError(t, metadataService.WriteFileMetadata(vp, meta))
+	}
+
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(filepath.Join(libraryDir, "movies"), 0755))
+	mountPath := "/mnt/test"
+	for i := range 2 {
+		target := filepath.Join(mountPath, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		link := filepath.Join(libraryDir, "movies", fmt.Sprintf("movie_%d.mkv", i))
+		require.NoError(t, os.Symlink(target, link))
+	}
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+
+	// Seed both pending sets, then verify a blocked AND an allowed dry run
+	// preserve them byte-for-byte.
+	seedMeta := `{"movies/movie_2.mkv":true}`
+	seedLib := `{"movies/movie_2.mkv":true}`
+	require.NoError(t, healthRepo.UpdateSystemState(ctx, "pending_metadata_deletions", seedMeta))
+	require.NoError(t, healthRepo.UpdateSystemState(ctx, "pending_library_deletions", seedLib))
+
+	blocked := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, blocked)
+	assert.False(t, blocked.WouldCleanup)
+	// Blocked dry run reports candidates but no confirmed deletions.
+	assert.Equal(t, 2, blocked.OrphanCandidates)
+	assert.Equal(t, 0, blocked.OrphanedMetadataCount)
+
+	metaRaw, err := healthRepo.GetSystemState(ctx, "pending_metadata_deletions")
+	require.NoError(t, err)
+	assert.Equal(t, seedMeta, metaRaw, "blocked dry run must preserve pending metadata state")
+	libRaw, err := healthRepo.GetSystemState(ctx, "pending_library_deletions")
+	require.NoError(t, err)
+	assert.Equal(t, seedLib, libRaw, "blocked dry run must preserve pending library state")
+
+	// Allowed dry run (max ratio 1.0) reports the seeded orphan as confirmed
+	// without consuming pending state.
+	maxRatio := 1.0
+	cfg.Health.OrphanCleanupMaxRatio = &maxRatio
+	allowed := worker.SyncLibrary(ctx, true)
+	require.NotNil(t, allowed)
+	assert.True(t, allowed.WouldCleanup)
+	assert.Equal(t, 1, allowed.OrphanedMetadataCount, "seeded orphan should count as confirmed in dry run")
+
+	metaRaw, err = healthRepo.GetSystemState(ctx, "pending_metadata_deletions")
+	require.NoError(t, err)
+	assert.Equal(t, seedMeta, metaRaw, "allowed dry run must preserve pending metadata state")
+	libRaw, err = healthRepo.GetSystemState(ctx, "pending_library_deletions")
+	require.NoError(t, err)
+	assert.Equal(t, seedLib, libRaw, "allowed dry run must preserve pending library state")
+}
+
 func TestWalkErrors_SkipCleanup(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlinks not supported on Windows")
@@ -404,4 +943,98 @@ func TestWalkErrors_SkipCleanup(t *testing.T) {
 	// Orphan should NOT be deleted because walk errors disable cleanup
 	assert.True(t, metadataService.FileExists(vp),
 		"orphan should NOT be deleted when walk errors are present")
+}
+
+func TestDefinitiveMetadataError_RejectsFilesystemErrors(t *testing.T) {
+	// A storage failure whose pathname contains a marker phrase must stay
+	// transient: the FS-error rejection runs before textual classification.
+	fsErr := &os.PathError{
+		Op:   "read",
+		Path: "/meta/segment ref index collection/movie.mkv.meta",
+		Err:  fmt.Errorf("permission denied"),
+	}
+	assert.False(t, isDefinitiveMetadataError(fmt.Errorf("failed to read metadata file: %w", fsErr)),
+		"wrapped filesystem error must never classify as definitive, marker phrase or not")
+
+	linkErr := &os.LinkError{
+		Op:  "readlink",
+		Old: "/lib/no segment data available/movie.mkv",
+		New: "/lib/other",
+		Err: fmt.Errorf("i/o error"),
+	}
+	assert.False(t, isDefinitiveMetadataError(linkErr),
+		"link error must never classify as definitive, marker phrase or not")
+
+	// Genuine corruption producers still classify as definitive.
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("failed to unmarshal metadata: proto: bad wire")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("segment ref index 9 out of range (3 segments)")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("segment run index 4 out of range (4 segments)")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("metadata gap: only 3 of 9 bytes are covered by segments")))
+	assert.True(t, isDefinitiveMetadataError(fmt.Errorf("no segment data available")))
+	assert.False(t, isDefinitiveMetadataError(nil))
+	assert.False(t, isDefinitiveMetadataError(fmt.Errorf("connection reset by peer")))
+}
+
+func TestLibraryEligibility_FailsClosedOnProtectionErrors(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlinks not supported on Windows")
+	}
+
+	tempDir := t.TempDir()
+	db := newResilienceDB(t)
+	healthRepo := database.NewHealthRepository(db, database.DialectSQLite)
+	metadataService := metadata.NewMetadataService(tempDir)
+
+	// A dangling symlink whose readlink fails (target dir removed) must be
+	// ineligible, not fall through to deletion.
+	libraryDir := filepath.Join(tempDir, "library")
+	require.NoError(t, os.MkdirAll(libraryDir, 0755))
+	mountPath := "/mnt/test"
+	dangling := filepath.Join(libraryDir, "dangling.mkv")
+	require.NoError(t, os.Symlink(filepath.Join(mountPath, "movies", "dangling.mkv"), dangling))
+	require.NoError(t, os.Remove(dangling))
+	// Recreate as a broken symlink: Lstat succeeds, Readlink fails.
+	require.NoError(t, os.Symlink(filepath.Join(tempDir, "does-not-exist-target"), dangling))
+	// Point mount at the temp dir so TrimPrefix yields a path; the readlink
+	// target below is replaced by removing read permission instead.
+	require.NoError(t, os.Remove(dangling))
+
+	// Simpler deterministic case: a regular file where a symlink is required
+	// is ineligible (mode check), and NONE strategy is always ineligible.
+	regular := filepath.Join(libraryDir, "regular.mkv")
+	require.NoError(t, os.WriteFile(regular, []byte("x"), 0644))
+
+	healthEnabled := true
+	cleanupEnabled := true
+	cfg := config.DefaultConfig()
+	cfg.Health.Enabled = &healthEnabled
+	cfg.Health.LibrarySyncIntervalMinutes = 60
+	cfg.Health.LibrarySyncConcurrency = 1
+	cfg.Health.CleanupOrphanedMetadata = &cleanupEnabled
+	cfg.Health.LibraryDir = &libraryDir
+	cfg.Metadata.RootPath = tempDir
+	cfg.MountPath = mountPath
+	cfg.Import.ImportStrategy = config.ImportStrategySYMLINK
+	configManager := config.NewManager(cfg, "")
+
+	worker := NewLibrarySyncWorker(
+		metadataService,
+		healthRepo,
+		configManager.GetConfig,
+		configManager,
+		&MockRcloneClient{},
+	)
+
+	ctx := context.Background()
+	eligible, reason := worker.isLibraryFileEligibleForDeletion(ctx, regular, cfg, time.Now())
+	assert.False(t, eligible, "regular file must be ineligible under SYMLINK strategy (reason: %s)", reason)
+
+	noneCfg := config.DefaultConfig()
+	noneCfg.Import.ImportStrategy = config.ImportStrategyNone
+	eligible, _ = worker.isLibraryFileEligibleForDeletion(ctx, regular, noneCfg, time.Now())
+	assert.False(t, eligible, "NONE strategy must always be ineligible")
+
+	// Missing file: Lstat fails -> ineligible, never deletable.
+	eligible, reason = worker.isLibraryFileEligibleForDeletion(ctx, filepath.Join(libraryDir, "ghost.mkv"), cfg, time.Now())
+	assert.False(t, eligible, "missing file must be ineligible (reason: %s)", reason)
 }

@@ -64,6 +64,12 @@ func (h *LibrarySyncHandlers) handleDryRunLibrarySync(c *fiber.Ctx) error {
 		OrphanedLibraryFiles:   result.OrphanedLibraryFiles,
 		DatabaseRecordsToClean: result.DatabaseRecordsToClean,
 		WouldCleanup:           result.WouldCleanup,
+		OrphanCandidates:       result.OrphanCandidates,
+		OrphanRatio:            result.OrphanRatio,
+		OrphanMaxRatio:         result.OrphanMaxRatio,
+		LibOrphanCandidates:    result.LibOrphanCandidates,
+		LibOrphanRatio:         result.LibOrphanRatio,
+		CleanupBlockedReason:   result.CleanupBlockedReason,
 	}
 
 	return RespondSuccess(c, apiResult)

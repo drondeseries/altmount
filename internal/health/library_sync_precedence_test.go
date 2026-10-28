@@ -121,6 +121,11 @@ func TestSyncLibrary_LibraryPreferencePreservesOrphanCleanupTarget(t *testing.T)
 	cfg.Import.ImportStrategy = config.ImportStrategySTRM
 	cfg.Metadata.RootPath = metaDir
 	cfg.MountPath = filepath.Join(root, "mount")
+	// The fail-closed orphan-ratio guard blocks cleanup when most of a
+	// tiny library is orphaned (here 1 goodwill episode of 1 files).
+	// This test targets STRM selection precedence, so permit any ratio.
+	maxRatio := 1.0
+	cfg.Health.OrphanCleanupMaxRatio = &maxRatio
 	manager := config.NewManager(cfg, "")
 	worker := NewLibrarySyncWorker(metadata.NewMetadataService(metaDir), repo, manager.GetConfig, manager, &MockRcloneClient{})
 	worker.SyncLibrary(context.Background(), false)
